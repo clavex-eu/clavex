@@ -1,0 +1,49 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Security Notice</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #F0F4F8; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: white; border-radius: 16px; padding: 48px; max-width: 480px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.06); }
+    .badge { display: inline-flex; align-items: center; gap: 8px; background: #FEF3C7; color: #92400E; font-size: 12px; font-weight: 600; padding: 6px 12px; border-radius: 999px; margin-bottom: 24px; }
+    h1 { font-size: 22px; font-weight: 700; color: #0D1F2D; margin-bottom: 12px; }
+    p { font-size: 14px; color: #6B7A8D; line-height: 1.7; margin-bottom: 16px; }
+    .count { font-weight: 700; color: #DC2626; }
+    .actions { display: flex; flex-direction: column; gap: 10px; margin-top: 28px; }
+    .btn { display: block; width: 100%; padding: 11px 20px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; text-align: center; text-decoration: none; }
+    .btn-primary { background: #1D9E75; color: white; }
+    .btn-primary:hover { background: #0F6E56; }
+    .btn-secondary { background: white; color: #1D9E75; border: 1.5px solid #1D9E75; }
+    .btn-secondary:hover { background: #F0FAF6; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="badge">⚠️ Security Notice</div>
+    <h1>Password found in data breach</h1>
+    <p>
+      The password you used has appeared in
+      <span class="count">{{.Count}} known data breach{{if gt .Count 1}}es{{end}}</span>.
+      This means it may be known to attackers.
+    </p>
+    <p>
+      We strongly recommend changing your password after signing in to keep your account secure.
+      Your sign-in will still be completed if you choose to continue.
+    </p>
+
+    <div class="actions">
+      <!-- Acknowledge the warning and complete sign-in -->
+      <form method="POST" action="/{{.OrgSlug}}/breach-warning">
+        <input type="hidden" name="login_session_id" value="{{.LoginSessionID}}" />
+        <button type="submit" class="btn btn-primary">Continue signing in</button>
+      </form>
+
+      <!-- Go back to the login page -->
+      <a href="/{{.OrgSlug}}/authorize" class="btn btn-secondary">Go back</a>
+    </div>
+  </div>
+</body>
+</html>

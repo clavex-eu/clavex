@@ -1,0 +1,17 @@
+apiVersion: v2
+name: clavex
+description: Self-hosted Identity & Access Management — OIDC, SAML 2.0, SCIM 2.0, eIDAS 2.0
+type: application
+version: 0.1.0
+appVersion: "0.1.0"
+home: https://github.com/clavex-eu/clavex
+sources:
+  - https://github.com/clavex-eu/clavex
+keywords:
+  - iam
+  - oidc
+  - oauth2
+  - saml
+  - identity
+maintainers:
+  - name: clavex-eu

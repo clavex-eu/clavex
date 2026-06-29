@@ -1,0 +1,247 @@
+{{- if .Values.backup.restore.enabled }}
+{{- /*
+  Restore Job — downloads the latest (or a specific) backup from S3/MinIO
+  and restores it into a target Postgres database.
+
+  Intended for:
+    - DR drills: helm upgrade ... --set backup.restore.enabled=true
+    - CI schema-integrity tests: instantiated by the backup-restore-test workflow
+    - Production restore: set backup.restore.specificKey to pin a dump object
+
+  The job:
+    1. Resolves the S3 key to restore (latest under prefix, or .specificKey)
+    2. Downloads and decompresses to a tmp volume
+    3. Drops and recreates the target database (configurable with dropAndRecreate)
+    4. Runs psql to restore the dump
+    5. Runs a schema integrity probe (SELECT 1 FROM each core table)
+    6. Emits a structured JSON summary to stdout for CI log parsing
+
+  Required secret: same .Values.backup.credentialsSecret as the backup job.
+*/}}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "clavex.fullname" . }}-restore-{{ now | date "20060102-150405" }}
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: restore
+  annotations:
+    "helm.sh/hook": post-install,post-upgrade
+    "helm.sh/hook-weight": "10"
+    "helm.sh/hook-delete-policy": before-hook-creation
+spec:
+  backoffLimit: 0
+  activeDeadlineSeconds: {{ .Values.backup.restore.activeDeadlineSeconds | default 3600 }}
+  template:
+    metadata:
+      labels:
+        {{- include "clavex.selectorLabels" . | nindent 8 }}
+        app.kubernetes.io/component: restore
+    spec:
+      restartPolicy: Never
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 999
+        fsGroup: 999
+      volumes:
+        - name: dump-workspace
+          emptyDir:
+            sizeLimit: {{ .Values.backup.restore.workspaceSizeLimit | default "10Gi" }}
+      containers:
+        - name: restore
+          image: {{ .Values.backup.image.repository }}:{{ .Values.backup.image.tag }}
+          imagePullPolicy: {{ .Values.backup.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          volumeMounts:
+            - name: dump-workspace
+              mountPath: /dump
+          env:
+            # ── Target Postgres ─────────────────────────────────────────────
+            - name: PGHOST
+              value: {{ .Values.backup.restore.postgres.host | default .Values.backup.postgres.host | quote }}
+            - name: PGPORT
+              value: {{ .Values.backup.restore.postgres.port | default .Values.backup.postgres.port | default "5432" | quote }}
+            - name: PGDATABASE
+              value: {{ .Values.backup.restore.postgres.database | default .Values.backup.postgres.database | quote }}
+            - name: PGUSER
+              value: {{ .Values.backup.restore.postgres.user | default .Values.backup.postgres.user | quote }}
+            - name: PGPASSWORD
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backup.credentialsSecret }}
+                  key: PGPASSWORD
+            # ── S3 / MinIO ─────────────────────────────────────────────────
+            - name: AWS_ACCESS_KEY_ID
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backup.credentialsSecret }}
+                  key: AWS_ACCESS_KEY_ID
+            - name: AWS_SECRET_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.backup.credentialsSecret }}
+                  key: AWS_SECRET_ACCESS_KEY
+            - name: AWS_DEFAULT_REGION
+              value: {{ .Values.backup.s3.region | default "us-east-1" | quote }}
+            {{- if .Values.backup.s3.endpoint }}
+            - name: AWS_ENDPOINT_URL
+              value: {{ .Values.backup.s3.endpoint | quote }}
+            {{- end }}
+            # ── Restore config ─────────────────────────────────────────────
+            - name: S3_BUCKET
+              value: {{ .Values.backup.s3.bucket | quote }}
+            - name: S3_PREFIX
+              value: {{ .Values.backup.s3.prefix | default "clavex-backups" | quote }}
+            - name: SPECIFIC_KEY
+              value: {{ .Values.backup.restore.specificKey | default "" | quote }}
+            - name: DROP_AND_RECREATE
+              value: {{ .Values.backup.restore.dropAndRecreate | default false | quote }}
+            - name: VERIFY_SCHEMA
+              value: {{ .Values.backup.restore.verifySchema | default true | quote }}
+          command:
+            - /bin/sh
+            - -euc
+            - |
+              START_TIME=$(date -u +%s)
+              {{- if .Values.backup.s3.endpoint }}
+              ENDPOINT_FLAG="--endpoint-url ${AWS_ENDPOINT_URL}"
+              {{- else }}
+              ENDPOINT_FLAG=""
+              {{- end }}
+
+              # ── 1. Resolve S3 key ──────────────────────────────────────────
+              if [ -n "${SPECIFIC_KEY}" ]; then
+                S3_KEY="${SPECIFIC_KEY}"
+                echo "[restore] Using pinned key: s3://${S3_BUCKET}/${S3_KEY}"
+              else
+                echo "[restore] Resolving latest object under s3://${S3_BUCKET}/${S3_PREFIX}/"
+                S3_KEY=$(aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" \
+                  ${ENDPOINT_FLAG} \
+                  --recursive \
+                  | sort | tail -n 1 | awk '{ print $4 }')
+                if [ -z "${S3_KEY}" ]; then
+                  echo "[restore] ERROR: no backup found under s3://${S3_BUCKET}/${S3_PREFIX}/"
+                  exit 1
+                fi
+                echo "[restore] Latest backup: s3://${S3_BUCKET}/${S3_KEY}"
+              fi
+
+              # ── 2. Download ────────────────────────────────────────────────
+              DUMP_FILE="/dump/restore.sql.gz"
+              echo "[restore] Downloading s3://${S3_BUCKET}/${S3_KEY} → ${DUMP_FILE}"
+              aws s3 cp "s3://${S3_BUCKET}/${S3_KEY}" "${DUMP_FILE}" ${ENDPOINT_FLAG}
+              echo "[restore] Download complete. Size: $(du -sh ${DUMP_FILE} | cut -f1)"
+
+              # ── 3. Decompress ──────────────────────────────────────────────
+              SQL_FILE="/dump/restore.sql"
+              echo "[restore] Decompressing..."
+              gunzip -c "${DUMP_FILE}" > "${SQL_FILE}"
+              rm -f "${DUMP_FILE}"
+
+              # ── 4. Drop & recreate (optional) ──────────────────────────────
+              if [ "${DROP_AND_RECREATE}" = "true" ]; then
+                echo "[restore] Dropping and recreating database ${PGDATABASE}..."
+                # Connect to the postgres maintenance database to drop/create
+                PGDATABASE_ORIG="${PGDATABASE}"
+                export PGDATABASE=postgres
+                psql -c "SELECT pg_terminate_backend(pid) FROM pg_stat_activity WHERE datname = '${PGDATABASE_ORIG}' AND pid <> pg_backend_pid();"
+                psql -c "DROP DATABASE IF EXISTS \"${PGDATABASE_ORIG}\";"
+                psql -c "CREATE DATABASE \"${PGDATABASE_ORIG}\" OWNER \"${PGUSER}\";"
+                export PGDATABASE="${PGDATABASE_ORIG}"
+                echo "[restore] Database recreated."
+              fi
+
+              # ── 5. Restore ─────────────────────────────────────────────────
+              echo "[restore] Running psql restore..."
+              psql \
+                --set ON_ERROR_STOP=1 \
+                --quiet \
+                --file="${SQL_FILE}"
+              rm -f "${SQL_FILE}"
+              echo "[restore] psql restore complete."
+
+              # ── 6. Schema integrity probe ──────────────────────────────────
+              if [ "${VERIFY_SCHEMA}" = "true" ]; then
+                echo "[restore] Running schema integrity checks..."
+                CHECKS_PASSED=0
+                CHECKS_FAILED=0
+
+                check_table() {
+                  TABLE="$1"
+                  RESULT=$(psql --tuples-only --no-align \
+                    -c "SELECT COUNT(*) FROM information_schema.tables WHERE table_schema='public' AND table_name='${TABLE}';" \
+                    2>&1)
+                  if [ "${RESULT}" = "1" ]; then
+                    echo "[restore] ✓ table exists: ${TABLE}"
+                    CHECKS_PASSED=$((CHECKS_PASSED+1))
+                  else
+                    echo "[restore] ✗ MISSING table: ${TABLE}"
+                    CHECKS_FAILED=$((CHECKS_FAILED+1))
+                  fi
+                }
+
+                # Core schema tables (migrations 001+)
+                check_table organizations
+                check_table users
+                check_table roles
+                check_table user_roles
+                check_table oidc_clients
+                check_table mfa_credentials
+                check_table ldap_connections
+                check_table saml_service_providers
+                check_table audit_logs
+                check_table verification_tokens
+                # Extended schema (later migrations)
+                check_table refresh_tokens
+                check_table auth_codes
+                check_table webhooks
+                check_table org_branding
+
+                if [ "${CHECKS_FAILED}" -gt 0 ]; then
+                  echo "[restore] SCHEMA INTEGRITY FAILED: ${CHECKS_FAILED} table(s) missing."
+                  INTEGRITY_STATUS="FAILED"
+                else
+                  echo "[restore] Schema integrity OK: ${CHECKS_PASSED} tables verified."
+                  INTEGRITY_STATUS="OK"
+                fi
+              else
+                INTEGRITY_STATUS="SKIPPED"
+                CHECKS_PASSED=0
+                CHECKS_FAILED=0
+              fi
+
+              # ── 7. Summary ─────────────────────────────────────────────────
+              END_TIME=$(date -u +%s)
+              DURATION=$((END_TIME-START_TIME))
+              cat <<EOF
+              {
+                "status": "$([ "${CHECKS_FAILED:-0}" -eq 0 ] && echo SUCCESS || echo FAILED)",
+                "source_key": "s3://${S3_BUCKET}/${S3_KEY}",
+                "target_db": "${PGDATABASE}",
+                "duration_seconds": ${DURATION},
+                "schema_integrity": "${INTEGRITY_STATUS}",
+                "tables_verified": ${CHECKS_PASSED},
+                "tables_missing": ${CHECKS_FAILED:-0}
+              }
+              EOF
+
+              [ "${CHECKS_FAILED:-0}" -eq 0 ] || exit 1
+          resources:
+            {{- toYaml .Values.backup.resources | nindent 12 }}
+      {{- with .Values.backup.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.backup.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+{{- end }}

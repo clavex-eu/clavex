@@ -1,0 +1,163 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "clavex.fullname" . }}
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "clavex.selectorLabels" . | nindent 6 }}
+      app.kubernetes.io/component: server
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "clavex.labels" . | nindent 8 }}
+        app.kubernetes.io/component: server
+        {{- with .Values.podLabels }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "clavex.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      {{- $geoipAuto := and .Values.geoip.enabled .Values.geoip.autoUpdate.enabled }}
+      {{- if or .Values.runMigrationsOnStartup $geoipAuto }}
+      initContainers:
+        {{- if .Values.runMigrationsOnStartup }}
+        - name: migrate
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/migrate", "up"]
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+          envFrom:
+            - configMapRef:
+                name: {{ include "clavex.fullname" . }}
+            {{- if .Values.existingSecret }}
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+            {{- end }}
+        {{- end }}
+        {{- if $geoipAuto }}
+        # Best-effort: download the mmdb files to the PVC on first boot (when the
+        # PVC is empty). Failures are non-fatal — clavex starts with geo disabled.
+        - name: geoip-init
+          image: "{{ .Values.geoip.autoUpdate.image.repository }}:{{ .Values.geoip.autoUpdate.image.tag }}"
+          imagePullPolicy: {{ .Values.geoip.autoUpdate.image.pullPolicy | default "IfNotPresent" }}
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: false
+            capabilities:
+              drop: ["ALL"]
+          env:
+            - name: HOME
+              value: /tmp
+            - name: MMDB_DIR
+              value: {{ .Values.geoip.mountPath | quote }}
+            - name: DATABASES
+              value: {{ .Values.geoip.autoUpdate.databases | join " " | quote }}
+            - name: FORCE
+              value: "0"
+            - name: BEST_EFFORT
+              value: "1"
+            {{- include "clavex.geoip.credsEnv" . | nindent 12 }}
+          volumeMounts:
+            - name: geoip
+              mountPath: {{ .Values.geoip.mountPath }}
+            - name: tmp
+              mountPath: /tmp
+          command:
+            - /bin/sh
+            - -euc
+            - |
+              {{- include "clavex.geoip.downloadSnippet" . | nindent 14 }}
+          resources:
+            {{- toYaml .Values.geoip.autoUpdate.resources | nindent 12 }}
+        {{- end }}
+      {{- end }}
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+          envFrom:
+            - configMapRef:
+                name: {{ include "clavex.fullname" . }}
+            {{- if .Values.existingSecret }}
+            - secretRef:
+                name: {{ .Values.existingSecret }}
+            {{- end }}
+          env:
+            {{- with .Values.extraEnv }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          volumeMounts:
+            - name: signing-key
+              mountPath: {{ .Values.signingKeySecret.mountPath }}
+              readOnly: true
+            - name: tmp
+              mountPath: /tmp
+            {{- if .Values.geoip.enabled }}
+            - name: geoip
+              mountPath: {{ .Values.geoip.mountPath }}
+              readOnly: true
+            {{- end }}
+            {{- with .Values.extraVolumeMounts }}
+            {{- toYaml . | nindent 12 }}
+            {{- end }}
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+      volumes:
+        - name: signing-key
+          secret:
+            secretName: {{ .Values.signingKeySecret.name }}
+            items:
+              - key: {{ .Values.signingKeySecret.key }}
+                path: signing.pem
+        - name: tmp
+          emptyDir: {}
+        {{- if .Values.geoip.enabled }}
+        - name: geoip
+          persistentVolumeClaim:
+            claimName: {{ include "clavex.geoip.claimName" . }}
+        {{- end }}
+        {{- with .Values.extraVolumes }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}

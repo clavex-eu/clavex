@@ -1,0 +1,59 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Activate Device{{if .OrgName}} — {{.OrgName}}{{end}}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #F5F4F0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .card { background: white; border-radius: 16px; padding: 40px 36px; max-width: 420px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.06); }
+    .logo-wrap { text-align: center; margin-bottom: 28px; }
+    .logo-img { height: 48px; object-fit: contain; }
+    .logo-initial { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 12px; background: #0F6E56; color: white; font-weight: 700; font-size: 20px; }
+    h1 { font-size: 20px; font-weight: 700; color: #1A2332; margin-bottom: 6px; text-align: center; }
+    .subtitle { font-size: 14px; color: #5F5E5A; text-align: center; margin-bottom: 28px; line-height: 1.5; }
+    label { display: block; font-size: 13px; font-weight: 600; color: #1A2332; margin-bottom: 6px; }
+    input[type=text] { width: 100%; padding: 11px 14px; border: 1.5px solid #E8E7E3; border-radius: 10px; font-size: 18px; font-weight: 700; letter-spacing: 0.1em; text-transform: uppercase; text-align: center; color: #1A2332; outline: none; transition: border-color 0.15s; }
+    input[type=text]:focus { border-color: #0F6E56; box-shadow: 0 0 0 3px rgba(15,110,86,0.1); }
+    .btn { display: block; width: 100%; padding: 12px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: #0F6E56; color: white; margin-top: 16px; transition: background 0.15s; }
+    .btn:hover { background: #0A5C47; }
+    .btn:disabled { opacity: 0.6; cursor: not-allowed; }
+    .error { background: #FCEBEB; color: #A32D2D; font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+    .hint { font-size: 12px; color: #9E9E9B; text-align: center; margin-top: 20px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo-wrap">
+      {{if .LogoURL}}
+        <img src="{{.LogoURL}}" alt="{{.OrgName}}" class="logo-img" />
+      {{else}}
+        <div class="logo-initial">{{if .OrgName}}{{slice .OrgName 0 1}}{{else}}?{{end}}</div>
+      {{end}}
+    </div>
+    <h1>Activate your device</h1>
+    <p class="subtitle">Enter the code displayed on your device to connect it to your account.</p>
+
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+    <form method="POST">
+      <label for="user_code">Device code</label>
+      <input
+        id="user_code"
+        type="text"
+        name="user_code"
+        placeholder="XXXX-XXXX"
+        value="{{.PrefilledCode}}"
+        maxlength="9"
+        autocomplete="off"
+        autofocus
+        required
+      />
+      <button type="submit" class="btn">Continue</button>
+    </form>
+
+    <p class="hint">Can't find your code? Check the terminal or screen on your device.</p>
+  </div>
+</body>
+</html>

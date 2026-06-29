@@ -1,0 +1,25 @@
+# ── Build stage ───────────────────────────────────────────────────────────────
+FROM node:22-alpine AS builder
+
+WORKDIR /src
+
+COPY frontend/package.json frontend/package-lock.json ./
+RUN npm ci
+
+COPY frontend/ .
+
+# VITE_API_URL is baked into the JS bundle at build time.
+# Override with --build-arg VITE_API_URL=https://id.example.com
+ARG VITE_API_URL=https://id.clavex.eu
+ENV VITE_API_URL=$VITE_API_URL
+RUN npm run build
+
+# ── Runtime stage ─────────────────────────────────────────────────────────────
+FROM nginxinc/nginx-unprivileged:1.27-alpine
+
+COPY --from=builder /build/frontend /usr/share/nginx/html
+COPY frontend/nginx.conf /etc/nginx/conf.d/default.conf
+
+EXPOSE 8080
+
+CMD ["nginx", "-g", "daemon off;"]

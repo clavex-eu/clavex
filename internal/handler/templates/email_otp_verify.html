@@ -1,0 +1,95 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Enter code{{if .OrgName}} — {{.OrgName}}{{end}}</title>
+  <script nonce="{{.Nonce}}" src="https://cdn.tailwindcss.com"></script>
+  <style>body { font-family: ui-sans-serif, system-ui, sans-serif; }</style>
+</head>
+<body class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+
+  <div class="w-full max-w-sm">
+
+    <!-- Brand -->
+    <div class="text-center mb-8">
+      {{if .LogoURL}}
+        <img src="{{.LogoURL}}" alt="{{.OrgName}}" class="h-12 mx-auto mb-3 object-contain" />
+      {{else}}
+        <div class="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-indigo-600 text-white font-bold text-xl mx-auto mb-3">
+          {{if .OrgName}}{{slice .OrgName 0 1}}{{else}}?{{end}}
+        </div>
+      {{end}}
+      <h1 class="text-xl font-semibold text-gray-900">Check your email</h1>
+      <p class="text-sm text-gray-500 mt-1">
+        We sent a 6-digit code to
+        {{if .Email}}<strong class="text-gray-700">{{.Email}}</strong>{{else}}your email address{{end}}
+      </p>
+    </div>
+
+    <!-- Card -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+
+      {{if .Error}}
+        <div class="mb-5 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          {{.Error}}
+        </div>
+      {{end}}
+
+      <form method="POST" action="/{{.OrgSlug}}/otp/verify" novalidate>
+        <input type="hidden" name="login_session_id" value="{{.LoginSessionID}}" />
+        <input type="hidden" name="email" value="{{.Email}}" />
+
+        <div>
+          <label for="code" class="block text-sm font-medium text-gray-700 mb-1">
+            6-digit code
+          </label>
+          <input
+            id="code"
+            name="code"
+            type="text"
+            inputmode="numeric"
+            pattern="[0-9]{6}"
+            maxlength="6"
+            autocomplete="one-time-code"
+            required
+            autofocus
+            class="w-full rounded-lg border border-gray-300 px-3 py-3 text-center
+                   text-2xl font-mono tracking-widest placeholder-gray-300
+                   focus:outline-none focus:ring-2 focus:ring-indigo-500
+                   focus:border-transparent transition"
+            placeholder="000000"
+          />
+        </div>
+
+        <button
+          type="submit"
+          class="mt-5 w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold
+                 text-white hover:bg-indigo-700 active:bg-indigo-800 transition-colors"
+        >
+          Verify code
+        </button>
+      </form>
+
+      <div class="mt-5 flex flex-col items-center gap-2 text-sm text-gray-500">
+        <form method="POST" action="/{{.OrgSlug}}/otp/send">
+          <input type="hidden" name="login_session_id" value="{{.LoginSessionID}}" />
+          <input type="hidden" name="email" value="{{.Email}}" />
+          <button type="submit" class="text-indigo-600 hover:underline">
+            Resend code
+          </button>
+        </form>
+        <a href="/{{.OrgSlug}}/otp?login_session_id={{.LoginSessionID}}"
+           class="text-indigo-600 hover:underline">
+          Use a different email
+        </a>
+      </div>
+    </div>
+
+    <p class="text-center text-xs text-gray-400 mt-6">
+      Secured by <a href="https://clavex.eu" class="text-indigo-500 hover:underline">Clavex</a>
+    </p>
+  </div>
+
+</body>
+</html>

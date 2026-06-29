@@ -1,0 +1,59 @@
+{{- if .Values.httproute.enabled -}}
+{{- $fullName := include "clavex.fullname" . -}}
+---
+# HTTPRoute for id.clavex.eu — all traffic to backend (OIDC + API)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullName }}-id
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.httproute.gateway.name }}
+      namespace: {{ .Values.httproute.gateway.namespace | default .Release.Namespace }}
+  hostnames:
+    - {{ .Values.httproute.idHostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ $fullName }}
+          port: {{ .Values.service.port }}
+          weight: 1
+{{- if and .Values.frontend.enabled .Values.httproute.consoleHostname }}
+---
+# HTTPRoute for console.clavex.eu — all traffic to frontend (React admin UI)
+apiVersion: gateway.networking.k8s.io/v1
+kind: HTTPRoute
+metadata:
+  name: {{ $fullName }}-console
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  parentRefs:
+    - group: gateway.networking.k8s.io
+      kind: Gateway
+      name: {{ .Values.httproute.consoleGateway.name | default .Values.httproute.gateway.name }}
+      namespace: {{ .Values.httproute.consoleGateway.namespace | default .Values.httproute.gateway.namespace | default .Release.Namespace }}
+  hostnames:
+    - {{ .Values.httproute.consoleHostname | quote }}
+  rules:
+    - matches:
+        - path:
+            type: PathPrefix
+            value: /
+      backendRefs:
+        - name: {{ $fullName }}-frontend
+          port: 80
+          weight: 1
+{{- end }}
+{{- end }}

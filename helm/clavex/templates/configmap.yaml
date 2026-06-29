@@ -1,0 +1,206 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "clavex.fullname" . }}
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+data:
+  CLAVEX_HTTP_ADDR: {{ .Values.config.httpAddr | quote }}
+  CLAVEX_HTTP_BASE_DOMAIN: {{ .Values.config.httpBaseDomain | quote }}
+  CLAVEX_AUTH_ISSUER_BASE: {{ .Values.config.issuerBase | quote }}
+  {{- if .Values.config.adminCookieDomain }}
+  CLAVEX_AUTH_ADMIN_COOKIE_DOMAIN: {{ .Values.config.adminCookieDomain | quote }}
+  {{- end }}
+  CLAVEX_AUTH_SIGNING_KEY_FILE: {{ printf "%s/signing.pem" .Values.signingKeySecret.mountPath | quote }}
+  CLAVEX_DATABASE_MODE: {{ .Values.config.databaseMode | quote }}
+  CLAVEX_REDIS_ADDR: {{ .Values.config.redisAddr | quote }}
+  CLAVEX_AUTH_TOTP_ISSUER: {{ .Values.config.totpIssuer | quote }}
+  {{- if .Values.config.geoipCityDbPath }}
+  CLAVEX_AUTH_GEOIP_CITY_DB_PATH: {{ .Values.config.geoipCityDbPath | quote }}
+  {{- end }}
+  {{- if .Values.config.geoipAsnDbPath }}
+  CLAVEX_AUTH_GEOIP_ASN_DB_PATH: {{ .Values.config.geoipAsnDbPath | quote }}
+  {{- end }}
+  {{- if .Values.config.abuseipdbKey }}
+  CLAVEX_AUTH_ABUSEIPDB_KEY: {{ .Values.config.abuseipdbKey | quote }}
+  {{- end }}
+  {{- if .Values.config.abuseipdbThreshold }}
+  CLAVEX_AUTH_ABUSEIPDB_THRESHOLD: {{ .Values.config.abuseipdbThreshold | quote }}
+  {{- end }}
+  {{- if .Values.config.redisMode }}
+  CLAVEX_REDIS_MODE: {{ .Values.config.redisMode | quote }}
+  {{- end }}
+  {{- if .Values.config.redisAddrs }}
+  CLAVEX_REDIS_ADDRS: {{ join "," .Values.config.redisAddrs | quote }}
+  {{- end }}
+  {{- if .Values.config.redisMasterName }}
+  CLAVEX_REDIS_MASTER_NAME: {{ .Values.config.redisMasterName | quote }}
+  {{- end }}
+  {{- if .Values.config.redisSentinelAddrs }}
+  CLAVEX_REDIS_SENTINEL_ADDRS: {{ join "," .Values.config.redisSentinelAddrs | quote }}
+  {{- end }}
+  {{- if .Values.config.redisDB }}
+  CLAVEX_REDIS_DB: {{ .Values.config.redisDB | toString | quote }}
+  {{- end }}
+  {{- if .Values.config.redisTLSEnabled }}
+  CLAVEX_REDIS_TLS_ENABLED: "true"
+  {{- end }}
+  {{- if .Values.config.tlsCertFile }}
+  CLAVEX_HTTP_TLS_CERT_FILE: {{ .Values.config.tlsCertFile | quote }}
+  {{- end }}
+  {{- if .Values.config.tlsKeyFile }}
+  CLAVEX_HTTP_TLS_KEY_FILE: {{ .Values.config.tlsKeyFile | quote }}
+  {{- end }}
+  {{- if .Values.config.mtlsClientCACertFile }}
+  CLAVEX_HTTP_MTLS_CLIENT_CA_CERT_FILE: {{ .Values.config.mtlsClientCACertFile | quote }}
+  {{- end }}
+  {{- if .Values.config.databaseMaxConns }}
+  CLAVEX_DATABASE_MAX_CONNS: {{ .Values.config.databaseMaxConns | toString | quote }}
+  {{- end }}
+  {{- if .Values.config.databaseMinConns }}
+  CLAVEX_DATABASE_MIN_CONNS: {{ .Values.config.databaseMinConns | toString | quote }}
+  {{- end }}
+  {{- if .Values.config.accessTokenTTL }}
+  CLAVEX_AUTH_ACCESS_TOKEN_TTL: {{ .Values.config.accessTokenTTL | toString | quote }}
+  {{- end }}
+  {{- if .Values.config.refreshTokenTTL }}
+  CLAVEX_AUTH_REFRESH_TOKEN_TTL: {{ .Values.config.refreshTokenTTL | toString | quote }}
+  {{- end }}
+  {{- if .Values.config.keyBackend }}
+  CLAVEX_AUTH_KEY_BACKEND: {{ .Values.config.keyBackend | quote }}
+  {{- end }}
+  {{- if .Values.config.samlCertFile }}
+  CLAVEX_AUTH_SAML_CERT_FILE: {{ .Values.config.samlCertFile | quote }}
+  {{- end }}
+  {{- if .Values.config.webauthnRPID }}
+  CLAVEX_AUTH_WEBAUTHN_RP_ID: {{ .Values.config.webauthnRPID | quote }}
+  {{- end }}
+  {{- if .Values.config.webauthnRPName }}
+  CLAVEX_AUTH_WEBAUTHN_RP_NAME: {{ .Values.config.webauthnRPName | quote }}
+  {{- end }}
+  {{- if .Values.config.webauthnRPOrigins }}
+  CLAVEX_AUTH_WEBAUTHN_RP_ORIGINS: {{ join "," .Values.config.webauthnRPOrigins | quote }}
+  {{- end }}
+  {{- if .Values.config.loginAlertThreshold }}
+  CLAVEX_AUTH_LOGIN_ALERT_THRESHOLD: {{ .Values.config.loginAlertThreshold | toString | quote }}
+  {{- end }}
+  {{- if not .Values.existingSecret }}
+  {{- if .Values.config.databaseDSN }}
+  CLAVEX_DATABASE_DSN: {{ .Values.config.databaseDSN | quote }}
+  {{- end }}
+  {{- if .Values.config.adminSecret }}
+  CLAVEX_AUTH_ADMIN_SECRET: {{ .Values.config.adminSecret | quote }}
+  {{- end }}
+  {{- if .Values.config.redisPassword }}
+  CLAVEX_REDIS_PASSWORD: {{ .Values.config.redisPassword | quote }}
+  {{- end }}
+  {{- if .Values.config.redisSentinelPassword }}
+  CLAVEX_REDIS_SENTINEL_PASSWORD: {{ .Values.config.redisSentinelPassword | quote }}
+  {{- end }}
+  {{- if .Values.config.keyEncryptionKey }}
+  CLAVEX_AUTH_KEY_ENCRYPTION_KEY: {{ .Values.config.keyEncryptionKey | quote }}
+  {{- end }}
+  {{- if .Values.config.encryptionKey }}
+  CLAVEX_AUTH_ENCRYPTION_KEY: {{ .Values.config.encryptionKey | quote }}
+  {{- end }}
+  {{- if .Values.config.deviceTrustSecret }}
+  CLAVEX_AUTH_DEVICE_TRUST_SECRET: {{ .Values.config.deviceTrustSecret | quote }}
+  {{- end }}
+  {{- if .Values.fga.apiKey }}
+  CLAVEX_FGA_API_KEY: {{ .Values.fga.apiKey | quote }}
+  {{- end }}
+  {{- if .Values.storage.accessKey }}
+  CLAVEX_STORAGE_ACCESS_KEY: {{ .Values.storage.accessKey | quote }}
+  {{- end }}
+  {{- if .Values.storage.secretKey }}
+  CLAVEX_STORAGE_SECRET_KEY: {{ .Values.storage.secretKey | quote }}
+  {{- end }}
+  {{- if .Values.pamAlerts.slackWebhookURL }}
+  CLAVEX_PAM_ALERTS_SLACK_WEBHOOK_URL: {{ .Values.pamAlerts.slackWebhookURL | quote }}
+  {{- end }}
+  {{- if .Values.pamAlerts.teamsWebhookURL }}
+  CLAVEX_PAM_ALERTS_TEAMS_WEBHOOK_URL: {{ .Values.pamAlerts.teamsWebhookURL | quote }}
+  {{- end }}
+  {{- end }}
+  {{- if .Values.config.corsAllowedOrigins }}
+  CLAVEX_HTTP_CORS_ALLOWED_ORIGINS: {{ join "," .Values.config.corsAllowedOrigins | quote }}
+  {{- end }}
+  {{- if .Values.config.trustedProxies }}
+  CLAVEX_HTTP_TRUSTED_PROXIES: {{ join "," .Values.config.trustedProxies | quote }}
+  {{- end }}
+  CLAVEX_RUN_MIGRATIONS: {{ if .Values.runMigrationsOnStartup }}"false"{{ else }}"true"{{ end }}
+  {{- if .Values.telemetry.enabled }}
+  CLAVEX_TELEMETRY_ENABLED: "true"
+  {{- end }}
+  {{- if .Values.telemetry.otlpEndpoint }}
+  CLAVEX_TELEMETRY_OTLP_ENDPOINT: {{ .Values.telemetry.otlpEndpoint | quote }}
+  {{- end }}
+  {{- if .Values.telemetry.serviceName }}
+  CLAVEX_TELEMETRY_SERVICE_NAME: {{ .Values.telemetry.serviceName | quote }}
+  {{- end }}
+  {{- if .Values.telemetry.sampleRate }}
+  CLAVEX_TELEMETRY_SAMPLE_RATE: {{ .Values.telemetry.sampleRate | toString | quote }}
+  {{- end }}
+  {{- if not .Values.usageReporting.enabled }}
+  CLAVEX_USAGE_REPORTING_ENABLED: "false"
+  {{- end }}
+  {{- if .Values.license.keyFile }}
+  CLAVEX_LICENSE_KEY_FILE: {{ .Values.license.keyFile | quote }}
+  {{- end }}
+  {{- if .Values.fga.enabled }}
+  CLAVEX_FGA_ENABLED: "true"
+  {{- end }}
+  {{- if .Values.fga.endpoint }}
+  CLAVEX_FGA_ENDPOINT: {{ .Values.fga.endpoint | quote }}
+  {{- end }}
+  {{- if .Values.storage.endpoint }}
+  CLAVEX_STORAGE_ENDPOINT: {{ .Values.storage.endpoint | quote }}
+  {{- end }}
+  {{- if .Values.storage.bucket }}
+  CLAVEX_STORAGE_BUCKET: {{ .Values.storage.bucket | quote }}
+  {{- end }}
+  {{- if .Values.storage.region }}
+  CLAVEX_STORAGE_REGION: {{ .Values.storage.region | quote }}
+  {{- end }}
+  {{- if .Values.storage.publicBaseURL }}
+  CLAVEX_STORAGE_PUBLIC_BASE_URL: {{ .Values.storage.publicBaseURL | quote }}
+  {{- end }}
+  {{- if .Values.storage.localDir }}
+  CLAVEX_STORAGE_LOCAL_DIR: {{ .Values.storage.localDir | quote }}
+  {{- end }}
+  {{- if .Values.storage.localBaseURL }}
+  CLAVEX_STORAGE_LOCAL_BASE_URL: {{ .Values.storage.localBaseURL | quote }}
+  {{- end }}
+  {{- if .Values.pamAlerts.adminBaseURL }}
+  CLAVEX_PAM_ALERTS_ADMIN_BASE_URL: {{ .Values.pamAlerts.adminBaseURL | quote }}
+  {{- end }}
+  {{- if .Values.pamAlerts.staleCredentialDays }}
+  CLAVEX_PAM_ALERTS_STALE_CREDENTIAL_DAYS: {{ .Values.pamAlerts.staleCredentialDays | toString | quote }}
+  {{- end }}
+  {{- if .Values.pamAlerts.sessionMaxHours }}
+  CLAVEX_PAM_ALERTS_SESSION_MAX_HOURS: {{ .Values.pamAlerts.sessionMaxHours | toString | quote }}
+  {{- end }}
+  {{- if .Values.federation.enabled }}
+  CLAVEX_FEDERATION_ENABLED: "true"
+  {{- end }}
+  {{- if .Values.federation.organizationName }}
+  CLAVEX_FEDERATION_ORGANIZATION_NAME: {{ .Values.federation.organizationName | quote }}
+  {{- end }}
+  {{- if .Values.federation.authorityHints }}
+  CLAVEX_FEDERATION_AUTHORITY_HINTS: {{ join "," .Values.federation.authorityHints | quote }}
+  {{- end }}
+  {{- if .Values.federation.jwtLifetime }}
+  CLAVEX_FEDERATION_JWT_LIFETIME: {{ .Values.federation.jwtLifetime | toString | quote }}
+  {{- end }}
+  {{- if .Values.federation.contacts }}
+  CLAVEX_FEDERATION_CONTACTS: {{ join "," .Values.federation.contacts | quote }}
+  {{- end }}
+  {{- if .Values.federation.homepageURI }}
+  CLAVEX_FEDERATION_HOMEPAGE_URI: {{ .Values.federation.homepageURI | quote }}
+  {{- end }}
+  {{- if .Values.federation.logoURI }}
+  CLAVEX_FEDERATION_LOGO_URI: {{ .Values.federation.logoURI | quote }}
+  {{- end }}
+  {{- if .Values.federation.trustAnchors }}
+  CLAVEX_FEDERATION_TRUST_ANCHORS: {{ join "," .Values.federation.trustAnchors | quote }}
+  {{- end }}

@@ -1,0 +1,1 @@
+ALTER TABLE spid_configs ADD COLUMN IF NOT EXISTS org_locality TEXT NOT NULL DEFAULT '';

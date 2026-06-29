@@ -1,0 +1,1 @@
+ALTER TABLE presentation_sessions ADD COLUMN IF NOT EXISTS client_id TEXT NOT NULL DEFAULT '';

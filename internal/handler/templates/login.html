@@ -1,0 +1,246 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in{{if .OrgName}} — {{.OrgName}}{{end}}</title>
+  <script nonce="{{.Nonce}}" src="https://cdn.tailwindcss.com"></script>
+  {{if .CaptchaEnabled}}
+  <script nonce="{{.Nonce}}" src="{{.CaptchaScriptURL}}" async defer></script>
+  {{end}}
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; }
+  </style>
+</head>
+<body class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+
+  <div class="w-full max-w-sm">
+
+    <!-- Brand bar -->
+    <div class="text-center mb-8">
+      {{if .LogoURL}}
+        <img src="{{.LogoURL}}" alt="{{.OrgName}}" class="h-12 mx-auto mb-3 object-contain" />
+      {{else}}
+        <div class="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-indigo-600 text-white font-bold text-xl mx-auto mb-3">
+          {{if .OrgName}}{{slice .OrgName 0 1}}{{else}}?{{end}}
+        </div>
+      {{end}}
+      <h1 class="text-xl font-semibold text-gray-900">{{if .OrgName}}{{.OrgName}}{{else}}Sign in{{end}}</h1>
+      <p class="text-sm text-gray-500 mt-1">Sign in to continue</p>
+    </div>
+
+    <!-- Card -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+
+      {{if .Error}}
+        <div class="mb-5 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          {{.Error}}
+        </div>
+      {{end}}
+
+      {{/* Promoted IdP buttons — rendered prominently above the email/password form */}}
+      {{range .IDPProviders}}{{if .IsPromoted}}
+      <a href="{{.StartURL}}{{$.LoginSessionID}}"
+         class="mb-4 flex w-full items-center justify-center gap-2 rounded-lg
+                border border-indigo-200 bg-indigo-50 px-4 py-2.5 text-sm font-semibold
+                text-indigo-700 hover:bg-indigo-100 active:bg-indigo-200 transition-colors">
+        {{.Name}}
+      </a>
+      {{end}}{{end}}
+
+      {{/* Show divider only when there are promoted IDPs */}}
+      {{$hasPromoted := false}}{{range .IDPProviders}}{{if .IsPromoted}}{{$hasPromoted = true}}{{end}}{{end}}
+      {{if and $hasPromoted .IDPProviders}}
+      <div class="relative mb-4">
+        <div class="absolute inset-0 flex items-center"><span class="w-full border-t border-gray-200"></span></div>
+        <div class="relative flex justify-center text-xs"><span class="bg-white px-2 text-gray-400">or sign in with email</span></div>
+      </div>
+      {{end}}
+
+      <form method="POST" action="/{{.OrgSlug}}/authorize" novalidate>
+        <!-- Hidden fields to carry OIDC state through the POST -->
+        <input type="hidden" name="login_session_id" value="{{.LoginSessionID}}" />
+
+        <div class="space-y-4">
+          <div>
+            <label for="email" class="block text-sm font-medium text-gray-700 mb-1">Email address</label>
+            <input
+              id="email"
+              name="email"
+              type="email"
+              autocomplete="username webauthn"
+              required
+              autofocus
+              value="{{.Email}}"
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                     placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500
+                     focus:border-transparent transition"
+              placeholder="you@example.com"
+            />
+          </div>
+
+          <div>
+            <div class="flex items-center justify-between mb-1">
+              <label for="password" class="block text-sm font-medium text-gray-700">Password</label>
+            </div>
+            <input
+              id="password"
+              name="password"
+              type="password"
+              autocomplete="current-password"
+              required
+              class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm
+                     placeholder-gray-400 focus:outline-none focus:ring-2 focus:ring-indigo-500
+                     focus:border-transparent transition"
+            />
+          </div>
+        </div>
+
+        <button
+          type="submit"
+          class="mt-6 w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold
+                 text-white hover:bg-indigo-700 active:bg-indigo-800 transition-colors"
+        >
+          Sign in
+        </button>
+
+        {{if .CancelURL}}
+        <a
+          href="{{.CancelURL}}"
+          class="mt-3 block w-full rounded-lg border border-gray-200 px-4 py-2.5 text-sm
+                 font-semibold text-gray-600 text-center hover:bg-gray-50 active:bg-gray-100
+                 transition-colors"
+        >
+          Cancel
+        </a>
+        {{end}}
+
+        {{if .CaptchaEnabled}}
+        <div class="mt-4 flex justify-center">
+          <div class="cf-turnstile" data-sitekey="{{.CaptchaSiteKey}}" data-theme="light"></div>
+        </div>
+        {{end}}
+      </form>
+
+      {{if .EmailOTPEnabled}}
+      <div class="mt-5 text-center">
+        <a href="/{{.OrgSlug}}/otp?login_session_id={{.LoginSessionID}}"
+           class="text-sm text-indigo-600 hover:underline">
+          Sign in with email code
+        </a>
+      </div>
+      {{end}}
+
+      {{/* Secondary (non-promoted) IdP buttons — always render the section if any IDPs exist */}}
+      {{if .IDPProviders}}
+      <div class="mt-5 border-t border-gray-100 pt-4">
+        <p class="mb-2 text-xs text-center text-gray-400">Or continue with</p>
+        <div class="flex flex-wrap gap-2 justify-center">
+          {{range .IDPProviders}}{{if eq .IsPromoted false}}
+          <a href="{{.StartURL}}{{$.LoginSessionID}}"
+             class="flex items-center gap-1 rounded-lg border border-gray-200
+                    px-3 py-1.5 text-xs font-medium text-gray-600
+                    hover:bg-gray-50 active:bg-gray-100 transition-colors">
+            {{.Name}}
+          </a>
+          {{end}}{{end}}
+        </div>
+      </div>
+      {{end}}
+    </div>
+
+    <!-- Footer -->
+    <p class="text-center text-xs text-gray-400 mt-6">
+      Secured by <a href="https://clavex.eu" class="text-indigo-500 hover:underline">Clavex</a>
+    </p>
+
+  </div>
+
+  {{if .PasskeyEnabled}}
+  <script nonce="{{.Nonce}}">
+  (function () {
+    // Passkey conditional UI (mediation=conditional): the browser surfaces
+    // registered passkeys in the autofill/autocomplete dropdown without any
+    // user interaction — tap the email field, pick a passkey, done.
+    if (
+      !window.PublicKeyCredential ||
+      !PublicKeyCredential.isConditionalMediationAvailable
+    ) { return; }
+
+    PublicKeyCredential.isConditionalMediationAvailable().then(function (avail) {
+      if (!avail) { return; }
+
+      var orgSlug = {{.OrgSlug | js}};
+      var loginSessionID = {{.LoginSessionID | js}};
+
+      fetch('/' + orgSlug + '/passkey/login/begin', { method: 'POST' })
+        .then(function (r) { if (!r.ok) { throw new Error('begin failed'); } return r.json(); })
+        .then(function (opts) {
+          var pk = opts.publicKey;
+          // Save the raw base64url challenge BEFORE decoding — this is what
+          // FinishPasskeyLogin uses to retrieve the server-side session from Redis.
+          var rawChallenge = pk.challenge;
+          // Decode base64url → Uint8Array as required by the WebAuthn API.
+          pk.challenge = b64uToBytes(pk.challenge);
+          (pk.allowCredentials || []).forEach(function (c) { c.id = b64uToBytes(c.id); });
+
+          return navigator.credentials.get({
+            mediation: 'conditional',
+            publicKey: pk
+          }).then(function (credential) {
+            // Serialize the PublicKeyCredential for the finish endpoint.
+            var body = JSON.stringify({
+              id: credential.id,
+              rawId: bytesToB64u(new Uint8Array(credential.rawId)),
+              type: credential.type,
+              response: {
+                clientDataJSON: bytesToB64u(new Uint8Array(credential.response.clientDataJSON)),
+                authenticatorData: bytesToB64u(new Uint8Array(credential.response.authenticatorData)),
+                signature: bytesToB64u(new Uint8Array(credential.response.signature)),
+                userHandle: credential.response.userHandle
+                  ? bytesToB64u(new Uint8Array(credential.response.userHandle))
+                  : null
+              }
+            });
+            return fetch(
+              '/' + orgSlug + '/passkey/login/finish?login_session_id=' + encodeURIComponent(loginSessionID),
+              {
+                method: 'POST',
+                headers: {
+                  'Content-Type': 'application/json',
+                  'X-Passkey-Challenge': rawChallenge
+                },
+                body: body
+              }
+            );
+          });
+        })
+        .then(function (r) {
+          if (!r || !r.ok) { return; }
+          return r.json();
+        })
+        .then(function (data) {
+          if (data && data.resume_url) {
+            window.location.href = data.resume_url;
+          }
+        })
+        .catch(function () { /* silent — password form remains fully functional */ });
+    });
+
+    function b64uToBytes(b64u) {
+      var b64 = b64u.replace(/-/g, '+').replace(/_/g, '/');
+      var raw = atob(b64);
+      var buf = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) { buf[i] = raw.charCodeAt(i); }
+      return buf;
+    }
+    function bytesToB64u(buf) {
+      var bin = '';
+      buf.forEach(function (b) { bin += String.fromCharCode(b); });
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+  }());
+  </script>
+  {{end}}
+</body>
+</html>

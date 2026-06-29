@@ -1,0 +1,65 @@
+{{- define "clavex.notes" -}}
+Clavex has been deployed!
+
+1. Get the application URL:
+{{- if .Values.ingress.enabled }}
+{{- range $host := .Values.ingress.hosts }}
+  http{{ if $.Values.ingress.tls }}s{{ end }}://{{ $host.host }}
+{{- end }}
+{{- else if contains "NodePort" .Values.service.type }}
+  export NODE_PORT=$(kubectl get --namespace {{ .Release.Namespace }} -o jsonpath="{.spec.ports[0].nodePort}" services {{ include "clavex.fullname" . }})
+  export NODE_IP=$(kubectl get nodes --namespace {{ .Release.Namespace }} -o jsonpath="{.items[0].status.addresses[0].address}")
+  echo http://$NODE_IP:$NODE_PORT
+{{- else if contains "LoadBalancer" .Values.service.type }}
+  NOTE: It may take a few minutes for the LoadBalancer IP to become available.
+  kubectl get svc --namespace {{ .Release.Namespace }} {{ include "clavex.fullname" . }} --watch
+{{- else }}
+  kubectl --namespace {{ .Release.Namespace }} port-forward svc/{{ include "clavex.fullname" . }} 8080:{{ .Values.service.port }}
+  Then open: http://127.0.0.1:8080
+{{- end }}
+
+2. Required pre-install steps:
+   - Create the signing key secret:
+     kubectl create secret generic clavex-keys \
+       --namespace {{ .Release.Namespace }} \
+       --from-file=signing.pem=./keys/signing.pem
+
+   - Create the credentials secret (if not using values.yaml):
+     kubectl create secret generic clavex-creds \
+       --namespace {{ .Release.Namespace }} \
+       --from-literal=CLAVEX_DATABASE_DSN="postgres://user:pass@host:5432/clavex" \
+       --from-literal=CLAVEX_AUTH_ADMIN_SECRET="$(openssl rand -hex 32)"
+     # Then set existingSecret: clavex-creds in your values override.
+
+3. Run database migrations (done automatically via initContainer when runMigrationsOnStartup=true).
+
+4. External dependencies (not bundled in this chart):
+
+   PostgreSQL — required.
+   Install the Bitnami chart first, or use an external managed database:
+     helm repo add bitnami https://charts.bitnami.com/bitnami
+     helm install postgres bitnami/postgresql \
+       --set auth.database=clavex \
+       --set auth.username=clavex \
+       --set auth.password=<your-password>
+   Then set in your values override:
+     config.databaseDSN: "postgres://clavex:<password>@postgres-postgresql:5432/clavex"
+
+   Redis — required (session store, rate limiting, DPoP nonce store).
+     helm install redis bitnami/redis --set auth.enabled=false
+   Then set:
+     config.redisAddr: "redis-master:6379"
+
+5. GeoIP (optional — enables country-based policy rules and risk scoring):
+   Create a Secret containing your MaxMind mmdb files and enable the volume:
+     kubectl create secret generic clavex-geoip \
+       --from-file=GeoLite2-City.mmdb=./GeoLite2-City.mmdb \
+       --from-file=GeoLite2-ASN.mmdb=./GeoLite2-ASN.mmdb
+   Then in your values override:
+     geoip.enabled: true
+     geoip.secretName: clavex-geoip
+     config.geoipCityDbPath: /geoip/GeoLite2-City.mmdb
+     config.geoipAsnDbPath:  /geoip/GeoLite2-ASN.mmdb
+{{- end }}
+
+{{ template "clavex.notes" . }}

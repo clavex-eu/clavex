@@ -1,0 +1,84 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Authorize device{{if .OrgName}} — {{.OrgName}}{{end}}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #F5F4F0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .card { background: white; border-radius: 16px; padding: 40px 36px; max-width: 440px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.06); }
+    .logo-wrap { text-align: center; margin-bottom: 24px; }
+    .logo-img { height: 48px; object-fit: contain; }
+    .logo-initial { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 12px; background: #0F6E56; color: white; font-weight: 700; font-size: 20px; }
+    h1 { font-size: 20px; font-weight: 700; color: #1A2332; text-align: center; margin-bottom: 6px; }
+    .subtitle { font-size: 14px; color: #5F5E5A; text-align: center; margin-bottom: 24px; line-height: 1.5; }
+    .app-box { border: 1.5px solid #E8E7E3; border-radius: 12px; padding: 16px 18px; margin-bottom: 20px; }
+    .app-name { font-size: 15px; font-weight: 700; color: #1A2332; }
+    .app-scope { font-size: 13px; color: #5F5E5A; margin-top: 4px; }
+    .scope-list { margin-top: 12px; list-style: none; }
+    .scope-list li { font-size: 13px; color: #5F5E5A; padding: 4px 0; display: flex; align-items: center; gap: 8px; }
+    .scope-list li::before { content: '✓'; color: #0F6E56; font-weight: 700; }
+    .user-row { display: flex; align-items: center; gap: 10px; background: #F5F4F0; border-radius: 10px; padding: 10px 14px; margin-bottom: 20px; font-size: 13px; }
+    .avatar { width: 32px; height: 32px; border-radius: 50%; background: #0F6E5620; border: 1px solid #0F6E5640; display: flex; align-items: center; justify-content: center; font-weight: 700; font-size: 13px; color: #0F6E56; flex-shrink: 0; }
+    .user-email { color: #1A2332; font-weight: 600; }
+    .actions { display: flex; gap: 10px; }
+    .btn { flex: 1; padding: 12px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; text-align: center; transition: background 0.15s; }
+    .btn-allow { background: #0F6E56; color: white; }
+    .btn-allow:hover { background: #0A5C47; }
+    .btn-deny { background: white; color: #A32D2D; border: 1.5px solid #E8E7E3; }
+    .btn-deny:hover { background: #FCEBEB; border-color: #F0B8B8; }
+    .notice { font-size: 12px; color: #9E9E9B; text-align: center; margin-top: 16px; line-height: 1.5; }
+    .error { background: #FCEBEB; color: #A32D2D; font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo-wrap">
+      {{if .LogoURL}}
+        <img src="{{.LogoURL}}" alt="{{.OrgName}}" class="logo-img" />
+      {{else}}
+        <div class="logo-initial">{{if .OrgName}}{{slice .OrgName 0 1}}{{else}}?{{end}}</div>
+      {{end}}
+    </div>
+
+    <h1>Authorize device access</h1>
+    <p class="subtitle"><strong>{{.ClientName}}</strong> is requesting access to your account.</p>
+
+    {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+
+    <div class="app-box">
+      <div class="app-name">{{.ClientName}}</div>
+      {{if .Scope}}<div class="app-scope">Requested scopes: <strong>{{.Scope}}</strong></div>{{end}}
+      <ul class="scope-list">
+        {{range .ScopeItems}}<li>{{.}}</li>{{end}}
+      </ul>
+    </div>
+
+    <div class="user-row">
+      <div class="avatar">{{.UserInitial}}</div>
+      <div>
+        Signing in as <span class="user-email">{{.UserEmail}}</span>
+      </div>
+    </div>
+
+    <div class="actions">
+      <form method="POST" style="flex:1;">
+        <input type="hidden" name="dc_id" value="{{.DCID}}" />
+        <input type="hidden" name="action" value="deny" />
+        <button type="submit" class="btn btn-deny">Deny</button>
+      </form>
+      <form method="POST" style="flex:1;">
+        <input type="hidden" name="dc_id" value="{{.DCID}}" />
+        <input type="hidden" name="action" value="allow" />
+        <button type="submit" class="btn btn-allow">Allow access</button>
+      </form>
+    </div>
+
+    <p class="notice">
+      This will allow <strong>{{.ClientName}}</strong> to access your account
+      until you revoke access. Only approve if you initiated this request on a trusted device.
+    </p>
+  </div>
+</body>
+</html>

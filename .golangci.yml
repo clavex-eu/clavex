@@ -1,0 +1,67 @@
+version: "2"
+linters:
+  enable:
+    - errcheck
+    - govet
+    - ineffassign
+    - staticcheck
+    - unused
+    - misspell
+    - noctx
+  disable:
+    - exhaustruct
+    - wrapcheck
+    - depguard
+  settings:
+    misspell:
+      # British English is used throughout the codebase; Italian strings in user-facing messages are also present.
+      locale: UK
+      ignore-rules:
+        # Italian user-facing strings
+        - impossibile
+        - automatico
+        - configurato
+        - Identificativo
+        # American English terms that are part of the API contract, OAuth 2.0 standard, CSS/HTML or DB schema
+        - organization
+        - organizations
+        - Organization
+        - Organizations
+        - color
+        - colors
+        - Color
+        - Colors
+        - unauthorized
+        - Unauthorized
+        - center
+        - Center
+        - serialize
+        - Serialize
+        - serialized
+        - Serialized
+        - synthesized
+        - Synthesized
+        - specialized
+        - Specialized
+    errcheck:
+      exclude-functions:
+        - fmt.Fprintln
+        - fmt.Fprintf
+        - fmt.Fprint
+  exclusions:
+    rules:
+      - path: "_test\\.go"
+        linters: [errcheck, noctx]
+      # Ignoring errors from Close/Rollback in defers is idiomatic Go.
+      - linters: [errcheck]
+        text: "Error return value of `[^`]*(Close|Rollback)[^`]*` is not checked"
+      # Third-party vendored frontend dependencies — not our code.
+      - path: "frontend/node_modules/"
+        linters: [govet, misspell, staticcheck, errcheck, noctx, ineffassign, unused]
+
+formatters:
+  # gofmt is intentionally omitted here: golangci-lint bundles its own gofmt
+  # (github.com/golangci/gofmt, compiled against Go 1.24.x) which disagrees
+  # with the system gofmt (Go 1.26) on certain doc-comment indentation styles.
+  # Formatting is enforced by the separate 'gofmt -l .' step in CI instead.
+  enable: []

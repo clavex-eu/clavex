@@ -1,0 +1,87 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8"/>
+<title>OP Session Check</title>
+</head>
+<body>
+<!--
+  OIDC Session Management 1.0 §3.3 — check_session_iframe
+  This page is loaded in a hidden cross-origin iframe by the RP.
+  The RP periodically posts a message of the form:
+      "<client_id> <session_state>"
+  The OP script reads the clavex_bs cookie (non-HttpOnly browser state),
+  recomputes the session_state hash, and responds via postMessage with:
+      "unchanged" — session is still active
+      "changed"   — session has ended or changed (user logged out elsewhere)
+      "error"     — malformed message or crypto failure
+-->
+<script>
+"use strict";
+(function () {
+  var COOKIE_NAME = "clavex_bs";
+
+  function getCookie(name) {
+    var pairs = document.cookie.split("; ");
+    for (var i = 0; i < pairs.length; i++) {
+      var idx = pairs[i].indexOf("=");
+      if (idx > 0 && pairs[i].substring(0, idx) === name) {
+        return pairs[i].substring(idx + 1);
+      }
+    }
+    return "";
+  }
+
+  function b64url(bytes) {
+    // Convert ArrayBuffer to base64url without padding.
+    var arr = new Uint8Array(bytes);
+    var bin = "";
+    for (var i = 0; i < arr.length; i++) { bin += String.fromCharCode(arr[i]); }
+    return btoa(bin).replace(/\+/g, "-").replace(/\//g, "_").replace(/=+$/, "");
+  }
+
+  window.addEventListener("message", function (e) {
+    if (!e.origin || !e.data || typeof e.data !== "string") {
+      if (e.source) { e.source.postMessage("error", e.origin || "*"); }
+      return;
+    }
+
+    // Expected: "client_id session_state"
+    var spaceIdx = e.data.indexOf(" ");
+    if (spaceIdx < 1) {
+      e.source.postMessage("error", e.origin);
+      return;
+    }
+    var clientId    = e.data.substring(0, spaceIdx);
+    var sessionState = e.data.substring(spaceIdx + 1);
+
+    // Extract salt from session_state (last "." segment)
+    var dotIdx = sessionState.lastIndexOf(".");
+    if (dotIdx < 1) {
+      e.source.postMessage("error", e.origin);
+      return;
+    }
+    var salt         = sessionState.substring(dotIdx + 1);
+    var browserState = getCookie(COOKIE_NAME);
+
+    if (!browserState) {
+      // No browser-state cookie → session was deleted (logged out).
+      e.source.postMessage("changed", e.origin);
+      return;
+    }
+
+    // Recompute: sha256(client_id + " " + rp_origin + " " + browser_state + " " + salt)
+    var text    = clientId + " " + e.origin + " " + browserState + " " + salt;
+    var encoder = new TextEncoder();
+
+    crypto.subtle.digest("SHA-256", encoder.encode(text)).then(function (buf) {
+      var expected = b64url(buf) + "." + salt;
+      e.source.postMessage(expected === sessionState ? "unchanged" : "changed", e.origin);
+    }).catch(function () {
+      e.source.postMessage("error", e.origin);
+    });
+  }, false);
+}());
+</script>
+</body>
+</html>

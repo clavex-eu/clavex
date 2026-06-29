@@ -1,0 +1,203 @@
+dev: false
+
+http:
+  addr: ":8080"
+  base_domain: "clavex.eu"
+  # tls_cert_file: "/etc/clavex/tls/cert.pem"
+  # tls_key_file:  "/etc/clavex/tls/key.pem"
+
+# ─────────────────────────────────────────────────────────────
+# Database — scegli una delle due modalità
+# ─────────────────────────────────────────────────────────────
+database:
+
+  # Opzione A – database esterno (produzione SaaS, cluster esistente)
+  mode: external
+  dsn: "postgres://clavex:password@localhost:5432/clavex?sslmode=require"
+  max_conns: 20
+  min_conns: 2
+
+  # Opzione B – database embedded (self-hosted, nessun PostgreSQL richiesto)
+  # Il processo scarica e avvia un PostgreSQL bundled al primo avvio.
+  # I dati persistono in `data_dir` tra i riavvii.
+  #
+  # mode: embedded
+  # embedded:
+  #   data_dir: ""          # default: ~/.cache/clavex/pgdata
+  #   port: 5433
+  #   username: clavex
+  #   password: change-me-in-production
+  #   database: clavex
+  # max_conns: 10
+  # min_conns: 1
+
+redis:
+  # Mode: standalone (default) | cluster | sentinel
+  mode: standalone
+  addr: "localhost:6379"
+  password: ""
+  db: 0
+  pool_size: 10
+  min_idle_conn: 2
+
+  # Redis Cluster — set mode: cluster and list all seed nodes
+  # mode: cluster
+  # addrs:
+  #   - "redis-1:6379"
+  #   - "redis-2:6379"
+  #   - "redis-3:6379"
+
+  # Redis Sentinel — set mode: sentinel
+  # mode: sentinel
+  # master_name: "mymaster"
+  # sentinel_addrs:
+  #   - "sentinel-1:26379"
+  #   - "sentinel-2:26379"
+  # sentinel_password: ""
+
+  # TLS (any mode)
+  # tls_enabled: true
+  # tls_ca_file: "/etc/clavex/tls/redis-ca.crt"
+  # tls_cert_file: "/etc/clavex/tls/redis-client.crt"   # mTLS only
+  # tls_key_file:  "/etc/clavex/tls/redis-client.key"   # mTLS only
+
+auth:
+  signing_key_file: "/etc/clavex/keys/signing.pem"
+  issuer_base: "https://clavex.eu"
+  access_token_ttl: 3600       # 1 ora
+  refresh_token_ttl: 2592000   # 30 giorni
+  # REQUIRED: set a strong random secret for admin console JWTs.
+  # Generate with: openssl rand -hex 32
+  admin_secret: "CHANGE_ME_use_openssl_rand_hex_32"
+  # Optional: X.509 cert PEM for SAML IdP metadata.
+  # If omitted, a self-signed cert is auto-generated per org on first request.
+  # saml_cert_file: "/etc/clavex/keys/saml.crt"
+
+  # ── Post-Quantum Cryptography — NIST FIPS 204 ML-DSA (experimental) ────────
+  # When pqc_enabled=true, an ML-DSA-65 (Dilithium3) key pair is persisted in
+  # the database alongside the classical RSA key.  The PQC public key appears in
+  # the JWKS endpoint so PQC-aware clients can discover the capability.
+  # JWT signing remains classical (hybrid / passive mode).
+  # Requires: key_backend=db and key_encryption_key to be set.
+  # pqc_enabled: false
+  # pqc_algorithm: ml-dsa-65   # NIST FIPS 204 — only supported value for now
+
+  # ── Clavex Shield — Threat Intelligence (optional) ─────────────────────────
+  # When abuseipdb_key is set, every login IP is checked against AbuseIPDB and
+  # the Tor exit-node list.  Flagged IPs automatically add +20 to the risk score.
+  # Results are cached in-process (clean IPs for 6 h, flagged IPs for 1 h).
+  # Free AbuseIPDB account: https://www.abuseipdb.com/register
+  # abuseipdb_key: ""
+  # abuseipdb_threshold: 25   # minimum confidence % to flag as malicious (0-100)
+
+# ── Connectors ─────────────────────────────────────────────────────────────────
+# Connectors publish auth lifecycle events to external systems.
+# Multiple connectors of the same type can be configured.
+#
+# connectors:
+#   http:
+#     - url: "https://my-service.example.com/clavex-events"
+#       secret: "webhook-signing-secret"   # HMAC-SHA256 — leave empty to skip signing
+#       events: []                         # empty = all events; or e.g. ["user.login","token.issued"]
+#
+#   mqtt:
+#     - broker_url: "tcp://localhost:1883" # or ssl://... for TLS
+#       client_id: "clavex-events"
+#       username: ""
+#       password: ""
+#       topic_pattern: "clavex/%s"        # %s replaced with event name (dots→slashes)
+#       qos: 1
+#       events: []                         # empty = all events
+#
+# Available events:
+#   user.login           user.login.failed    user.logout
+#   token.issued         token.revoked
+#   mfa.success          mfa.failed
+#   password.reset       user.email.verified
+#   user.created         user.updated         user.deleted
+
+# ── Distributed Tracing (OpenTelemetry) ──────────────────────────────────────
+# Enables OTLP/HTTP trace export to any OTel-compatible backend
+# (Tempo, Jaeger, Honeycomb, Datadog, etc.).
+# Traces cover the full OIDC critical path: authorize → exchange → token,
+# including DB queries, JWT signing, geo-IP lookup, and policy evaluation.
+#
+# telemetry:
+#   enabled: true
+#   otlp_endpoint: "http://otel-collector:4318"   # OTLP/HTTP collector base URL
+#   service_name: "clavex"                         # resource.service.name in spans
+#   sample_rate: 1.0                               # 1.0 = 100% (reduce for high traffic)
+
+# ── Anonymous usage telemetry ────────────────────────────────────────────────
+# Sends a lightweight JSON ping to Clavex every 24 hours so we can track
+# active installations. No personal data is ever included.
+#
+# Payload: { installation_id, version, orgs, users, arch }
+#   installation_id = hex(sha256(hostname + stable_db_uuid))  — not reversible
+#
+# Enabled by default. Opt out by setting enabled: false.
+#
+# usage_reporting:
+#   enabled: true    # set to false to opt out
+#   endpoint: "https://telemetry.clavex.eu/v1/report"   # override for air-gapped relays
+
+# ── License ───────────────────────────────────────────────────────────────────
+# Community edition: one active organization, unlimited users — no license needed.
+# Enterprise licenses are distributed by email on purchase from Clavex.
+#
+# The license is a signed JWT (ES256). Verification is fully offline — no
+# network call is made at runtime. Obtain a license at https://clavex.eu/pricing
+#
+# Grace period: when the org count exceeds the license limit, a 30-day grace
+# period begins. During grace: X-Clavex-License-Warning header is added to all
+# API responses. After 30 days: OIDC authorize/token endpoints return 503.
+#
+# license:
+#   key_file: "/etc/clavex/license.jwt"
+
+
+# ── OID4VP / EUDI Wallet ──────────────────────────────────────────────────────
+# JAR signing certificate for x509_san_dns client_id_scheme (OID4VP 1.0 Final §5.7.1).
+# The certificate MUST have a dNSName SAN matching the server hostname and MUST be
+# signed by a CA trusted by the target wallet (e.g. Let's Encrypt / IGTF).
+#
+# When omitted, a self-signed ephemeral cert is generated at startup (fine for
+# development but rejected by production wallets — EUDI ARF requires a trusted CA).
+#
+# In Kubernetes, mount the TLS secret from cert-manager and point here:
+#   oid4vp:
+#     jar_cert_file: "/etc/clavex/tls/tls.crt"   # PEM — leaf + intermediates
+#     jar_key_file:  "/etc/clavex/tls/tls.key"   # PEM — EC private key (P-256)
+
+
+# ── PAM Security Alerts (Slack / Microsoft Teams) ────────────────────────────
+# When configured, Clavex fires real-time security alerts to Slack and/or Teams
+# for three high-priority PAM events:
+#
+#   1. Break-glass emergency access used  (PCI DSS 8.2.6 — critical)
+#   2. Vault credential overdue for rotation  (NIS2 Art.21 — warning)
+#   3. Privileged session running too long  (internal threshold — warning)
+#
+# Alerts use Slack Block Kit with inline action buttons and Teams Adaptive Card
+# format. Both channels are independent — configure one or both.
+#
+# pam_alerts:
+#   slack_webhook_url: "https://hooks.slack.com/services/T.../B.../..."
+#   teams_webhook_url: "https://xxx.webhook.office.com/webhookb2/..."
+#   admin_base_url: "https://admin.example.com"   # for deep-link buttons
+#   stale_credential_days: 30   # alert when rotation is N days overdue
+#   session_max_hours: 8        # alert when session exceeds N hours
+
+
+# ── Credential Marketplace ────────────────────────────────────────────────────
+# The Clavex Credential Marketplace is a centralised registry of verifiable
+# credential templates — like npm for credentials.  The registry itself lives
+# on a single "operator" installation (marketplace.clavex.eu / id.clavex.eu).
+#
+# Self-hosted and private SaaS nodes MUST leave operator: false (the default).
+# Setting operator: true enables the superadmin moderation endpoints
+# (list-pending, approve, reject) and advertises is_marketplace_operator=true
+# on GET /api/v1/server/features so the admin UI shows the Marketplace section.
+#
+# marketplace:
+#   operator: false   # true only on the central Clavex SaaS installation

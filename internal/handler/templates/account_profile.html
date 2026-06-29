@@ -1,0 +1,145 @@
+{{define "page"}}
+<div class="space-y-6">
+
+  {{/* ── Flash messages ── */}}
+  {{if .Flash}}
+  <div class="rounded-xl px-4 py-3 text-sm font-medium
+    {{if eq .Flash "erasure_email_sent"}}bg-blue-50 text-blue-800 border border-blue-200
+    {{else if eq .Flash "erasure_already_scheduled"}}bg-amber-50 text-amber-800 border border-amber-200
+    {{else if eq .Flash "erasure_cancelled"}}bg-emerald-50 text-emerald-800 border border-emerald-200
+    {{else if eq .Flash "erasure_cancel_failed"}}bg-red-50 text-red-800 border border-red-200
+    {{else}}bg-emerald-50 text-emerald-800 border border-emerald-200{{end}}">
+    {{if eq .Flash "erasure_email_sent"}}A confirmation email has been sent. Click the link in the email to schedule your account deletion.
+    {{else if eq .Flash "erasure_already_scheduled"}}Your account is already scheduled for deletion.
+    {{else if eq .Flash "erasure_cancelled"}}Your account deletion has been successfully cancelled. Your account remains active.
+    {{else if eq .Flash "erasure_cancel_failed"}}The cancellation link is invalid or the grace period has already elapsed.
+    {{else}}{{.Flash}}{{end}}
+  </div>
+  {{end}}
+
+  {{/* ── Erasure pending banner ── */}}
+  {{if .ErasurePending}}
+  <div class="rounded-xl border border-amber-200 bg-amber-50 px-4 py-4">
+    <div class="flex gap-3">
+      <svg class="h-5 w-5 text-amber-500 shrink-0 mt-0.5" fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M12 9v3.75m-9.303 3.376c-.866 1.5.217 3.374 1.948 3.374h14.71c1.73 0 2.813-1.874 1.948-3.374L13.949 3.378c-.866-1.5-3.032-1.5-3.898 0L2.697 16.126ZM12 15.75h.007v.008H12v-.008Z"/>
+      </svg>
+      <div class="text-sm text-amber-800">
+        <p class="font-semibold">Account deletion scheduled</p>
+        {{if .ErasurePending.ScheduledFor}}
+        <p class="mt-0.5">Your account and all personal data will be permanently erased on <strong>{{.ErasurePending.ScheduledFor.Format "January 2, 2006"}}</strong>. Check your email for a cancellation link if you changed your mind.</p>
+        {{else}}
+        <p class="mt-0.5">Awaiting your email confirmation. Check your inbox and click the confirmation link to schedule deletion.</p>
+        {{end}}
+      </div>
+    </div>
+  </div>
+  {{end}}
+
+  <!-- Profile section -->
+  <div class="bg-white rounded-2xl border border-gray-200 shadow-sm">
+    <div class="px-6 py-5 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-900">Personal information</h2>
+      <p class="mt-0.5 text-sm text-gray-500">Update your display name.</p>
+    </div>
+    <form method="POST" action="/{{.OrgSlug}}/account/profile" class="px-6 py-5 space-y-4">
+      <div class="grid sm:grid-cols-2 gap-4">
+        <div>
+          <label for="first_name" class="block text-sm font-medium text-gray-700 mb-1">First name</label>
+          <input type="text" id="first_name" name="first_name"
+                 value="{{if .User}}{{with .User.FirstName}}{{.}}{{end}}{{end}}"
+                 autocomplete="given-name"
+                 class="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900
+                        focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+        </div>
+        <div>
+          <label for="last_name" class="block text-sm font-medium text-gray-700 mb-1">Last name</label>
+          <input type="text" id="last_name" name="last_name"
+                 value="{{if .User}}{{with .User.LastName}}{{.}}{{end}}{{end}}"
+                 autocomplete="family-name"
+                 class="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900
+                        focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500" />
+        </div>
+      </div>
+      <div>
+        <label class="block text-sm font-medium text-gray-700 mb-1">Email</label>
+        <input type="email" value="{{if .User}}{{.User.Email}}{{end}}" readonly disabled
+               class="block w-full rounded-lg border border-gray-200 bg-gray-50 px-3 py-2 text-sm text-gray-500 cursor-not-allowed" />
+        <p class="mt-1 text-xs text-gray-400">Email address cannot be changed here.</p>
+      </div>
+      <div class="pt-1">
+        <button type="submit"
+                class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white
+                       hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 transition-colors">
+          Save changes
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Change password section -->
+  <div class="bg-white rounded-2xl border border-gray-200 shadow-sm">
+    <div class="px-6 py-5 border-b border-gray-100">
+      <h2 class="text-base font-semibold text-gray-900">Change password</h2>
+      <p class="mt-0.5 text-sm text-gray-500">Choose a strong password with at least 8 characters.</p>
+    </div>
+    <form method="POST" action="/{{.OrgSlug}}/account/password" class="px-6 py-5 space-y-4">
+      <div>
+        <label for="current_password" class="block text-sm font-medium text-gray-700 mb-1">Current password</label>
+        <input type="password" id="current_password" name="current_password" required autocomplete="current-password"
+               class="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900
+                      focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+               placeholder="••••••••" />
+      </div>
+      <div>
+        <label for="new_password" class="block text-sm font-medium text-gray-700 mb-1">New password</label>
+        <input type="password" id="new_password" name="new_password" required autocomplete="new-password"
+               class="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900
+                      focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+               placeholder="Min. 8 characters" />
+      </div>
+      <div>
+        <label for="confirm_password" class="block text-sm font-medium text-gray-700 mb-1">Confirm new password</label>
+        <input type="password" id="confirm_password" name="confirm_password" required autocomplete="new-password"
+               class="block w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-gray-900
+                      focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:border-emerald-500"
+               placeholder="••••••••" />
+      </div>
+      <div class="pt-1">
+        <button type="submit"
+                class="rounded-lg bg-emerald-600 px-4 py-2 text-sm font-semibold text-white
+                       hover:bg-emerald-700 focus:outline-none focus:ring-2 focus:ring-emerald-500 focus:ring-offset-2 transition-colors">
+          Update password
+        </button>
+      </div>
+    </form>
+  </div>
+
+  <!-- Delete account section -->
+  {{if not .ErasurePending}}
+  <div class="bg-white rounded-2xl border border-red-200 shadow-sm">
+    <div class="px-6 py-5 border-b border-red-100">
+      <h2 class="text-base font-semibold text-red-700">Delete my account</h2>
+      <p class="mt-0.5 text-sm text-gray-500">
+        Permanently erase your account and all associated personal data (GDPR Article 17).
+        This action cannot be undone after the 30-day grace period.
+      </p>
+    </div>
+    <div class="px-6 py-5">
+      <form method="POST" action="/{{.OrgSlug}}/account/erasure/request"
+            onsubmit="return confirm('Are you sure? A confirmation email will be sent. You will have 30 days to cancel before your data is permanently erased.')">
+        <button type="submit"
+                class="rounded-lg border border-red-300 bg-white px-4 py-2 text-sm font-semibold text-red-600
+                       hover:bg-red-50 hover:border-red-400 focus:outline-none focus:ring-2 focus:ring-red-400 focus:ring-offset-2 transition-colors">
+          Request account deletion
+        </button>
+      </form>
+      <p class="mt-2 text-xs text-gray-400">
+        You will receive an email with a one-time confirmation link. After confirming, your account will be deleted in 30 days.
+      </p>
+    </div>
+  </div>
+  {{end}}
+
+</div>
+{{end}}

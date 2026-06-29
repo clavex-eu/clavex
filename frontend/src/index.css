@@ -1,0 +1,134 @@
+@import "tailwindcss";
+@config "../tailwind.config.js";
+
+:root {
+  /* Primary — Teal */
+  --clavex-900: #04342C;
+  --clavex-800: #085041;
+  --clavex-700: #0F6E56;
+  --clavex-primary: #1D9E75;
+  --clavex-400: #5DCAA5;
+  --clavex-200: #9FE1CB;
+  --clavex-50:  #E1F5EE;
+
+  /* Surface */
+  --clavex-surface: #F0FAF6;
+  --clavex-surface-card: #FFFFFF;
+
+  /* Ink */
+  --clavex-ink: #1A2332;
+  --clavex-text: #1A2332;
+  --clavex-ink-muted: #444441;
+  --clavex-ink-subtle: #5F5E5A;
+  --clavex-neutral: #888780;
+  --clavex-border: #9FE1CB;
+  --clavex-border-subtle: #D3D1C7;
+
+  /* Dark mode bg */
+  --clavex-dark: #0D1F2D;
+  --clavex-dark-surface: #12293D;
+
+  /* Accent */
+  --clavex-accent: #1D9E75;
+  --clavex-accent-purple: #534AB7;
+  --clavex-accent-coral: #D85A30;
+  --clavex-accent-amber: #BA7517;
+
+  /* Semantic */
+  --clavex-success: #1D9E75;
+  --clavex-warning: #BA7517;
+  --clavex-danger: #E24B4A;
+  --clavex-info: #185FA5;
+
+  /* Radius */
+  --clavex-radius-sm: 6px;
+  --clavex-radius-md: 8px;
+  --clavex-radius-lg: 12px;
+  --clavex-radius-xl: 16px;
+  --clavex-radius-pill: 20px;
+}
+
+@layer base {
+  *, *::before, *::after { box-sizing: border-box; }
+
+  html {
+    -webkit-font-smoothing: antialiased;
+    -moz-osx-font-smoothing: grayscale;
+    scroll-behavior: smooth;
+  }
+
+  body {
+    font-family: 'Plus Jakarta Sans', ui-sans-serif, system-ui, sans-serif;
+    background: var(--clavex-surface);
+    color: var(--clavex-ink);
+    font-size: 14px;
+  }
+
+  :focus-visible {
+    outline: none;
+    box-shadow: 0 0 0 3px rgba(29, 158, 117, 0.25);
+  }
+}
+
+@layer components {
+  /* Sidebar nav links — designed for dark sidebar */
+  .sidebar-link {
+    @apply flex items-center gap-2.5 px-3 py-2 rounded-lg text-sm font-medium transition-all duration-150;
+    color: rgba(196, 223, 240, 0.55);
+  }
+  .sidebar-link:hover:not(.active) {
+    color: var(--clavex-200);
+    background: rgba(18, 41, 61, 0.8);
+  }
+  .sidebar-link.active {
+    color: var(--clavex-400);
+    background: var(--clavex-dark-surface);
+    border-right: 2px solid var(--clavex-primary);
+    border-radius: 8px 0 0 8px;
+  }
+
+  .table-row {
+    @apply flex items-center gap-4 px-6 py-3.5 last:border-0 hover:bg-[#F0FAF6] transition-colors;
+    border-bottom: 0.5px solid var(--clavex-surface);
+  }
+
+  .input-base {
+    @apply w-full px-3.5 py-2.5 text-sm outline-none transition-shadow duration-150 disabled:cursor-not-allowed;
+    border: 0.5px solid var(--clavex-border-subtle);
+    border-radius: var(--clavex-radius-md);
+    font-family: 'Plus Jakarta Sans', sans-serif;
+    color: var(--clavex-ink);
+    background: white;
+  }
+  .input-base::placeholder { color: var(--clavex-neutral); }
+  .input-base:focus {
+    border-color: var(--clavex-primary);
+    box-shadow: 0 0 0 3px rgba(29, 158, 117, 0.12);
+  }
+  .input-base:disabled {
+    background: var(--clavex-surface);
+    color: var(--clavex-neutral);
+    opacity: 0.7;
+  }
+
+  .input-sm {
+    @apply w-full px-2.5 py-1.5 text-xs outline-none transition-shadow duration-150 rounded-md;
+    border: 1px solid #d1d5db;
+    color: var(--clavex-ink);
+    background: white;
+  }
+  .input-sm:focus {
+    border-color: var(--clavex-primary);
+    box-shadow: 0 0 0 2px rgba(29, 158, 117, 0.12);
+  }
+}
+
+/* Custom scrollbar */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: var(--clavex-border); border-radius: 9999px; }
+::-webkit-scrollbar-thumb:hover { background: var(--clavex-400); }
+
+@keyframes spin { to { transform: rotate(360deg); } }
+@keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+@keyframes slideUp { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: translateY(0); } }

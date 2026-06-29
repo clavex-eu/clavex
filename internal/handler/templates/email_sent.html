@@ -1,0 +1,28 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Check Your Email</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #F0F4F8; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: white; border-radius: 16px; padding: 48px; max-width: 440px; width: 100%; text-align: center; box-shadow: 0 4px 24px rgba(0,0,0,.06); }
+    .icon { font-size: 48px; margin-bottom: 24px; }
+    h1 { font-size: 22px; font-weight: 700; color: #0D1F2D; margin-bottom: 12px; }
+    p { font-size: 14px; color: #6B7A8D; line-height: 1.6; }
+    .email { font-weight: 600; color: #0D1F2D; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="icon">📧</div>
+    <h1>Check your inbox</h1>
+    <p>We've sent a verification link to <span class="email">{{.Email}}</span>.<br>
+    Click the link in the email to verify your address and continue signing in.</p>
+    <p style="margin-top:24px;font-size:12px;color:#9CA3AF">
+      Didn't receive it? Check your spam folder. The link expires in 30 minutes.
+    </p>
+  </div>
+</body>
+</html>

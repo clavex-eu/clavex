@@ -1,0 +1,76 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Sign in to activate device{{if .OrgName}} — {{.OrgName}}{{end}}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #F5F4F0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .card { background: white; border-radius: 16px; padding: 40px 36px; max-width: 420px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.06); }
+    .logo-wrap { text-align: center; margin-bottom: 28px; }
+    .logo-img { height: 48px; object-fit: contain; }
+    .logo-initial { display: inline-flex; align-items: center; justify-content: center; width: 48px; height: 48px; border-radius: 12px; background: #0F6E56; color: white; font-weight: 700; font-size: 20px; }
+    .context-badge { display: inline-flex; align-items: center; gap: 6px; background: #E1F5EE; color: #0F6E56; font-size: 11px; font-weight: 600; padding: 5px 10px; border-radius: 999px; margin: 0 auto 20px; }
+    .context-wrap { text-align: center; }
+    h1 { font-size: 20px; font-weight: 700; color: #1A2332; margin-bottom: 6px; text-align: center; }
+    .subtitle { font-size: 14px; color: #5F5E5A; text-align: center; margin-bottom: 28px; line-height: 1.5; }
+    .field { margin-bottom: 14px; }
+    label { display: block; font-size: 13px; font-weight: 600; color: #1A2332; margin-bottom: 6px; }
+    input[type=email], input[type=password] { width: 100%; padding: 11px 14px; border: 1.5px solid #E8E7E3; border-radius: 10px; font-size: 14px; color: #1A2332; outline: none; transition: border-color 0.15s; }
+    input[type=email]:focus, input[type=password]:focus { border-color: #0F6E56; box-shadow: 0 0 0 3px rgba(15,110,86,0.1); }
+    .btn { display: block; width: 100%; padding: 12px; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; border: none; background: #0F6E56; color: white; margin-top: 8px; transition: background 0.15s; }
+    .btn:hover { background: #0A5C47; }
+    .error { background: #FCEBEB; color: #A32D2D; font-size: 13px; padding: 10px 14px; border-radius: 8px; margin-bottom: 16px; }
+    .locked-msg { background: #FFF7E0; color: #854F0B; font-size: 13px; padding: 12px 14px; border-radius: 8px; margin-bottom: 16px; line-height: 1.5; }
+    .device-info { background: #F5F4F0; border-radius: 10px; padding: 12px 14px; margin-bottom: 20px; font-size: 13px; color: #5F5E5A; }
+    .device-info strong { color: #1A2332; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    <div class="logo-wrap">
+      {{if .LogoURL}}
+        <img src="{{.LogoURL}}" alt="{{.OrgName}}" class="logo-img" />
+      {{else}}
+        <div class="logo-initial">{{if .OrgName}}{{slice .OrgName 0 1}}{{else}}?{{end}}</div>
+      {{end}}
+    </div>
+
+    <div class="context-wrap">
+      <span class="context-badge">🖥 Device activation</span>
+    </div>
+
+    <h1>Sign in to activate</h1>
+    <p class="subtitle">Sign in to grant access to <strong>{{.ClientName}}</strong> on your device.</p>
+
+    {{if .ClientName}}
+    <div class="device-info">
+      Activating: <strong>{{.ClientName}}</strong>
+      {{if .Scope}} · Scopes: <strong>{{.Scope}}</strong>{{end}}
+    </div>
+    {{end}}
+
+    {{if .LockedUntil}}
+    <div class="locked-msg">
+      🔒 Your account is temporarily locked due to too many failed attempts.
+      Please try again in <strong>{{.LockedUntil}}</strong>.
+    </div>
+    {{else}}
+      {{if .Error}}<div class="error">{{.Error}}</div>{{end}}
+      <form method="POST">
+        <input type="hidden" name="dc_id" value="{{.DCID}}" />
+        <div class="field">
+          <label for="email">Email</label>
+          <input id="email" type="email" name="email" value="{{.Email}}" autocomplete="email" required autofocus />
+        </div>
+        <div class="field">
+          <label for="password">Password</label>
+          <input id="password" type="password" name="password" autocomplete="current-password" required />
+        </div>
+        <button type="submit" class="btn">Sign in and activate</button>
+      </form>
+    {{end}}
+  </div>
+</body>
+</html>

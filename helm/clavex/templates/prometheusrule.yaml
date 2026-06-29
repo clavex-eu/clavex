@@ -1,0 +1,223 @@
+{{- if .Values.prometheusRule.enabled }}
+{{- /*
+  PrometheusRule for Clavex — picked up automatically by Prometheus Operator
+  when the CRD and namespace/label selectors are in place.
+
+  All thresholds are configurable via values.yaml (prometheusRule.thresholds.*).
+  Rules are grouped by concern so they appear in separate Alertmanager groups.
+*/}}
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: {{ include "clavex.fullname" . }}
+  namespace: {{ .Values.prometheusRule.namespace | default .Release.Namespace }}
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    {{- with .Values.prometheusRule.additionalLabels }}
+    {{- toYaml . | nindent 4 }}
+    {{- end }}
+spec:
+  groups:
+
+    # ── Brute-force / credential stuffing ────────────────────────────────────
+    - name: clavex.auth
+      interval: 60s
+      rules:
+
+        # Fires when an org is receiving an unusual volume of login failures in
+        # a 5-minute window — classic sign of a brute-force or stuffing attack.
+        - alert: ClavexBruteForceDetected
+          expr: |
+            sum by (org) (
+              increase(clavex_logins_total{status="failure"}[5m])
+            ) > {{ .Values.prometheusRule.thresholds.bruteForceFailures5m }}
+          for: 0m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "Brute-force detected for org {{ "{{ $labels.org }}" }}"
+            description: >-
+              Org {{ "{{ $labels.org }}" }} received {{ "{{ $value | humanize }}" }} login failures
+              in the last 5 minutes (threshold: {{ .Values.prometheusRule.thresholds.bruteForceFailures5m }}).
+              Possible credential-stuffing or brute-force attack.
+            runbook_url: "https://docs.clavex.eu/runbooks/brute-force"
+
+        # Sustained high failure rate (>10 %) over 10 minutes — softer signal
+        # that covers slow/distributed attacks that stay under the absolute threshold.
+        - alert: ClavexHighLoginFailureRate
+          expr: |
+            (
+              sum by (org) (rate(clavex_logins_total{status="failure"}[10m]))
+              /
+              clamp_min(sum by (org) (rate(clavex_logins_total[10m])), 0.001)
+            ) > {{ .Values.prometheusRule.thresholds.loginFailureRatePct | divf 100 }}
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: "High login failure rate for org {{ "{{ $labels.org }}" }}"
+            description: >-
+              Org {{ "{{ $labels.org }}" }} failure rate is {{ "{{ $value | humanizePercentage }}" }}
+              over the last 10 minutes (threshold: {{ .Values.prometheusRule.thresholds.loginFailureRatePct }}%).
+
+    # ── Risk score ───────────────────────────────────────────────────────────
+    - name: clavex.risk
+      interval: 60s
+      rules:
+
+        # p90 risk score exceeding the warning threshold could indicate a wave
+        # of sessions from unusual locations / devices.
+        - alert: ClavexHighRiskScoreP90
+          expr: |
+            histogram_quantile(0.90,
+              sum by (le, org) (rate(clavex_risk_score_bucket[10m]))
+            ) > {{ .Values.prometheusRule.thresholds.riskScoreP90 }}
+          for: 5m
+          labels:
+            severity: warning
+            team: security
+          annotations:
+            summary: "Elevated p90 risk score for org {{ "{{ $labels.org }}" }}"
+            description: >-
+              90th-percentile risk score for org {{ "{{ $labels.org }}" }} is
+              {{ "{{ $value | humanize }}" }} (threshold: {{ .Values.prometheusRule.thresholds.riskScoreP90 }}).
+              Review recent logins for anomalous patterns.
+            runbook_url: "https://docs.clavex.eu/runbooks/risk-score"
+
+        # Critical: p99 risk score signals that nearly all sessions are high-risk.
+        - alert: ClavexHighRiskScoreP99
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, org) (rate(clavex_risk_score_bucket[10m]))
+            ) > {{ .Values.prometheusRule.thresholds.riskScoreP99 }}
+          for: 2m
+          labels:
+            severity: critical
+            team: security
+          annotations:
+            summary: "Critical risk score spike for org {{ "{{ $labels.org }}" }}"
+            description: >-
+              99th-percentile risk score for org {{ "{{ $labels.org }}" }} is
+              {{ "{{ $value | humanize }}" }} (threshold: {{ .Values.prometheusRule.thresholds.riskScoreP99 }}).
+
+    # ── Elevate / step-up MFA ────────────────────────────────────────────────
+    - name: clavex.elevate
+      interval: 60s
+      rules:
+
+        # Low completion rate means users are abandoning step-up MFA — could be
+        # UX friction, a broken TOTP/passkey flow, or an expired challenge loop.
+        - alert: ClavexElevateLowCompletionRate
+          expr: |
+            (
+              sum(rate(clavex_elevate_challenges_total{status="completed"}[10m]))
+              /
+              clamp_min(sum(rate(clavex_elevate_challenges_total{status="created"}[10m])), 0.001)
+            ) < {{ .Values.prometheusRule.thresholds.elevateCompletionRateMin | divf 100 }}
+          for: 5m
+          labels:
+            severity: warning
+            team: product
+          annotations:
+            summary: "Elevate (step-up MFA) completion rate is low"
+            description: >-
+              Step-up MFA completion rate is {{ "{{ $value | humanizePercentage }}" }}
+              (minimum: {{ .Values.prometheusRule.thresholds.elevateCompletionRateMin }}%).
+              Users may be stuck or the MFA flow may be broken.
+            runbook_url: "https://docs.clavex.eu/runbooks/elevate"
+
+        # Spike in failed elevate challenges — possible TOTP clock skew or passkey issues.
+        - alert: ClavexElevateHighFailureRate
+          expr: |
+            sum(rate(clavex_elevate_challenges_total{status="failed"}[5m]))
+            /
+            clamp_min(sum(rate(clavex_elevate_challenges_total{status="created"}[5m])), 0.001)
+            > {{ .Values.prometheusRule.thresholds.elevateFailureRatePct | divf 100 }}
+          for: 3m
+          labels:
+            severity: warning
+            team: product
+          annotations:
+            summary: "High Elevate (step-up MFA) failure rate"
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of step-up MFA challenges failed
+              in the last 5 minutes (threshold: {{ .Values.prometheusRule.thresholds.elevateFailureRatePct }}%).
+
+    # ── HTTP latency / availability ───────────────────────────────────────────
+    - name: clavex.http
+      interval: 60s
+      rules:
+
+        # p99 latency degradation — catches slow auth endpoints before users notice.
+        - alert: ClavexHTTPLatencyP99High
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, route) (rate(clavex_http_request_duration_seconds_bucket[5m]))
+            ) > {{ .Values.prometheusRule.thresholds.httpLatencyP99Seconds }}
+          for: 5m
+          labels:
+            severity: warning
+            team: ops
+          annotations:
+            summary: "High p99 HTTP latency on route {{ "{{ $labels.route }}" }}"
+            description: >-
+              Route {{ "{{ $labels.route }}" }} p99 latency is
+              {{ "{{ $value | humanizeDuration }}" }}
+              (threshold: {{ .Values.prometheusRule.thresholds.httpLatencyP99Seconds }}s).
+            runbook_url: "https://docs.clavex.eu/runbooks/latency"
+
+        # Critical: p99 > 2× threshold signals severe degradation.
+        - alert: ClavexHTTPLatencyP99Critical
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le, route) (rate(clavex_http_request_duration_seconds_bucket[5m]))
+            ) > {{ .Values.prometheusRule.thresholds.httpLatencyP99Seconds | mulf 2 }}
+          for: 2m
+          labels:
+            severity: critical
+            team: ops
+          annotations:
+            summary: "Critical p99 HTTP latency on route {{ "{{ $labels.route }}" }}"
+            description: >-
+              Route {{ "{{ $labels.route }}" }} p99 latency is
+              {{ "{{ $value | humanizeDuration }}" }}.
+              Auth service may be severely degraded.
+            runbook_url: "https://docs.clavex.eu/runbooks/latency"
+
+        # High 5xx error rate — Clavex returning server errors.
+        - alert: ClavexHTTPHighErrorRate
+          expr: |
+            (
+              sum by (route) (rate(clavex_http_request_duration_seconds_count{code=~"5.."}[5m]))
+              /
+              clamp_min(sum by (route) (rate(clavex_http_request_duration_seconds_count[5m])), 0.001)
+            ) > {{ .Values.prometheusRule.thresholds.http5xxRatePct | divf 100 }}
+          for: 3m
+          labels:
+            severity: critical
+            team: ops
+          annotations:
+            summary: "High HTTP 5xx error rate on route {{ "{{ $labels.route }}" }}"
+            description: >-
+              {{ "{{ $value | humanizePercentage }}" }} of requests to
+              {{ "{{ $labels.route }}" }} returned 5xx in the last 5 minutes
+              (threshold: {{ .Values.prometheusRule.thresholds.http5xxRatePct }}%).
+            runbook_url: "https://docs.clavex.eu/runbooks/errors"
+
+        # Token endpoint is critical — alert separately if it goes dark.
+        - alert: ClavexTokenEndpointDown
+          expr: |
+            absent(rate(clavex_http_request_duration_seconds_count{route="/:org_slug/token"}[5m]))
+          for: 2m
+          labels:
+            severity: critical
+            team: ops
+          annotations:
+            summary: "Clavex token endpoint has no traffic"
+            description: >-
+              No requests have reached the /:org_slug/token endpoint for 2 minutes.
+              The service may be down or the route is misconfigured.
+
+{{- end }}

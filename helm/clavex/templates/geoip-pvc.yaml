@@ -1,0 +1,23 @@
+{{- if and .Values.geoip.enabled .Values.geoip.pvc.create (not .Values.geoip.pvc.existingClaim) }}
+## ── GeoIP mmdb PersistentVolumeClaim ─────────────────────────────────────────
+# Holds the MaxMind mmdb files. A real GeoLite2-City.mmdb (~60MB) cannot fit in
+# a Kubernetes Secret (~1.5MB object limit), so the databases live on this PVC.
+# Mounted read-only by the clavex pod and read-write by the updater
+# initContainer / CronJob.
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: {{ include "clavex.fullname" . }}-geoip-data
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: geoip
+spec:
+  accessModes:
+    - {{ .Values.geoip.pvc.accessMode | default "ReadWriteOnce" }}
+  resources:
+    requests:
+      storage: {{ .Values.geoip.pvc.size | default "500Mi" }}
+  {{- with .Values.geoip.pvc.storageClassName }}
+  storageClassName: {{ . | quote }}
+  {{- end }}
+{{- end }}

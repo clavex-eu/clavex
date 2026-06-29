@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Set Up Your Passkey</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #F0F4F8; min-height: 100vh; display: flex; align-items: center; justify-content: center; }
+    .card { background: white; border-radius: 16px; padding: 48px; max-width: 460px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.06); }
+    .logo { height: 36px; margin-bottom: 24px; }
+    h1 { font-size: 22px; font-weight: 700; color: #0D1F2D; margin-bottom: 8px; }
+    .subtitle { font-size: 14px; color: #6B7A8D; margin-bottom: 28px; line-height: 1.6; }
+    .btn { width: 100%; padding: 13px; background: #1D9E75; color: white; border: none; border-radius: 10px; font-size: 14px; font-weight: 600; cursor: pointer; display: flex; align-items: center; justify-content: center; gap: 8px; transition: background .15s; }
+    .btn:hover:not(:disabled) { background: #178A65; }
+    .btn:disabled { opacity: .6; cursor: not-allowed; }
+    .btn svg { width: 18px; height: 18px; flex-shrink: 0; }
+    .skip { margin-top: 12px; text-align: center; font-size: 13px; color: #9CA3AF; }
+    .skip a { color: #6B7A8D; text-decoration: underline; }
+    .error { background: #FEF2F2; border: 1px solid #FECACA; color: #DC2626; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
+    .info { background: #F0FDF4; border: 1px solid #A7F3D0; color: #065F46; padding: 10px 14px; border-radius: 8px; font-size: 13px; margin-bottom: 20px; }
+    .features { list-style: none; margin-bottom: 28px; }
+    .features li { font-size: 13px; color: #374151; padding: 5px 0; display: flex; align-items: center; gap: 8px; }
+    .features li::before { content: "✓"; color: #1D9E75; font-weight: 700; }
+    #status { display: none; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {{if .LogoURL}}
+    <img src="{{.LogoURL}}" alt="{{.OrgName}}" class="logo" />
+    {{end}}
+
+    <h1>Set up your passkey</h1>
+    <p class="subtitle">
+      Your organisation requires a passkey before you can access this application.
+      Passkeys are faster and more secure than passwords — they use Face ID, Touch ID,
+      or your device PIN.
+    </p>
+
+    {{if .Error}}
+    <div class="error">{{.Error}}</div>
+    {{end}}
+
+    <ul class="features">
+      <li>No password to remember or leak</li>
+      <li>Syncs to iCloud Keychain or Google Password Manager</li>
+      <li>Phishing-resistant by design</li>
+    </ul>
+
+    <div id="status" class="info"></div>
+
+    <button id="enroll-btn" class="btn">
+      <svg fill="none" stroke="currentColor" stroke-width="1.5" viewBox="0 0 24 24">
+        <path stroke-linecap="round" stroke-linejoin="round" d="M15.75 5.25a3 3 0 0 1 3 3m3 0a6 6 0 0 1-7.029 5.912c-.563-.097-1.159.026-1.563.43L10.5 17.25H8.25v2.25H6v2.25H2.25v-2.818c0-.597.237-1.17.659-1.591l6.499-6.499c.404-.404.527-1 .43-1.563A6 6 0 0 1 21.75 8.25Z"/>
+      </svg>
+      Create passkey
+    </button>
+  </div>
+
+  <script nonce="{{.Nonce}}">
+  (function () {
+    var orgSlug = {{.OrgSlug | js}};
+    var sessID  = {{.LoginSessionID | js}};
+    var btn     = document.getElementById('enroll-btn');
+    var status  = document.getElementById('status');
+
+    function showStatus(msg, isError) {
+      status.textContent = msg;
+      status.className = isError ? 'error' : 'info';
+      status.style.display = 'block';
+    }
+
+    // base64url ↔ ArrayBuffer helpers (no external dependency)
+    function b64uToBytes(b64u) {
+      var b64 = b64u.replace(/-/g, '+').replace(/_/g, '/');
+      while (b64.length % 4) b64 += '=';
+      var raw = atob(b64);
+      var buf = new Uint8Array(raw.length);
+      for (var i = 0; i < raw.length; i++) buf[i] = raw.charCodeAt(i);
+      return buf;
+    }
+    function bytesToB64u(buf) {
+      var bin = '';
+      new Uint8Array(buf).forEach(function(b) { bin += String.fromCharCode(b); });
+      return btoa(bin).replace(/\+/g, '-').replace(/\//g, '_').replace(/=/g, '');
+    }
+
+    if (!window.PublicKeyCredential) {
+      showStatus('Your browser does not support passkeys. Please use a modern browser (Chrome, Safari, Edge, Firefox).', true);
+      btn.disabled = true;
+      return;
+    }
+
+    btn.addEventListener('click', function () {
+      btn.disabled = true;
+      btn.textContent = 'Opening authenticator…';
+      showStatus('', false);
+      status.style.display = 'none';
+
+      // Step 1: get registration options from the server
+      fetch('/' + orgSlug + '/enroll-passkey/begin?login_session_id=' + encodeURIComponent(sessID), {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: 'login_session_id=' + encodeURIComponent(sessID)
+      })
+        .then(function (r) {
+          if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || 'Server error ' + r.status); });
+          return r.json();
+        })
+        .then(function (opts) {
+          var pk = opts.publicKey;
+          // Decode binary fields that the browser expects as ArrayBuffer
+          pk.challenge = b64uToBytes(pk.challenge);
+          pk.user.id   = b64uToBytes(pk.user.id);
+          (pk.excludeCredentials || []).forEach(function (c) { c.id = b64uToBytes(c.id); });
+
+          btn.textContent = 'Waiting for your authenticator…';
+
+          // Step 2: ask the browser to create the credential
+          return navigator.credentials.create({ publicKey: pk });
+        })
+        .then(function (credential) {
+          if (!credential) throw new Error('No credential returned');
+          var attResp = credential.response;
+
+          // Serialize the credential for the finish endpoint
+          var body = JSON.stringify({
+            id:    credential.id,
+            rawId: bytesToB64u(credential.rawId),
+            type:  credential.type,
+            response: {
+              clientDataJSON:    bytesToB64u(attResp.clientDataJSON),
+              attestationObject: bytesToB64u(attResp.attestationObject),
+              transports: attResp.getTransports ? attResp.getTransports() : []
+            }
+          });
+
+          btn.textContent = 'Saving passkey…';
+
+          // Step 3: send credential to the server to complete registration
+          return fetch(
+            '/' + orgSlug + '/enroll-passkey/finish?login_session_id=' + encodeURIComponent(sessID),
+            { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: body }
+          );
+        })
+        .then(function (r) {
+          if (r.redirected) {
+            // Server redirected to /authorize/resume — follow it
+            window.location.href = r.url;
+            return;
+          }
+          if (!r.ok) return r.json().then(function(e) { throw new Error(e.message || 'Finish failed'); });
+          // Fallback: redirect manually
+          window.location.href = '/' + orgSlug + '/authorize/resume?login_session_id=' + encodeURIComponent(sessID);
+        })
+        .catch(function (err) {
+          if (err && (err.name === 'AbortError' || err.name === 'NotAllowedError')) {
+            // User cancelled or dismissed the dialog — let them try again
+            btn.disabled = false;
+            btn.textContent = 'Create passkey';
+            return;
+          }
+          showStatus('Could not create passkey: ' + (err.message || 'unknown error'), true);
+          btn.disabled = false;
+          btn.textContent = 'Try again';
+        });
+    });
+  }());
+  </script>
+</body>
+</html>

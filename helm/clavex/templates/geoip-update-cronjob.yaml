@@ -1,0 +1,179 @@
+{{- if and .Values.geoip.enabled .Values.geoip.autoUpdate.enabled }}
+{{- /*
+  GeoIP auto-update CronJob — prevents MaxMind databases from going stale.
+
+  The job runs on the schedule defined in .Values.geoip.autoUpdate.schedule
+  (default: every Tuesday at 03:00 UTC, when MaxMind publishes new builds).
+
+  Steps:
+    1. Download each database in .Values.geoip.autoUpdate.databases from
+       https://download.maxmind.com using HTTP Basic auth (account:license).
+    2. Extract the .mmdb and atomically replace the copy on the GeoIP PVC.
+    3. Trigger a rolling restart of the main Deployment (the mmdb is opened once
+       at startup) and wait for kubectl rollout status to confirm healthy.
+
+  The mmdb files live on a PVC (not a Secret) because a real GeoLite2-City.mmdb
+  (~60MB) far exceeds the ~1.5MB Kubernetes Secret/etcd object limit.
+
+  Required secret (.Values.geoip.autoUpdate.licenseSecret):
+    MAXMIND_ACCOUNT_ID  — numeric MaxMind account ID
+    MAXMIND_LICENSE_KEY — MaxMind license key
+
+  RBAC: a dedicated ServiceAccount, Role, and RoleBinding are created with
+  least-privilege access (deployment rollout scoped to this release only).
+*/}}
+{{- $licenseSecret := required "geoip.autoUpdate.licenseSecret must be set when geoip.autoUpdate.enabled is true" .Values.geoip.autoUpdate.licenseSecret }}
+## ── ServiceAccount ──────────────────────────────────────────────────────────
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: {{ include "clavex.fullname" . }}-geoip-updater
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: geoip-updater
+---
+## ── Role ─────────────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "clavex.fullname" . }}-geoip-updater
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: geoip-updater
+rules:
+  # kubectl rollout restart patches spec.template.metadata.annotations
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    resourceNames: [{{ include "clavex.fullname" . | quote }}]
+    verbs: ["get", "patch"]
+  # kubectl rollout status reads deployment + replicasets
+  - apiGroups: ["apps"]
+    resources: ["deployments/status"]
+    resourceNames: [{{ include "clavex.fullname" . | quote }}]
+    verbs: ["get", "watch"]
+  # ReplicaSet names are generated (hash suffix) — resourceNames filter not applicable
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+---
+## ── RoleBinding ──────────────────────────────────────────────────────────────
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "clavex.fullname" . }}-geoip-updater
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: geoip-updater
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "clavex.fullname" . }}-geoip-updater
+    namespace: {{ .Release.Namespace }}
+roleRef:
+  kind: Role
+  name: {{ include "clavex.fullname" . }}-geoip-updater
+  apiGroup: rbac.authorization.k8s.io
+---
+## ── CronJob ──────────────────────────────────────────────────────────────────
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "clavex.fullname" . }}-geoip-update
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: geoip-updater
+spec:
+  schedule: {{ .Values.geoip.autoUpdate.schedule | default "0 3 * * 2" | quote }}
+  timeZone: {{ .Values.geoip.autoUpdate.timeZone | default "UTC" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.geoip.autoUpdate.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.geoip.autoUpdate.failedJobsHistoryLimit | default 3 }}
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.geoip.autoUpdate.activeDeadlineSeconds | default 600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "clavex.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: geoip-updater
+        spec:
+          restartPolicy: OnFailure
+          serviceAccountName: {{ include "clavex.fullname" . }}-geoip-updater
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 1000
+            fsGroup: 1000
+          volumes:
+            - name: geoip
+              persistentVolumeClaim:
+                claimName: {{ include "clavex.geoip.claimName" . }}
+            - name: tmp-dir
+              emptyDir: {}
+          containers:
+            - name: geoip-updater
+              image: {{ .Values.geoip.autoUpdate.image.repository }}:{{ .Values.geoip.autoUpdate.image.tag }}
+              imagePullPolicy: {{ .Values.geoip.autoUpdate.image.pullPolicy | default "IfNotPresent" }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false   # kubectl writes $HOME/.kube cache to /tmp
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: geoip
+                  mountPath: {{ .Values.geoip.mountPath }}
+                - name: tmp-dir
+                  mountPath: /tmp
+              env:
+                - name: POD_NAMESPACE
+                  valueFrom:
+                    fieldRef:
+                      fieldPath: metadata.namespace
+                - name: HOME
+                  value: /tmp
+                - name: MMDB_DIR
+                  value: {{ .Values.geoip.mountPath | quote }}
+                - name: DEPLOYMENT_NAME
+                  value: {{ include "clavex.fullname" . | quote }}
+                - name: DATABASES
+                  value: {{ .Values.geoip.autoUpdate.databases | join " " | quote }}
+                - name: FORCE
+                  value: "1"
+                - name: BEST_EFFORT
+                  value: "0"
+                {{- include "clavex.geoip.credsEnv" . | nindent 16 }}
+              command:
+                - /bin/sh
+                - -euc
+                - |
+                  echo "[geoip-update] Starting MaxMind database refresh"
+                  echo "[geoip-update] Databases : ${DATABASES}"
+                  echo "[geoip-update] Target    : PVC at ${MMDB_DIR}"
+                  echo "[geoip-update] Deployment: ${DEPLOYMENT_NAME}"
+
+                  # ── 1+2. Download and atomically replace each mmdb on the PVC ──
+                  {{- include "clavex.geoip.downloadSnippet" . | nindent 18 }}
+
+                  # ── 3. Rolling restart so clavex reopens the fresh mmdb ───────
+                  echo "[geoip-update] Restarting deployment '${DEPLOYMENT_NAME}'..."
+                  kubectl rollout restart deployment/"${DEPLOYMENT_NAME}" \
+                    -n "${POD_NAMESPACE}"
+                  kubectl rollout status deployment/"${DEPLOYMENT_NAME}" \
+                    -n "${POD_NAMESPACE}" \
+                    --timeout=300s
+                  echo "[geoip-update] Update finished successfully."
+              resources:
+                {{- toYaml .Values.geoip.autoUpdate.resources | nindent 16 }}
+          {{- with .Values.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

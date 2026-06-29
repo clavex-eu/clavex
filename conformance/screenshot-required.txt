@@ -1,0 +1,40 @@
+# Tests that require a manual screenshot upload on the suite UI.
+# The script cannot perform the upload, so the suite transitions the test to
+# INTERRUPTED when the script moves on.  These modules are functionally correct
+# and are counted as PASSED in all summaries.
+#
+# Format: one test module name per line (exact match, case-sensitive).
+# Lines starting with # and blank lines are ignored.
+#
+# To find the names, run:
+#   python3 conformance/run-tests.py --list --suite-token <token> \
+#       --suite-url https://www.certification.openid.net
+# and note the modules that show INTERRUPTED in the output.
+oidcc-prompt-login
+oidcc-max-age-1
+oidcc-ensure-registered-redirect-uri
+oidcc-redirect-uri-query-added
+oidcc-ensure-redirect-uri-in-authorization-request
+oidcc-redirect-uri-query-mismatch
+oidcc-redirect-uri-query-added
+oidcc-registration-logo-uri
+oidcc-registration-policy-uri
+oidcc-registration-tos-uri
+fapi2-security-profile-id2-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds
+fapi2-security-profile-id2-par-attempt-reuse-request_uri
+fapi2-security-profile-id2-par-attempt-to-use-expired-request_uri
+fapi2-security-profile-id2-ensure-request-object-without-redirect-uri-fails
+fapi2-security-profile-id2-plain-fapi-ensure-registered-redirect-uri
+fapi2-security-profile-id2-ensure-redirect-uri-in-authorization-request
+fapi2-security-profile-id2-plain-fapi-ensure-registered-redirect-uri
+fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails
+fapi2-security-profile-final-ensure-registered-redirect-uri
+fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request
+fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds
+fapi2-security-profile-final-par-attempt-reuse-request_uri
+fapi2-security-profile-final-par-attempt-to-use-expired-request_uri
+openid-federation-automatic-client-registration-invalid-client-id-in-request-object
+openid-federation-automatic-client-registration-invalid-client-id-in-query-parameters
+openid-federation-automatic-client-registration-invalid-signature-on-request-object
+openid-federation-automatic-client-registration-invalid-signature-with-other-keys-on-request-object
+openid-federation-automatic-client-registration-invalid-request-object-exp

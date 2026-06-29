@@ -1,0 +1,1 @@
+ALTER TABLE refresh_tokens ADD COLUMN IF NOT EXISTS attest_jkt TEXT NOT NULL DEFAULT '';

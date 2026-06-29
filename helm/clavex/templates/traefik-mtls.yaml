@@ -1,0 +1,29 @@
+{{- if .Values.traefik.mtls.enabled }}
+---
+# Traefik Middleware: forward the mTLS client certificate to the backend in the
+# X-Forwarded-Tls-Client-Cert header (URL-percent-encoded PEM).
+# The clavex token endpoint reads this header via CertFromRequest() to extract
+# the cert thumbprint for RFC 8705 certificate-bound access tokens.
+apiVersion: traefik.io/v1alpha1
+kind: Middleware
+metadata:
+  name: {{ include "clavex.fullname" . }}-pass-tls-cert
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+spec:
+  passTLSClientCert:
+    pem: true
+---
+# Traefik TLSOption: request (but do not require) a client certificate on the
+# TLS handshake so that mTLS clients can present their cert while regular
+# browser traffic continues to work without one.
+apiVersion: traefik.io/v1alpha1
+kind: TLSOption
+metadata:
+  name: {{ include "clavex.fullname" . }}-mtls
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+spec:
+  clientAuth:
+    authType: RequestClientCert
+{{- end }}

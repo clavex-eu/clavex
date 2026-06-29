@@ -1,0 +1,603 @@
+# Default values for clavex.
+# Override these in a values file or with --set flags.
+
+## ── Replica count ──────────────────────────────────────────────────────────
+replicaCount: 1
+
+## ── Container image ────────────────────────────────────────────────────────
+image:
+  repository: ghcr.io/clavex-eu/clavex
+  pullPolicy: IfNotPresent
+  # Overrides the image tag; defaults to the chart appVersion.
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+
+## ── Frontend (React SPA served by Nginx) ────────────────────────────────────
+frontend:
+  enabled: false
+  replicaCount: 1
+  image:
+    repository: ghcr.io/clavex-eu/clavex-frontend
+    pullPolicy: IfNotPresent
+    tag: ""
+  resources:
+    requests:
+      cpu: 50m
+      memory: 32Mi
+    limits:
+      cpu: 200m
+      memory: 128Mi
+
+## ── HTTPRoute (Gateway API) ──────────────────────────────────────────────────
+# Creates two HTTPRoutes:
+#   - id.clavex.eu      → backend (OIDC flows + admin API)
+#   - console.clavex.eu → frontend (React admin UI)  [only if frontend.enabled]
+httproute:
+  enabled: false
+  gateway:
+    name: clavex-id-gateway
+    namespace: clavex
+  # FQDN for the backend (OIDC + API)
+  idHostname: id.clavex.eu
+  # FQDN for the React admin console — leave empty to disable console route
+  consoleHostname: console.clavex.eu
+  # Override gateway for the console route (defaults to same gateway as id)
+  consoleGateway:
+    name: ""
+    namespace: ""
+fullnameOverride: ""
+
+## ── Service account ────────────────────────────────────────────────────────
+serviceAccount:
+  create: true
+  automount: true
+  annotations: {}
+  name: ""
+
+## ── Pod annotations / labels ───────────────────────────────────────────────
+podAnnotations: {}
+podLabels: {}
+
+## ── Security contexts ──────────────────────────────────────────────────────
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  capabilities:
+    drop: ["ALL"]
+
+## ── Service ─────────────────────────────────────────────────────────────────
+service:
+  type: ClusterIP
+  port: 8080
+
+## ── Ingress ─────────────────────────────────────────────────────────────────
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+    # kubernetes.io/ingress.class: nginx
+    # cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: clavex.example.com
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+  #  - secretName: clavex-tls
+  #    hosts:
+  #      - clavex.example.com
+
+## ── Traefik mTLS pass-through ───────────────────────────────────────────────
+# When enabled, two Traefik CRD resources are created:
+#   • Middleware  <fullname>-pass-tls-cert  — adds X-Forwarded-Tls-Client-Cert
+#   • TLSOption   <fullname>-mtls           — RequestClientCert (optional mTLS)
+# Both are automatically referenced via Ingress annotations so that Traefik
+# forwards the client certificate to the backend for RFC 8705 / FAPI 2.0 mTLS.
+# Requires Traefik v2+ with CRD support and a TLS-terminating entrypoint.
+traefik:
+  mtls:
+    enabled: false
+
+## ── Resources ───────────────────────────────────────────────────────────────
+resources:
+  requests:
+    cpu: 100m
+    memory: 128Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi
+
+## ── Autoscaling ─────────────────────────────────────────────────────────────
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 5
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+## ── PodDisruptionBudget ──────────────────────────────────────────────────────
+# Ensures at least one pod remains available during rolling updates or node drains.
+podDisruptionBudget:
+  enabled: false
+  minAvailable: 1
+
+## ── Liveness / readiness ────────────────────────────────────────────────────
+livenessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 15
+
+readinessProbe:
+  httpGet:
+    path: /healthz
+    port: http
+  initialDelaySeconds: 5
+  periodSeconds: 10
+
+## ── Volumes ─────────────────────────────────────────────────────────────────
+# Mount a pre-existing secret that contains the RSA signing key PEM.
+# Create with: kubectl create secret generic clavex-keys --from-file=signing.pem=./keys/signing.pem
+signingKeySecret:
+  name: clavex-keys
+  key: signing.pem
+  mountPath: /keys
+
+## ── Clavex configuration ─────────────────────────────────────────────────────
+# Values here map to CLAVEX_* environment variables.
+config:
+  httpAddr: ":8080"
+  # Public base domain (used to build issuer URLs, e.g. "auth.example.com")
+  httpBaseDomain: "clavex.example.com"
+  issuerBase: "https://clavex.example.com"
+
+  # Admin/CSRF cookie domain. Leave empty for a host-only cookie (scoped to the
+  # API host). MUST be set to the shared parent registrable domain when the admin
+  # console is served from a different subdomain than the API (e.g. API on
+  # id.example.com, console on console.example.com → set "example.com"), so the
+  # SPA can read the non-HttpOnly clavex_csrf cookie for the double-submit check.
+  adminCookieDomain: ""
+
+  # CORS: list of allowed origins for the admin API.
+  # Add the console FQDN here when using a separate frontend domain.
+  # e.g. ["https://console.clavex.eu"]
+  corsAllowedOrigins: []
+
+  # Inline config file path (optional — env vars take precedence)
+  configFile: ""
+
+  # Auth
+  adminSecret: ""          # CLAVEX_AUTH_ADMIN_SECRET — must be set (use secretRef below)
+  totpIssuer: "Clavex"
+  geoipCityDbPath: ""      # Path to GeoLite2-City.mmdb (optional)
+  geoipAsnDbPath: ""       # Path to GeoLite2-ASN.mmdb (optional)
+
+  # Clavex Shield — Threat Intelligence (optional)
+  # AbuseIPDB v2 API key. When set, login IPs are checked against AbuseIPDB
+  # and the Tor exit-node list; flagged IPs add +20 to the risk score.
+  # Free account: https://www.abuseipdb.com/register
+  # For production, prefer injecting this via secretRef (see existingSecret).
+  abuseipdbKey: ""          # CLAVEX_AUTH_ABUSEIPDB_KEY
+  abuseipdbThreshold: 0     # CLAVEX_AUTH_ABUSEIPDB_THRESHOLD — 0 = use default (25)
+
+  # ── Database ────────────────────────────────────────────────────────────────
+  databaseMode: "external"    # CLAVEX_DATABASE_MODE — "external" | "embedded"
+  databaseDSN: ""             # CLAVEX_DATABASE_DSN — use existingSecret in production
+  databaseMaxConns: 0         # CLAVEX_DATABASE_MAX_CONNS — 0 = default (20)
+  databaseMinConns: 0         # CLAVEX_DATABASE_MIN_CONNS — 0 = default (2)
+
+  # ── Redis ────────────────────────────────────────────────────────────────────
+  redisMode: "standalone"     # CLAVEX_REDIS_MODE — "standalone" | "cluster" | "sentinel"
+  redisAddr: "redis-master:6379"  # CLAVEX_REDIS_ADDR — standalone / sentinel primary
+  redisAddrs: []              # CLAVEX_REDIS_ADDRS — cluster seed nodes (comma-separated)
+  redisMasterName: ""         # CLAVEX_REDIS_MASTER_NAME — sentinel master name
+  redisSentinelAddrs: []      # CLAVEX_REDIS_SENTINEL_ADDRS
+  redisSentinelPassword: ""   # CLAVEX_REDIS_SENTINEL_PASSWORD
+  redisPassword: ""           # CLAVEX_REDIS_PASSWORD — use existingSecret in production
+  redisDB: 0                  # CLAVEX_REDIS_DB
+  redisTLSEnabled: false      # CLAVEX_REDIS_TLS_ENABLED
+
+  # ── HTTP / TLS ───────────────────────────────────────────────────────────────
+  # Set these when terminating TLS in-process (not via ingress/proxy).
+  tlsCertFile: ""             # CLAVEX_HTTP_TLS_CERT_FILE
+  tlsKeyFile: ""              # CLAVEX_HTTP_TLS_KEY_FILE
+  mtlsClientCACertFile: ""    # CLAVEX_HTTP_MTLS_CLIENT_CA_CERT_FILE
+
+  # ── Token TTLs ───────────────────────────────────────────────────────────────
+  accessTokenTTL: 0           # CLAVEX_AUTH_ACCESS_TOKEN_TTL — seconds; 0 = default (3600)
+  refreshTokenTTL: 0          # CLAVEX_AUTH_REFRESH_TOKEN_TTL — seconds; 0 = default (30 days)
+
+  # ── Key management ───────────────────────────────────────────────────────────
+  keyBackend: "file"          # CLAVEX_AUTH_KEY_BACKEND — "file" | "db"
+  keyEncryptionKey: ""        # CLAVEX_AUTH_KEY_ENCRYPTION_KEY — base64url 32-byte key (required when keyBackend=db)
+  encryptionKey: ""           # CLAVEX_AUTH_ENCRYPTION_KEY — AES-256 master key for secrets at rest
+
+  # ── SAML ─────────────────────────────────────────────────────────────────────
+  samlCertFile: ""            # CLAVEX_AUTH_SAML_CERT_FILE
+
+  # ── WebAuthn / Passkeys ──────────────────────────────────────────────────────
+  webauthnRPID: ""            # CLAVEX_AUTH_WEBAUTHN_RP_ID — e.g. "example.com" (required to enable passkeys)
+  webauthnRPName: ""          # CLAVEX_AUTH_WEBAUTHN_RP_NAME — e.g. "My App"
+  webauthnRPOrigins: []       # CLAVEX_AUTH_WEBAUTHN_RP_ORIGINS — e.g. ["https://example.com"]
+
+  # ── Security ─────────────────────────────────────────────────────────────────
+  loginAlertThreshold: 0      # CLAVEX_AUTH_LOGIN_ALERT_THRESHOLD — risk score threshold for alert emails; 0 = default (60)
+  deviceTrustSecret: ""       # CLAVEX_AUTH_DEVICE_TRUST_SECRET — ≥32-byte HMAC key; enables device-trust cookies
+
+## ── GeoIP database volume ────────────────────────────────────────────────────
+# MaxMind mmdb files are stored on a PersistentVolumeClaim mounted at /geoip,
+# NOT in a Secret. A real GeoLite2-City.mmdb is ~60MB, which exceeds the ~1.5MB
+# Kubernetes Secret/etcd object limit, so Secret-based delivery cannot work.
+#
+# Delivery model (set autoUpdate.enabled: true and provide MaxMind creds):
+#   • A best-effort initContainer on the clavex pod downloads the mmdb files to
+#     the PVC on first boot (when the PVC is empty). Download failures are
+#     non-fatal — clavex starts with geo enrichment simply disabled.
+#   • A weekly CronJob refreshes the mmdb on the PVC and triggers a rolling
+#     restart so the new files are loaded (the DB is opened once at startup).
+#
+# Enable in your values override:
+#   geoip:
+#     enabled: true
+#     autoUpdate:
+#       enabled: true
+#       licenseSecret: clavex-maxmind   # MAXMIND_ACCOUNT_ID + MAXMIND_LICENSE_KEY
+#   config:
+#     geoipCityDbPath: /geoip/GeoLite2-City.mmdb
+#     geoipAsnDbPath:  /geoip/GeoLite2-ASN.mmdb
+geoip:
+  enabled: false
+  mountPath: /geoip
+
+  # PersistentVolumeClaim that holds the mmdb files. Shared (read-only) by the
+  # clavex pod and (read-write) by the updater initContainer / CronJob.
+  # ReadWriteOnce is sufficient on a single-node cluster; multi-node clusters
+  # that schedule the updater and clavex onto different nodes need ReadWriteMany.
+  pvc:
+    create: true
+    # Use an existing PVC instead of creating one (leave create: true to manage here).
+    existingClaim: ""
+    accessMode: ReadWriteOnce
+    size: 500Mi
+    storageClassName: ""   # "" = cluster default StorageClass
+
+  ## ── Automatic weekly update ────────────────────────────────────────────────
+  # When enabled, a CronJob downloads fresh MaxMind databases every Tuesday at
+  # 03:00 UTC to the GeoIP PVC, then triggers a rolling restart so the new mmdb
+  # files are loaded without downtime.
+  #
+  # Prerequisite — create the MaxMind credentials Secret once:
+  #   kubectl create secret generic clavex-maxmind \
+  #     --from-literal=MAXMIND_ACCOUNT_ID=<numeric-account-id> \
+  #     --from-literal=MAXMIND_LICENSE_KEY=<license-key>
+  #
+  # Then enable in your values override:
+  #   geoip:
+  #     enabled: true
+  #     autoUpdate:
+  #       enabled: true
+  #       licenseSecret: clavex-maxmind
+  autoUpdate:
+    enabled: false
+
+    # Cron schedule — default: every Tuesday at 03:00 UTC (MaxMind releases on Tuesdays).
+    schedule: "0 3 * * 2"
+    timeZone: "UTC"
+
+    # Kubernetes Secret that must contain:
+    #   MAXMIND_ACCOUNT_ID  — numeric MaxMind account ID
+    #   MAXMIND_LICENSE_KEY — MaxMind license key
+    licenseSecret: "clavex-maxmind"
+
+    # Which MaxMind databases to download and store on the GeoIP PVC.
+    databases:
+      - GeoLite2-City
+      - GeoLite2-ASN
+
+    # Time budget for the entire download + restart sequence (seconds).
+    activeDeadlineSeconds: 600
+
+    successfulJobsHistoryLimit: 3
+    failedJobsHistoryLimit: 3
+
+    # Image must have: curl, tar/gzip, kubectl.
+    # alpine/k8s ships all three and is kept in sync with Kubernetes releases.
+    image:
+      repository: alpine/k8s
+      tag: "1.32.3"
+      pullPolicy: IfNotPresent
+
+    resources:
+      requests:
+        cpu: 100m
+        memory: 128Mi
+      limits:
+        cpu: 200m
+        memory: 256Mi
+
+## ── Telemetry (OpenTelemetry / OTLP) ─────────────────────────────────────────
+telemetry:
+  enabled: false
+  otlpEndpoint: ""          # CLAVEX_TELEMETRY_OTLP_ENDPOINT — e.g. http://otel-collector:4318
+  serviceName: "clavex"     # CLAVEX_TELEMETRY_SERVICE_NAME
+  sampleRate: 1.0           # CLAVEX_TELEMETRY_SAMPLE_RATE — 0.0–1.0
+
+## ── Usage reporting ──────────────────────────────────────────────────────────
+# Anonymous 24h pings to Clavex (no personal data). Opt out with enabled: false.
+usageReporting:
+  enabled: true             # CLAVEX_USAGE_REPORTING_ENABLED
+
+## ── License ──────────────────────────────────────────────────────────────────
+# Community edition runs without a license (1 org, unlimited users).
+# Mount a license JWT from a Secret and set the path here.
+license:
+  keyFile: ""               # CLAVEX_LICENSE_KEY_FILE — path to license JWT
+
+## ── Fine-Grained Authorization (OpenFGA) ────────────────────────────────────
+fga:
+  enabled: false            # CLAVEX_FGA_ENABLED
+  endpoint: ""              # CLAVEX_FGA_ENDPOINT — e.g. http://openfga:8080
+  apiKey: ""                # CLAVEX_FGA_API_KEY — leave empty for unauthenticated / mTLS
+
+## ── Object storage (S3-compatible) ──────────────────────────────────────────
+# Used for org logos, favicons, and branding backgrounds.
+# Leave endpoint empty to use the local filesystem fallback.
+storage:
+  endpoint: ""              # CLAVEX_STORAGE_ENDPOINT — e.g. https://s3.eu-west-1.amazonaws.com
+  bucket: ""                # CLAVEX_STORAGE_BUCKET
+  region: "us-east-1"       # CLAVEX_STORAGE_REGION
+  accessKey: ""             # CLAVEX_STORAGE_ACCESS_KEY
+  secretKey: ""             # CLAVEX_STORAGE_SECRET_KEY
+  publicBaseURL: ""         # CLAVEX_STORAGE_PUBLIC_BASE_URL — CDN prefix override
+  # Local filesystem fallback (when endpoint is empty)
+  localDir: ""              # CLAVEX_STORAGE_LOCAL_DIR — e.g. /var/lib/clavex/assets
+  localBaseURL: ""          # CLAVEX_STORAGE_LOCAL_BASE_URL — public URL for local assets
+
+## ── PAM security alerts ──────────────────────────────────────────────────────
+# Slack / Teams webhooks for privileged-access alerts (stale credentials, long sessions).
+pamAlerts:
+  slackWebhookURL: ""       # CLAVEX_PAM_ALERTS_SLACK_WEBHOOK_URL
+  teamsWebhookURL: ""       # CLAVEX_PAM_ALERTS_TEAMS_WEBHOOK_URL
+  adminBaseURL: ""          # CLAVEX_PAM_ALERTS_ADMIN_BASE_URL — console URL for deep links
+  staleCredentialDays: 0    # CLAVEX_PAM_ALERTS_STALE_CREDENTIAL_DAYS — 0 = default (30)
+  sessionMaxHours: 0        # CLAVEX_PAM_ALERTS_SESSION_MAX_HOURS — 0 = default (8)
+
+## ── OpenID Federation 1.0 ────────────────────────────────────────────────────
+federation:
+  enabled: false            # CLAVEX_FEDERATION_ENABLED
+  organizationName: ""      # CLAVEX_FEDERATION_ORGANIZATION_NAME
+  authorityHints: []        # CLAVEX_FEDERATION_AUTHORITY_HINTS — trust-anchor entity IDs
+  jwtLifetime: 0            # CLAVEX_FEDERATION_JWT_LIFETIME — seconds; 0 = default (86400)
+  contacts: []              # CLAVEX_FEDERATION_CONTACTS — operator emails/URIs
+  homepageURI: ""           # CLAVEX_FEDERATION_HOMEPAGE_URI
+  logoURI: ""               # CLAVEX_FEDERATION_LOGO_URI
+  trustAnchors: []          # CLAVEX_FEDERATION_TRUST_ANCHORS
+
+## ── Secret references ────────────────────────────────────────────────────────
+# Reference an existing secret for sensitive values instead of putting them in values.
+# The secret must have keys: CLAVEX_AUTH_ADMIN_SECRET and CLAVEX_DATABASE_DSN.
+existingSecret: ""
+
+## ── Node scheduling ─────────────────────────────────────────────────────────
+nodeSelector: {}
+tolerations: []
+affinity: {}
+
+## ── Extra volumes / mounts (e.g. config overlay at /etc/clavex/config.yaml) ─
+extraVolumes: []
+extraVolumeMounts: []
+
+## ── Extra environment variables ──────────────────────────────────────────────
+extraEnv: []
+# - name: CLAVEX_SOME_OPTION
+#   value: "true"
+
+## ── First-run seed ───────────────────────────────────────────────────────────
+# When enabled, a post-install Job creates an initial organization and admin user.
+# The Job is idempotent: if the org/user already exist it skips creation.
+# Disable after the first successful deploy to avoid re-running on reinstall.
+seed:
+  enabled: false
+  orgSlug: "system"
+  orgName: "System"
+  adminEmail: "superadmin@example.com"
+  # Reference to a Secret containing the key specified below.
+  # Create with: kubectl create secret generic clavex-seed --from-literal=password=<your-password>
+  adminPasswordSecret:
+    name: "clavex-seed"
+    key: "password"
+
+## ── Init containers (e.g. run migrations) ────────────────────────────────────
+runMigrationsOnStartup: true
+
+## ── Database backup ──────────────────────────────────────────────────────────
+# CronJob that runs pg_dump, compresses with gzip, and uploads to S3 / MinIO.
+# A retention pass deletes objects older than retentionDays from the bucket.
+#
+# Quickstart:
+#   kubectl create secret generic clavex-backup-credentials \
+#     --from-literal=PGPASSWORD=<db-password> \
+#     --from-literal=AWS_ACCESS_KEY_ID=<key> \
+#     --from-literal=AWS_SECRET_ACCESS_KEY=<secret>
+#
+#   helm upgrade clavex clavex/clavex \
+#     --set backup.enabled=true \
+#     --set backup.postgres.host=postgres-primary \
+#     --set backup.postgres.database=clavex \
+#     --set backup.postgres.user=clavex \
+#     --set backup.credentialsSecret=clavex-backup-credentials \
+#     --set backup.s3.bucket=my-clavex-backups \
+#     --set backup.s3.endpoint=http://minio:9000   # omit for AWS S3
+backup:
+  enabled: false
+
+  # Cron schedule (default: 02:00 UTC daily).
+  schedule: "0 2 * * *"
+  timeZone: "UTC"
+
+  # pg_dump + upload time budget in seconds.
+  activeDeadlineSeconds: 3600
+
+  # How many completed / failed Job records to keep for kubectl get jobs.
+  successfulJobsHistoryLimit: 3
+  failedJobsHistoryLimit: 3
+
+  # Number of days to keep backups in S3 before pruning.
+  retentionDays: 30
+
+  # Kubernetes Secret that must contain:
+  #   PGPASSWORD, AWS_ACCESS_KEY_ID, AWS_SECRET_ACCESS_KEY
+  credentialsSecret: clavex-backup-credentials
+
+  # Image: must have pg_dump, psql, gzip, aws CLI, and sh.
+  # The official postgres image ships pg_dump/psql; we layer aws CLI on top.
+  # Use the provided image or build your own:
+  #   FROM postgres:17-alpine
+  #   RUN apk add --no-cache aws-cli
+  image:
+    repository: ghcr.io/clavex-eu/clavex-backup-tools
+    tag: "17"            # tracks postgres major version
+    pullPolicy: IfNotPresent
+
+  # Source Postgres coordinates (for the backup CronJob).
+  postgres:
+    host: postgres-primary
+    port: "5432"
+    database: clavex
+    user: clavex
+
+  # S3 / MinIO destination.
+  s3:
+    bucket: clavex-backups
+    # Key prefix — dumps land at <prefix>/YYYY/MM/DD/clavex-<timestamp>.sql.gz
+    prefix: clavex-backups
+    region: us-east-1
+    # MinIO or other S3-compatible endpoint. Leave empty for AWS S3.
+    endpoint: ""
+    # S3 storage class. Use STANDARD_IA for infrequent-access savings.
+    storageClass: STANDARD
+
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      cpu: 500m
+      memory: 1Gi
+
+  podAnnotations: {}
+  nodeSelector: {}
+  tolerations: []
+
+  # ── Restore Job ──────────────────────────────────────────────────────────
+  # When enabled, a one-shot Kubernetes Job runs as a Helm post-install/upgrade
+  # hook. It downloads the latest backup (or a specific key), restores it, and
+  # verifies schema integrity.
+  #
+  # For DR drills:
+  #   helm upgrade clavex clavex/clavex \
+  #     --set backup.restore.enabled=true \
+  #     --set backup.restore.dropAndRecreate=true
+  #
+  # To restore a specific dump:
+  #   helm upgrade clavex clavex/clavex \
+  #     --set backup.restore.enabled=true \
+  #     --set backup.restore.specificKey=clavex-backups/2026/05/01/clavex-20260501T020001Z.sql.gz
+  restore:
+    enabled: false
+
+    # Time budget for download + restore + integrity check.
+    activeDeadlineSeconds: 3600
+
+    # Temp volume size for the dump file.
+    workspaceSizeLimit: 10Gi
+
+    # Download the most recent backup automatically (default).
+    # Override to restore a specific point in time.
+    specificKey: ""
+
+    # Drop and recreate the target database before restoring.
+    # DANGER: destroys all data in the target database.
+    dropAndRecreate: false
+
+    # Run schema integrity checks (SELECT from core tables) after restore.
+    verifySchema: true
+
+    # Target Postgres — defaults to backup.postgres.* if not set.
+    postgres:
+      host: ""
+      port: ""
+      database: ""
+      user: ""
+
+## ── Grafana dashboard (as code) ──────────────────────────────────────────────
+# Deploys the Clavex IAM overview dashboard as a ConfigMap so the Grafana
+# sidecar (grafana/grafana-sc-dashboard) picks it up automatically.
+#
+# Prerequisites in the Grafana Helm chart:
+#   grafana.sidecar.dashboards.enabled: true
+#   grafana.sidecar.dashboards.label: grafana_dashboard   # must match .label below
+#
+# Enable with:
+#   helm upgrade clavex clavex/clavex --set grafana.dashboards.enabled=true
+grafana:
+  dashboards:
+    enabled: false
+    # Label applied to the ConfigMap — must match grafana.sidecar.dashboards.label.
+    label: grafana_dashboard
+    # Optional: value of grafana_dashboard_folder label (sets the folder in Grafana UI).
+    labelValue: "Clavex IAM"
+    # Namespace to create the ConfigMap in. Defaults to the release namespace.
+    # Set to the Grafana namespace if the sidecar watches a different namespace.
+    namespace: ""
+
+## ── PrometheusRule (Prometheus Operator) ─────────────────────────────────────
+# Creates a PrometheusRule CRD resource with pre-configured alert rules.
+# Requires Prometheus Operator to be installed (kube-prometheus-stack or standalone).
+#
+# Enable with:
+#   helm upgrade clavex clavex/clavex \
+#     --set prometheusRule.enabled=true \
+#     --set prometheusRule.additionalLabels.release=prometheus
+prometheusRule:
+  enabled: false
+  # Namespace to create the PrometheusRule in. Defaults to the release namespace.
+  namespace: ""
+  # Labels added to the PrometheusRule resource — must match the Prometheus Operator
+  # ruleSelector (commonly release: <prometheus-helm-release-name>).
+  additionalLabels: {}
+  #   release: prometheus
+
+  # Alert thresholds — override to tune for your environment.
+  thresholds:
+    # Number of login failures in a 5-minute window before firing ClavexBruteForceDetected.
+    bruteForceFailures5m: 50
+
+    # Sustained login failure rate (%) over 10 minutes — ClavexHighLoginFailureRate.
+    loginFailureRatePct: 10
+
+    # p90 risk score threshold — ClavexHighRiskScoreP90 (0–100 scale).
+    riskScoreP90: 60
+
+    # p99 risk score threshold — ClavexHighRiskScoreP99 (0–100 scale).
+    riskScoreP99: 80
+
+    # Minimum Elevate (step-up MFA) completion rate (%) — ClavexElevateLowCompletionRate.
+    elevateCompletionRateMin: 70
+
+    # Maximum Elevate failure rate (%) — ClavexElevateHighFailureRate.
+    elevateFailureRatePct: 20
+
+    # HTTP p99 latency in seconds — ClavexHTTPLatencyP99High; critical fires at 2×.
+    httpLatencyP99Seconds: 1.0
+
+    # HTTP 5xx rate (%) that triggers ClavexHTTPHighErrorRate.
+    http5xxRatePct: 5

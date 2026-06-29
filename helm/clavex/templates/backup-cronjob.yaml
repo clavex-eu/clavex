@@ -1,0 +1,176 @@
+{{- if .Values.backup.enabled }}
+{{- /*
+  Backup CronJob — pg_dump → gzip → S3 / MinIO with configurable retention.
+
+  The job runs on the schedule defined in .Values.backup.schedule (default: daily
+  at 02:00 UTC). Each dump is uploaded to:
+
+    s3://<bucket>/<prefix>/YYYY/MM/DD/clavex-<timestamp>.sql.gz
+
+  A second "retention" step prunes objects older than .Values.backup.retentionDays
+  using `aws s3 ls` + `aws s3 rm` (compatible with MinIO via custom endpoint).
+
+  Required secret (.Values.backup.credentialsSecret):
+    PGPASSWORD         — postgres password
+    AWS_ACCESS_KEY_ID  — S3 / MinIO access key
+    AWS_SECRET_ACCESS_KEY — S3 / MinIO secret key
+
+  Optional secret keys:
+    PGPASSFILE         — path to .pgpass (alternative to PGPASSWORD)
+*/}}
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: {{ include "clavex.fullname" . }}-backup
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+    app.kubernetes.io/component: backup
+spec:
+  schedule: {{ .Values.backup.schedule | quote }}
+  timeZone: {{ .Values.backup.timeZone | default "UTC" | quote }}
+  concurrencyPolicy: Forbid
+  successfulJobsHistoryLimit: {{ .Values.backup.successfulJobsHistoryLimit | default 3 }}
+  failedJobsHistoryLimit: {{ .Values.backup.failedJobsHistoryLimit | default 3 }}
+  startingDeadlineSeconds: 300
+  jobTemplate:
+    spec:
+      backoffLimit: 2
+      activeDeadlineSeconds: {{ .Values.backup.activeDeadlineSeconds | default 3600 }}
+      template:
+        metadata:
+          labels:
+            {{- include "clavex.selectorLabels" . | nindent 12 }}
+            app.kubernetes.io/component: backup
+          {{- with .Values.backup.podAnnotations }}
+          annotations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+        spec:
+          restartPolicy: OnFailure
+          {{- with .Values.imagePullSecrets }}
+          imagePullSecrets:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          securityContext:
+            runAsNonRoot: true
+            runAsUser: 999    # postgres uid in official postgres images
+            fsGroup: 999
+          volumes:
+            - name: dump-workspace
+              emptyDir: {}
+          containers:
+            - name: backup
+              image: {{ .Values.backup.image.repository }}:{{ .Values.backup.image.tag }}
+              imagePullPolicy: {{ .Values.backup.image.pullPolicy | default "IfNotPresent" }}
+              securityContext:
+                allowPrivilegeEscalation: false
+                readOnlyRootFilesystem: false   # aws cli writes ~/.aws cache
+                capabilities:
+                  drop: ["ALL"]
+              volumeMounts:
+                - name: dump-workspace
+                  mountPath: /dump
+              env:
+                # ── Postgres connection ──────────────────────────────────────
+                - name: PGHOST
+                  value: {{ .Values.backup.postgres.host | quote }}
+                - name: PGPORT
+                  value: {{ .Values.backup.postgres.port | default "5432" | quote }}
+                - name: PGDATABASE
+                  value: {{ .Values.backup.postgres.database | quote }}
+                - name: PGUSER
+                  value: {{ .Values.backup.postgres.user | quote }}
+                - name: PGPASSWORD
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.credentialsSecret }}
+                      key: PGPASSWORD
+                # ── S3 / MinIO ───────────────────────────────────────────────
+                - name: AWS_ACCESS_KEY_ID
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.credentialsSecret }}
+                      key: AWS_ACCESS_KEY_ID
+                - name: AWS_SECRET_ACCESS_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: {{ .Values.backup.credentialsSecret }}
+                      key: AWS_SECRET_ACCESS_KEY
+                - name: AWS_DEFAULT_REGION
+                  value: {{ .Values.backup.s3.region | default "us-east-1" | quote }}
+                {{- if .Values.backup.s3.endpoint }}
+                - name: AWS_ENDPOINT_URL
+                  value: {{ .Values.backup.s3.endpoint | quote }}
+                {{- end }}
+                # ── Backup config ────────────────────────────────────────────
+                - name: S3_BUCKET
+                  value: {{ .Values.backup.s3.bucket | quote }}
+                - name: S3_PREFIX
+                  value: {{ .Values.backup.s3.prefix | default "clavex-backups" | quote }}
+                - name: RETENTION_DAYS
+                  value: {{ .Values.backup.retentionDays | default 30 | quote }}
+                {{- if .Values.backup.s3.endpoint }}
+                - name: S3_NO_SIGN_REQUEST
+                  value: "false"
+                {{- end }}
+              command:
+                - /bin/sh
+                - -euc
+                - |
+                  # ── 1. Dump ─────────────────────────────────────────────────
+                  TIMESTAMP=$(date -u +%Y%m%dT%H%M%SZ)
+                  YEAR=$(date -u +%Y)
+                  MONTH=$(date -u +%m)
+                  DAY=$(date -u +%d)
+                  DUMP_FILE="/dump/clavex-${TIMESTAMP}.sql.gz"
+                  S3_KEY="${S3_PREFIX}/${YEAR}/${MONTH}/${DAY}/clavex-${TIMESTAMP}.sql.gz"
+
+                  echo "[backup] Starting pg_dump → ${DUMP_FILE}"
+                  pg_dump \
+                    --format=plain \
+                    --no-owner \
+                    --no-acl \
+                    --compress=9 \
+                    --file="${DUMP_FILE}"
+                  DUMP_SIZE=$(du -sh "${DUMP_FILE}" | cut -f1)
+                  echo "[backup] Dump complete. Size: ${DUMP_SIZE}"
+
+                  # ── 2. Upload ────────────────────────────────────────────────
+                  echo "[backup] Uploading to s3://${S3_BUCKET}/${S3_KEY}"
+                  {{- if .Values.backup.s3.endpoint }}
+                  ENDPOINT_FLAG="--endpoint-url ${AWS_ENDPOINT_URL}"
+                  {{- else }}
+                  ENDPOINT_FLAG=""
+                  {{- end }}
+                  aws s3 cp ${DUMP_FILE} "s3://${S3_BUCKET}/${S3_KEY}" \
+                    ${ENDPOINT_FLAG} \
+                    --storage-class {{ .Values.backup.s3.storageClass | default "STANDARD" | quote }}
+                  echo "[backup] Upload complete: s3://${S3_BUCKET}/${S3_KEY}"
+                  rm -f "${DUMP_FILE}"
+
+                  # ── 3. Retention pruning ─────────────────────────────────────
+                  echo "[backup] Pruning backups older than ${RETENTION_DAYS} days under s3://${S3_BUCKET}/${S3_PREFIX}/"
+                  CUTOFF=$(date -u -d "-${RETENTION_DAYS} days" +%Y-%m-%dT%H:%M:%S 2>/dev/null || \
+                            date -u -v-${RETENTION_DAYS}d +%Y-%m-%dT%H:%M:%S)
+
+                  aws s3 ls "s3://${S3_BUCKET}/${S3_PREFIX}/" \
+                    ${ENDPOINT_FLAG} \
+                    --recursive | \
+                  awk -v cutoff="${CUTOFF}" '$1" "$2 < cutoff { print $4 }' | \
+                  while IFS= read -r key; do
+                    echo "[backup] Deleting stale object: s3://${S3_BUCKET}/${key}"
+                    aws s3 rm "s3://${S3_BUCKET}/${key}" ${ENDPOINT_FLAG}
+                  done
+
+                  echo "[backup] Retention pass complete."
+              resources:
+                {{- toYaml .Values.backup.resources | nindent 16 }}
+          {{- with .Values.backup.nodeSelector }}
+          nodeSelector:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+          {{- with .Values.backup.tolerations }}
+          tolerations:
+            {{- toYaml . | nindent 12 }}
+          {{- end }}
+{{- end }}

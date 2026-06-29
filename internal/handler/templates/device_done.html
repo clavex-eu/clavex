@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Device activated{{if .OrgName}} — {{.OrgName}}{{end}}</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    body { font-family: 'Plus Jakarta Sans', system-ui, sans-serif; background: #F5F4F0; min-height: 100vh; display: flex; align-items: center; justify-content: center; padding: 16px; }
+    .card { background: white; border-radius: 16px; padding: 48px 36px; max-width: 420px; width: 100%; box-shadow: 0 4px 24px rgba(0,0,0,.06); text-align: center; }
+    .icon { width: 64px; height: 64px; border-radius: 50%; background: #E1F5EE; display: flex; align-items: center; justify-content: center; margin: 0 auto 20px; font-size: 28px; }
+    .icon.denied { background: #FCEBEB; }
+    h1 { font-size: 22px; font-weight: 700; color: #1A2332; margin-bottom: 10px; }
+    p { font-size: 14px; color: #5F5E5A; line-height: 1.7; }
+    p strong { color: #1A2332; }
+    .close-hint { margin-top: 24px; font-size: 13px; color: #9E9E9B; }
+  </style>
+</head>
+<body>
+  <div class="card">
+    {{if .Allowed}}
+      <div class="icon">✅</div>
+      <h1>Device activated</h1>
+      <p>
+        <strong>{{.ClientName}}</strong> has been granted access to your account.
+        You can now return to your device — it should connect automatically within a few seconds.
+      </p>
+    {{else}}
+      <div class="icon denied">🚫</div>
+      <h1>Access denied</h1>
+      <p>
+        You have denied access to <strong>{{.ClientName}}</strong>.
+        The device will not be connected to your account.
+        If this was a mistake, restart the activation process on your device.
+      </p>
+    {{end}}
+    <p class="close-hint">You can close this tab.</p>
+  </div>
+</body>
+</html>

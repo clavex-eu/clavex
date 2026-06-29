@@ -1,0 +1,1 @@
+DROP INDEX IF EXISTS oidc_clients_org_federation_entity_id_key;

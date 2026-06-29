@@ -1,0 +1,94 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Two-factor authentication{{if .OrgName}} — {{.OrgName}}{{end}}</title>
+  <script nonce="{{.Nonce}}" src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { font-family: ui-sans-serif, system-ui, sans-serif; }
+  </style>
+</head>
+<body class="min-h-screen bg-gray-50 flex items-center justify-center p-4">
+
+  <div class="w-full max-w-sm">
+
+    <!-- Brand bar -->
+    <div class="text-center mb-8">
+      {{if .LogoURL}}
+        <img src="{{.LogoURL}}" alt="{{.OrgName}}" class="h-12 mx-auto mb-3 object-contain" />
+      {{else}}
+        <div class="inline-flex items-center justify-center h-12 w-12 rounded-xl bg-indigo-600 text-white font-bold text-xl mx-auto mb-3">
+          {{slice .OrgName 0 1}}
+        </div>
+      {{end}}
+      <h1 class="text-xl font-semibold text-gray-900">Two-factor authentication</h1>
+      <p class="text-sm text-gray-500 mt-1">Enter the code from your authenticator app</p>
+    </div>
+
+    <!-- Card -->
+    <div class="bg-white rounded-2xl shadow-sm border border-gray-200 p-8">
+
+      {{if .Error}}
+        <div class="mb-5 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
+          {{.Error}}
+        </div>
+      {{end}}
+
+      <form method="POST" action="/{{.OrgSlug}}/mfa-challenge" novalidate>
+        <input type="hidden" name="login_session_id" value="{{.LoginSessionID}}" />
+
+        <div>
+          <label for="totp_code" class="block text-sm font-medium text-gray-700 mb-1">
+            Authenticator code
+          </label>
+          <input
+            id="totp_code"
+            name="totp_code"
+            type="text"
+            inputmode="numeric"
+            autocomplete="one-time-code"
+            pattern="\d{6}"
+            maxlength="6"
+            required
+            autofocus
+            class="w-full rounded-lg border border-gray-300 px-3 py-2 text-sm text-center
+                   tracking-widest placeholder-gray-400 focus:outline-none focus:ring-2
+                   focus:ring-indigo-500 focus:border-transparent transition"
+            placeholder="000000"
+          />
+        </div>
+
+        <button
+          type="submit"
+          class="mt-6 w-full rounded-lg bg-indigo-600 px-4 py-2.5 text-sm font-semibold
+                 text-white hover:bg-indigo-700 active:bg-indigo-800 transition-colors"
+        >
+          Verify
+        </button>
+
+        {{if .RememberDeviceDays}}
+        <label class="mt-4 flex items-center gap-2 cursor-pointer select-none">
+          <input
+            type="checkbox"
+            name="remember_device"
+            value="1"
+            checked
+            class="h-4 w-4 rounded border-gray-300 text-indigo-600 focus:ring-indigo-500"
+          />
+          <span class="text-sm text-gray-600">
+            Remember this device for {{.RememberDeviceDays}} days
+          </span>
+        </label>
+        {{end}}
+      </form>
+    </div>
+
+    <!-- Footer -->
+    <p class="text-center text-xs text-gray-400 mt-6">
+      Secured by <a href="https://clavex.eu" class="text-indigo-500 hover:underline">Clavex</a>
+    </p>
+
+  </div>
+</body>
+</html>
