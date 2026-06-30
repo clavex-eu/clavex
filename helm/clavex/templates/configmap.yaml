@@ -27,6 +27,19 @@ data:
   {{- if .Values.config.abuseipdbThreshold }}
   CLAVEX_AUTH_ABUSEIPDB_THRESHOLD: {{ .Values.config.abuseipdbThreshold | quote }}
   {{- end }}
+  {{- if .Values.config.threatFeed.enabled }}
+  CLAVEX_SHIELD_THREAT_FEED_ENABLED: "true"
+  CLAVEX_SHIELD_THREAT_FEED_URL: {{ .Values.config.threatFeed.url | quote }}
+  {{- if .Values.config.threatFeed.report }}
+  CLAVEX_SHIELD_THREAT_FEED_REPORT: "true"
+  {{- end }}
+  {{- if .Values.config.threatFeed.threshold }}
+  CLAVEX_SHIELD_THREAT_FEED_THRESHOLD: {{ .Values.config.threatFeed.threshold | toString | quote }}
+  {{- end }}
+  {{- if .Values.config.threatFeed.signingPubKey }}
+  CLAVEX_SHIELD_THREAT_FEED_SIGNING_PUB_KEY: {{ .Values.config.threatFeed.signingPubKey | quote }}
+  {{- end }}
+  {{- end }}
   {{- if .Values.config.redisMode }}
   CLAVEX_REDIS_MODE: {{ .Values.config.redisMode | quote }}
   {{- end }}
@@ -105,6 +118,9 @@ data:
   {{- end }}
   {{- if .Values.config.deviceTrustSecret }}
   CLAVEX_AUTH_DEVICE_TRUST_SECRET: {{ .Values.config.deviceTrustSecret | quote }}
+  {{- end }}
+  {{- if .Values.config.threatFeed.sharedKey }}
+  CLAVEX_SHIELD_THREAT_FEED_SHARED_KEY: {{ .Values.config.threatFeed.sharedKey | quote }}
   {{- end }}
   {{- if .Values.fga.apiKey }}
   CLAVEX_FGA_API_KEY: {{ .Values.fga.apiKey | quote }}

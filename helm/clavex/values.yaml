@@ -188,6 +188,19 @@ config:
   abuseipdbKey: ""          # CLAVEX_AUTH_ABUSEIPDB_KEY
   abuseipdbThreshold: 0     # CLAVEX_AUTH_ABUSEIPDB_THRESHOLD — 0 = use default (25)
 
+  # Clavex Shield — Distributed Threat Feed (optional)
+  # Pulls a community-signed brute-force IP feed from the Shield aggregator
+  # (feed.clavex.eu). sharedKey + signingPubKey are sensitive — in production
+  # inject them via existingSecret (CLAVEX_SHIELD_THREAT_FEED_SHARED_KEY /
+  # CLAVEX_SHIELD_THREAT_FEED_SIGNING_PUB_KEY) rather than plain values here.
+  threatFeed:
+    enabled: false            # CLAVEX_SHIELD_THREAT_FEED_ENABLED
+    url: "https://feed.clavex.eu"  # CLAVEX_SHIELD_THREAT_FEED_URL
+    report: false             # CLAVEX_SHIELD_THREAT_FEED_REPORT — opt-in contribution (needs license JWT)
+    threshold: 0              # CLAVEX_SHIELD_THREAT_FEED_THRESHOLD — 0 = use default (5)
+    sharedKey: ""             # CLAVEX_SHIELD_THREAT_FEED_SHARED_KEY — HMAC key (hex/base64)
+    signingPubKey: ""         # CLAVEX_SHIELD_THREAT_FEED_SIGNING_PUB_KEY — aggregator EC P-256 public PEM
+
   # ── Database ────────────────────────────────────────────────────────────────
   databaseMode: "external"    # CLAVEX_DATABASE_MODE — "external" | "embedded"
   databaseDSN: ""             # CLAVEX_DATABASE_DSN — use existingSecret in production

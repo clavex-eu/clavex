@@ -575,6 +575,12 @@ func LoadFrom(path string) (*Config, error) {
 		{"auth.geoip_asn_db_path", "CLAVEX_AUTH_GEOIP_ASN_DB_PATH"},
 		{"auth.abuseipdb_key", "CLAVEX_AUTH_ABUSEIPDB_KEY"},
 		{"auth.abuseipdb_threshold", "CLAVEX_AUTH_ABUSEIPDB_THRESHOLD"},
+		{"shield.threat_feed.enabled", "CLAVEX_SHIELD_THREAT_FEED_ENABLED"},
+		{"shield.threat_feed.url", "CLAVEX_SHIELD_THREAT_FEED_URL"},
+		{"shield.threat_feed.shared_key", "CLAVEX_SHIELD_THREAT_FEED_SHARED_KEY"},
+		{"shield.threat_feed.report", "CLAVEX_SHIELD_THREAT_FEED_REPORT"},
+		{"shield.threat_feed.signing_pub_key", "CLAVEX_SHIELD_THREAT_FEED_SIGNING_PUB_KEY"},
+		{"shield.threat_feed.threshold", "CLAVEX_SHIELD_THREAT_FEED_THRESHOLD"},
 		{"auth.pqc_enabled", "CLAVEX_AUTH_PQC_ENABLED"},
 		{"auth.pqc_algorithm", "CLAVEX_AUTH_PQC_ALGORITHM"},
 		// Federation scalar keys: nested-struct Unmarshal does not pick these
