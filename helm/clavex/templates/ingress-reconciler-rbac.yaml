@@ -1,0 +1,33 @@
+{{- if .Values.cloudIngressReconcile.enabled -}}
+# RBAC for the Cloud custom-domain ingress reconciler. The Clavex pod uses its
+# ServiceAccount token to create/update/prune per-domain Ingresses and (for BYO
+# certs) TLS Secrets in its own namespace via Server-Side Apply.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: {{ include "clavex.fullname" . }}-ingress-reconciler
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+rules:
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+  - apiGroups: [""]
+    resources: ["secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "delete"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: {{ include "clavex.fullname" . }}-ingress-reconciler
+  labels:
+    {{- include "clavex.labels" . | nindent 4 }}
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: Role
+  name: {{ include "clavex.fullname" . }}-ingress-reconciler
+subjects:
+  - kind: ServiceAccount
+    name: {{ include "clavex.serviceAccountName" . }}
+    namespace: {{ .Release.Namespace }}
+{{- end }}

@@ -22,6 +22,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/forwardauth"
 	gdprpkg "github.com/clavex-eu/clavex/internal/gdpr"
 	"github.com/clavex-eu/clavex/internal/handler"
+	"github.com/clavex-eu/clavex/internal/ingressreconcile"
 	"github.com/clavex-eu/clavex/internal/license"
 	"github.com/clavex-eu/clavex/internal/lifecycle"
 	"github.com/clavex-eu/clavex/internal/lockout"
@@ -1017,11 +1018,13 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		orgScoped.DELETE("/ip-allowlist/:entry_id", ipAllowlist.Delete, middleware.RequireResourcePermission("security"))
 
 		// Custom domains (SaaS Enterprise — CNAME + Let's Encrypt / Traefik)
-		customDomainH := handler.NewCustomDomainHandler(pool)
+		customDomainH := handler.NewCustomDomainHandler(pool, enc)
 		orgScoped.GET("/custom-domains", customDomainH.List, middleware.RequireResourcePermission("security"))
 		orgScoped.POST("/custom-domains", customDomainH.Create, middleware.RequireResourcePermission("security"))
 		orgScoped.DELETE("/custom-domains/:domain_id", customDomainH.Delete, middleware.RequireResourcePermission("security"))
 		orgScoped.POST("/custom-domains/:domain_id/verify", customDomainH.Verify, middleware.RequireResourcePermission("security"))
+		orgScoped.PUT("/custom-domains/:domain_id/certificate", customDomainH.UploadCert, middleware.RequireResourcePermission("security"))
+		orgScoped.DELETE("/custom-domains/:domain_id/certificate", customDomainH.RevertCert, middleware.RequireResourcePermission("security"))
 
 		// IP rules (allow/deny CIDR list)
 		ipRulesH := handler.NewIPRulesHandler(repository.NewIPRulesRepository(pool))
@@ -1882,6 +1885,14 @@ func (s *Server) Start() error {
 	go worker.RunEntityReviewWorker(ctx, s.pool, entityReviewBaseURL)
 	go worker.RunPAMRotationWorker(ctx, s.pool, s.enc, s.pamNotifier)
 	go worker.RunEntityEventsProjectionWorker(ctx, s.pool)
+
+	// Custom-domain ingress reconciler (opt-in, in-cluster only) + re-verify.
+	if ir, enabled, err := ingressreconcile.NewFromEnv(s.pool, s.enc); err != nil {
+		log.Error().Err(err).Msg("ingress-reconcile: disabled — config error")
+	} else if enabled {
+		go worker.RunIngressReconcileWorker(ctx, s.pool, ir)
+	}
+	go worker.RunDomainVerifyWorker(ctx, s.pool, net.DefaultResolver)
 	if s.feedClient != nil {
 		if s.licenseChecker != nil {
 			s.feedClient.UpdateLicenseJWT(s.licenseChecker.RawToken())
