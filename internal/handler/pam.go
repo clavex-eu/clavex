@@ -51,6 +51,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/middleware"
 	"github.com/clavex-eu/clavex/internal/repository"
+	"github.com/clavex-eu/clavex/internal/safehttp"
 	"github.com/clavex-eu/clavex/internal/webhook"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -837,6 +838,18 @@ func (h *PAMHandler) SignSSHPublicKey(c echo.Context) error {
 
 // ── Vault HTTP helpers ────────────────────────────────────────────────────────
 
+// vaultHTTPClient is SSRF-guarded: it refuses to dial private/loopback targets
+// unless the operator opts in via http.allow_private_outbound_targets. vaultAddr
+// comes from tenant PAM config, so it must be treated as untrusted.
+var vaultHTTPClient = safehttp.Client(10*time.Second, false)
+
+// SetVaultHTTPClient overrides the Vault HTTP client (SSRF-relaxed opt-in).
+func SetVaultHTTPClient(hc *http.Client) {
+	if hc != nil {
+		vaultHTTPClient = hc
+	}
+}
+
 // fetchVaultCAPublicKey fetches the CA public key from Vault SSH secrets engine.
 func fetchVaultCAPublicKey(ctx context.Context, vaultAddr, mount, token string) (string, error) {
 	url := strings.TrimRight(vaultAddr, "/") + "/v1/" + mount + "/ca/public-key"
@@ -845,7 +858,7 @@ func fetchVaultCAPublicKey(ctx context.Context, vaultAddr, mount, token string) 
 		return "", err
 	}
 	req.Header.Set("X-Vault-Token", token)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := vaultHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}
@@ -877,7 +890,7 @@ func signWithVaultSSHCA(ctx context.Context, vaultAddr, mount, role, token, publ
 	req.Header.Set("X-Vault-Token", token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := vaultHTTPClient.Do(req)
 	if err != nil {
 		return "", err
 	}

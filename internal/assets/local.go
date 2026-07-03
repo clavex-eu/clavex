@@ -39,12 +39,17 @@ func (c *LocalClient) PublicURL(key string) string {
 	return c.baseURL + "/" + strings.TrimLeft(key, "/")
 }
 
-// PutObject writes body to disk at baseDir/<key> (creating intermediate
-// directories as needed) and returns the public URL.
-func (c *LocalClient) PutObject(_ context.Context, key, _ string, body []byte) (string, error) {
-	dest := filepath.Join(c.baseDir, filepath.FromSlash(strings.TrimLeft(key, "/")))
+// safeDest resolves key to an absolute path guaranteed to stay inside baseDir.
+// The key is first rooted and cleaned so any "../" traversal is neutralised
+// before it is joined to baseDir (CWE-22), then the resolved path is verified
+// to be contained within baseDir.
+func (c *LocalClient) safeDest(key string) (string, error) {
+	// Rooting with a leading separator makes filepath.Clean collapse leading
+	// "../" segments (e.g. "/../../etc" → "/etc"), so the subsequent Join can
+	// never escape baseDir.
+	clean := filepath.Clean(string(os.PathSeparator) + filepath.FromSlash(strings.TrimLeft(key, "/")))
+	dest := filepath.Join(c.baseDir, clean)
 
-	// Prevent directory traversal: the resolved path must stay inside baseDir.
 	absBase, err := filepath.Abs(c.baseDir)
 	if err != nil {
 		return "", fmt.Errorf("assets/local: resolve base: %w", err)
@@ -53,8 +58,18 @@ func (c *LocalClient) PutObject(_ context.Context, key, _ string, body []byte) (
 	if err != nil {
 		return "", fmt.Errorf("assets/local: resolve dest: %w", err)
 	}
-	if !strings.HasPrefix(absDest, absBase+string(os.PathSeparator)) {
-		return "", fmt.Errorf("assets/local: key escapes base directory")
+	if absDest != absBase && !strings.HasPrefix(absDest, absBase+string(os.PathSeparator)) {
+		return "", fmt.Errorf("assets/local: key %q escapes base directory", key)
+	}
+	return absDest, nil
+}
+
+// PutObject writes body to disk at baseDir/<key> (creating intermediate
+// directories as needed) and returns the public URL.
+func (c *LocalClient) PutObject(_ context.Context, key, _ string, body []byte) (string, error) {
+	dest, err := c.safeDest(key)
+	if err != nil {
+		return "", err
 	}
 
 	if err := os.MkdirAll(filepath.Dir(dest), 0o750); err != nil {
@@ -87,20 +102,10 @@ func (c *LocalClient) PutObject(_ context.Context, key, _ string, body []byte) (
 // DeleteObject removes the file at baseDir/<key>. Returns nil if the file
 // does not exist (idempotent).
 func (c *LocalClient) DeleteObject(_ context.Context, key string) error {
-	dest := filepath.Join(c.baseDir, filepath.FromSlash(strings.TrimLeft(key, "/")))
-
-	absBase, err := filepath.Abs(c.baseDir)
+	dest, err := c.safeDest(key)
 	if err != nil {
-		return fmt.Errorf("assets/local: resolve base: %w", err)
+		return err
 	}
-	absDest, err := filepath.Abs(dest)
-	if err != nil {
-		return fmt.Errorf("assets/local: resolve dest: %w", err)
-	}
-	if !strings.HasPrefix(absDest, absBase+string(os.PathSeparator)) {
-		return fmt.Errorf("assets/local: key escapes base directory")
-	}
-
 	if err := os.Remove(dest); err != nil && !os.IsNotExist(err) {
 		return fmt.Errorf("assets/local: remove: %w", err)
 	}

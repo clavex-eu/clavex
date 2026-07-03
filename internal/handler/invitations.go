@@ -1,6 +1,7 @@
 package handler
 
 import (
+	"html/template"
 	"net/http"
 	"strings"
 
@@ -11,6 +12,20 @@ import (
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 )
+
+// acceptInvitationForm renders the public invitation-acceptance form. html/template
+// context-escapes OrgID and Token, closing the reflected-XSS vector on the token.
+var acceptInvitationForm = template.Must(template.New("accept-invitation").Parse(
+	`<!DOCTYPE html><html><head><title>Accept Invitation</title></head><body>
+<h2>Accept Invitation</h2>
+<p>You have been invited to join {{.OrgID}}.</p>
+<form method="POST">
+<input type="hidden" name="token" value="{{.Token}}">
+<label>First name: <input name="first_name" required></label><br>
+<label>Last name: <input name="last_name" required></label><br>
+<label>Password: <input type="password" name="password" required></label><br>
+<button type="submit">Accept</button>
+</form></body></html>`))
 
 // InvitationHandler manages org invitations.
 type InvitationHandler struct {
@@ -126,18 +141,16 @@ func (h *InvitationHandler) ShowAcceptPage(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusGone, "invitation already accepted")
 	}
 
-	// Render a minimal HTML form.
-	html := `<!DOCTYPE html><html><head><title>Accept Invitation</title></head><body>
-<h2>Accept Invitation</h2>
-<p>You have been invited to join ` + inv.OrgID.String() + `.</p>
-<form method="POST">
-<input type="hidden" name="token" value="` + token + `">
-<label>First name: <input name="first_name" required></label><br>
-<label>Last name: <input name="last_name" required></label><br>
-<label>Password: <input type="password" name="password" required></label><br>
-<button type="submit">Accept</button>
-</form></body></html>`
-	return c.HTML(http.StatusOK, html)
+	// Render a minimal HTML form. Use html/template so the reflected token and
+	// org id are context-escaped (prevents reflected XSS, CWE-79).
+	var buf strings.Builder
+	if err := acceptInvitationForm.Execute(&buf, map[string]string{
+		"OrgID": inv.OrgID.String(),
+		"Token": token,
+	}); err != nil {
+		return echo.ErrInternalServerError
+	}
+	return c.HTML(http.StatusOK, buf.String())
 }
 
 type acceptInvitationRequest struct {

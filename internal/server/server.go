@@ -262,6 +262,11 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		ssf.SetPushHTTPClient(relaxed)
 		webhooks.Dispatcher().WithHTTPClient(relaxed)
 		enrichment.SetHTTPClient(relaxed)
+		// Same opt-out for the SSRF-guarded fetchers: federation trust-chain
+		// resolution, OIDC request_uri/jwks_uri, and Vault SSH CA.
+		federation.SetDefaultHTTPClient(relaxed)
+		oidc.SetJARHTTPClient(relaxed)
+		handler.SetVaultHTTPClient(relaxed)
 	}
 	fwdAuth := forwardauth.New(cfg, pool)
 	impersonation := handler.NewImpersonationHandler(cfg, pool)
@@ -336,6 +341,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	// IdentityImportHandler handles POST …/users/:user_id/identity/import —
 	// verified identity portability between Clavex installations via OID4VP.
 	identityImportH := handler.NewIdentityImportHandler(repository.NewUserRepository(pool))
+	if cfg.HTTP.AllowPrivateOutboundTargets {
+		identityImportH.WithHTTPClient(safehttp.Client(10*time.Second, true))
+	}
 
 	// MarketplaceHandler — Credential Marketplace public catalog + org management.
 	marketplaceH := handler.NewMarketplaceHandler(repository.NewMarketplaceRepository(pool))

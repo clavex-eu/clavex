@@ -16,6 +16,7 @@ package main
 import (
 	"flag"
 	"fmt"
+	"math"
 	"os"
 	"strconv"
 
@@ -93,6 +94,9 @@ func main() {
 		if err != nil {
 			log.Fatal().Msgf("invalid version %q: must be a non-negative integer", cmdArgs[0])
 		}
+		if v > math.MaxInt32 {
+			log.Fatal().Msgf("version %d out of range", v)
+		}
 		if err := db.MigrateTo(mgr.Pool, uint(v)); err != nil {
 			log.Fatal().Err(err).Msg("migrate to failed")
 		}
@@ -111,6 +115,9 @@ func main() {
 		v, err := strconv.ParseUint(cmdArgs[0], 10, 64)
 		if err != nil {
 			log.Fatal().Msgf("invalid version %q: must be a non-negative integer", cmdArgs[0])
+		}
+		if v > math.MaxInt32 {
+			log.Fatal().Msgf("version %d out of range", v)
 		}
 		if err := db.MigrateForce(mgr.Pool, int(v)); err != nil {
 			log.Fatal().Err(err).Msg("migrate force failed")

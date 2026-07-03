@@ -40,11 +40,22 @@ func (m *Mailer) Send(to, subject, htmlBody string) error {
 	s := m.settings
 	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
 
-	fromDisplay := s.FromName + " <" + s.FromAddress + ">"
+	// Sanitize all header values to prevent SMTP header / email injection.
+	toAddr, err := SanitizeAddress(to)
+	if err != nil {
+		return err
+	}
+	fromAddr, err := SanitizeAddress(s.FromAddress)
+	if err != nil {
+		return err
+	}
+	to = toAddr
+
+	fromDisplay := SanitizeHeader(s.FromName) + " <" + fromAddr + ">"
 	msg := strings.Join([]string{
 		"From: " + fromDisplay,
-		"To: " + to,
-		"Subject: " + subject,
+		"To: " + toAddr,
+		"Subject: " + SanitizeHeader(subject),
 		"MIME-Version: 1.0",
 		"Content-Type: text/html; charset=UTF-8",
 		"",
@@ -57,9 +68,9 @@ func (m *Mailer) Send(to, subject, htmlBody string) error {
 	}
 
 	if s.UseTLS {
-		return m.sendTLS(addr, auth, s.FromAddress, to, []byte(msg))
+		return m.sendTLS(addr, auth, fromAddr, to, []byte(msg))
 	}
-	return smtp.SendMail(addr, auth, s.FromAddress, []string{to}, []byte(msg))
+	return smtp.SendMail(addr, auth, fromAddr, []string{to}, []byte(msg))
 }
 
 func (m *Mailer) sendTLS(addr string, auth smtp.Auth, from, to string, msg []byte) error {

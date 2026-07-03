@@ -135,10 +135,37 @@ func (h *Handler) Callback(c echo.Context) error {
 	c.SetCookie(&http.Cookie{Name: cookieName, Value: raw, Path: "/", MaxAge: int(sessionTTL.Seconds()), HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 	rd := "/"
 	if rdCookie, err := c.Cookie(redirectCookie); err == nil && rdCookie.Value != "" {
-		rd = rdCookie.Value
+		rd = safeRedirect(rdCookie.Value, h.cfg.Auth.IssuerBase, "/")
 		c.SetCookie(&http.Cookie{Name: redirectCookie, Value: "", MaxAge: -1, Path: "/"})
 	}
 	return c.Redirect(http.StatusFound, rd)
+}
+
+// safeRedirect returns target only if it is a safe post-auth destination — a
+// site-relative path, or an absolute URL on the same origin as issuerBase —
+// otherwise it returns fallback. This prevents open redirects (CWE-601) via a
+// caller-supplied `rd` value.
+func safeRedirect(target, issuerBase, fallback string) string {
+	if target == "" {
+		return fallback
+	}
+	u, err := url.Parse(target)
+	if err != nil {
+		return fallback
+	}
+	if u.Scheme == "" && u.Host == "" {
+		// Site-relative path. Reject "//host" and "/\host", which browsers treat
+		// as scheme-relative absolute URLs.
+		if strings.HasPrefix(target, "/") && !strings.HasPrefix(target, "//") && !strings.HasPrefix(target, "/\\") {
+			return target
+		}
+		return fallback
+	}
+	// Absolute URL: only allow the same origin as the configured issuer base.
+	if base, berr := url.Parse(issuerBase); berr == nil && u.Scheme == base.Scheme && u.Host == base.Host {
+		return target
+	}
+	return fallback
 }
 
 // SignOut clears the session cookie and deletes the session record.
@@ -150,10 +177,8 @@ func (h *Handler) SignOut(c echo.Context) error {
 	}
 	clearCookie(c)
 	slug := c.Param("org_slug")
-	rd := c.QueryParam("rd")
-	if rd == "" {
-		rd = h.cfg.HTTP.IssuerURLFromBase(h.cfg.Auth.IssuerBase, slug) + "/auth/sign-in"
-	}
+	fallback := h.cfg.HTTP.IssuerURLFromBase(h.cfg.Auth.IssuerBase, slug) + "/auth/sign-in"
+	rd := safeRedirect(c.QueryParam("rd"), h.cfg.Auth.IssuerBase, fallback)
 	return c.Redirect(http.StatusFound, rd)
 }
 
