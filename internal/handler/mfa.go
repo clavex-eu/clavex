@@ -235,7 +235,10 @@ func (h *MFAHandler) SelfServiceDelete(c echo.Context) error {
 		}
 	}
 
-	if err := h.repo.Delete(ctx, credID); err != nil {
+	// Scope the delete to the caller's own credential: credID must belong to the
+	// authenticated user (and that user to their org). Without this a user could
+	// delete another user's MFA credential by passing its id.
+	if err := h.repo.DeleteForUserInOrg(ctx, credID, userID, user.OrgID); err != nil {
 		return echo.ErrNotFound
 	}
 	return c.NoContent(http.StatusNoContent)

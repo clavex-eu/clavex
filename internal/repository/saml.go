@@ -87,9 +87,18 @@ func (r *SAMLRepository) ListSPsByOrg(ctx context.Context, orgID uuid.UUID) ([]*
 	return sps, rows.Err()
 }
 
-func (r *SAMLRepository) DeleteSP(ctx context.Context, id uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM saml_service_providers WHERE id = $1`, id)
-	return err
+// DeleteSP removes a SAML service provider scoped to its owning org. The org_id
+// predicate makes this IDOR-safe: a cross-org id returns pgx.ErrNoRows instead
+// of deleting another tenant's SP. Returns pgx.ErrNoRows when no row matches.
+func (r *SAMLRepository) DeleteSP(ctx context.Context, id, orgID uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM saml_service_providers WHERE id = $1 AND org_id = $2`, id, orgID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 // ── IdP Certificate management ────────────────────────────────────────────────

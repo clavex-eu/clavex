@@ -194,12 +194,16 @@ func (h *SAMLHandler) ListSPs(c echo.Context) error {
 // DeleteSP removes a service provider.
 // DELETE /api/v1/organizations/:org_id/saml/sps/:sp_id
 func (h *SAMLHandler) DeleteSP(c echo.Context) error {
+	orgID, err := uuid.Parse(c.Param("org_id"))
+	if err != nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "invalid org_id")
+	}
 	spID, err := uuid.Parse(c.Param("sp_id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid sp_id")
 	}
-	if err := h.samlRepo.DeleteSP(c.Request().Context(), spID); err != nil {
-		return echo.ErrInternalServerError
+	if err := h.samlRepo.DeleteSP(c.Request().Context(), spID, orgID); err != nil {
+		return echo.ErrNotFound
 	}
 	return c.NoContent(http.StatusNoContent)
 }

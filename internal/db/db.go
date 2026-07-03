@@ -228,6 +228,15 @@ func newMigrator(pool *pgxpool.Pool) (*migrate.Migrate, error) {
 	cc := pool.Config().ConnConfig
 	q := url.Values{}
 	q.Set("search_path", "identity,sessions,audit,public")
+	// Pin the bookkeeping table to public.schema_migrations explicitly. Without
+	// this, the pgx driver resolves the migrations-table schema via
+	// CURRENT_SCHEMA(), which is `public` on a fresh DB (identity does not exist
+	// yet) but flips to `identity` on later runs (identity is first in
+	// search_path once migration 000017 creates it). That shift makes the driver
+	// look for identity.schema_migrations, not find it, and mis-read the version
+	// as 0 — breaking `migrate down` / `migrate to`. Quoting pins the schema.
+	q.Set("x-migrations-table", `"public"."schema_migrations"`)
+	q.Set("x-migrations-table-quoted", "true")
 	u := &url.URL{
 		Scheme:   "pgx5",
 		User:     url.UserPassword(cc.User, cc.Password),

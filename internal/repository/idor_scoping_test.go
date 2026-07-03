@@ -160,4 +160,102 @@ func TestIDOR_ClientScopes_CrossOrgRejected(t *testing.T) {
 	require.True(t, ok)
 }
 
+// TestIDOR_Webhooks_CrossOrgMutationRejected guards the webhook mutation path:
+// Update/Delete must reject a webhook id owned by a different org. Regression for
+// the IDOR where an org-B admin could PATCH/DELETE org-A's webhook (incl. its
+// signing secret) by passing the leaf id under their own :org_id.
+func TestIDOR_Webhooks_CrossOrgMutationRejected(t *testing.T) {
+	pool := idorPool(t)
+	ctx := context.Background()
+	orgA, orgB := twoOrgs(t, ctx, pool)
+	repo := NewWebhookRepository(pool)
+
+	wh, err := repo.Create(ctx, orgA, "https://a.example/hook", []string{"user.created"}, "s3cr3t")
+	require.NoError(t, err)
+
+	// Cross-org update is rejected (no row matches id + orgB).
+	_, err = repo.Update(ctx, wh.ID, orgB, ptr("https://evil/hook"), nil, nil, nil)
+	require.ErrorIs(t, err, pgx.ErrNoRows)
+
+	// Cross-org delete is rejected.
+	err = repo.Delete(ctx, wh.ID, orgB)
+	require.ErrorIs(t, err, pgx.ErrNoRows)
+
+	// Owning org still succeeds.
+	_, err = repo.Update(ctx, wh.ID, orgA, ptr("https://a.example/hook2"), nil, nil, nil)
+	require.NoError(t, err)
+	require.NoError(t, repo.Delete(ctx, wh.ID, orgA))
+}
+
+// TestIDOR_SigningKeys_PerOrgIsolation guards BYOK per-org signing keys: one
+// org's active key must never be returned when querying under another org. A
+// cross-org key read would enable token forgery for the victim org.
+func TestIDOR_SigningKeys_PerOrgIsolation(t *testing.T) {
+	pool := idorPool(t)
+	ctx := context.Background()
+	orgA, orgB := twoOrgs(t, ctx, pool)
+	repo := NewSigningKeyRepository(pool)
+
+	kid := "kid-" + uuid.NewString()
+	require.NoError(t, repo.InsertForOrg(ctx, orgA, kid, "PS256", []byte("enc-key-bytes")))
+
+	// orgA sees its key; orgB does not (no active key for orgB).
+	got, err := repo.GetActiveForOrg(ctx, orgA)
+	require.NoError(t, err)
+	require.Equal(t, kid, got.KID)
+
+	_, err = repo.GetActiveForOrg(ctx, orgB)
+	require.ErrorIs(t, err, pgx.ErrNoRows)
+}
+
+// TestIDOR_SAMLSP_CrossOrgDeleteRejected guards SAML SP deletion: DeleteSP must
+// reject an SP id owned by a different org. Regression for the IDOR where an
+// org-B admin could DELETE org-A's SAML service provider by its id.
+func TestIDOR_SAMLSP_CrossOrgDeleteRejected(t *testing.T) {
+	pool := idorPool(t)
+	ctx := context.Background()
+	orgA, orgB := twoOrgs(t, ctx, pool)
+	repo := NewSAMLRepository(pool)
+
+	sp, err := repo.CreateSP(ctx, CreateSAMLSPParams{
+		OrgID:        orgA,
+		EntityID:     "urn:sp:" + uuid.NewString(),
+		Name:         "sp-A",
+		ACSURL:       "https://a.example/acs",
+		NameIDFormat: "urn:oasis:names:tc:SAML:2.0:nameid-format:emailAddress",
+	})
+	require.NoError(t, err)
+
+	// Cross-org delete is rejected.
+	require.ErrorIs(t, repo.DeleteSP(ctx, sp.ID, orgB), pgx.ErrNoRows)
+	// Owning org succeeds.
+	require.NoError(t, repo.DeleteSP(ctx, sp.ID, orgA))
+}
+
+// TestIDOR_MFA_CrossUserDeleteRejected guards self-service MFA credential
+// deletion: DeleteForUserInOrg must reject a credential owned by another user.
+// Regression for the IDOR where a user could delete another user's credential.
+func TestIDOR_MFA_CrossUserDeleteRejected(t *testing.T) {
+	pool := idorPool(t)
+	ctx := context.Background()
+	orgA, orgB := twoOrgs(t, ctx, pool)
+	users := NewUserRepository(pool)
+	repo := NewMFARepository(pool)
+
+	victim, err := users.Create(ctx, orgA, "victim-"+uuid.NewString()+"@t.local", nil, nil)
+	require.NoError(t, err)
+	attacker, err := users.Create(ctx, orgB, "attacker-"+uuid.NewString()+"@t.local", nil, nil)
+	require.NoError(t, err)
+
+	cred, err := repo.CreateTOTP(ctx, victim.ID, "victim-totp", map[string]interface{}{"secret": "x"})
+	require.NoError(t, err)
+
+	// Attacker (different user, different org) cannot delete the victim's cred.
+	require.ErrorIs(t, repo.DeleteForUserInOrg(ctx, cred.ID, attacker.ID, orgB), pgx.ErrNoRows)
+	// Wrong org for the right user is also rejected.
+	require.ErrorIs(t, repo.DeleteForUserInOrg(ctx, cred.ID, victim.ID, orgB), pgx.ErrNoRows)
+	// Owner in the correct org succeeds.
+	require.NoError(t, repo.DeleteForUserInOrg(ctx, cred.ID, victim.ID, orgA))
+}
+
 func ptr[T any](v T) *T { return &v }

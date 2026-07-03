@@ -168,27 +168,39 @@ func (r *WebhookRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.
 	return w, nil
 }
 
-func (r *WebhookRepository) Update(ctx context.Context, id uuid.UUID, url *string, events []string, isActive *bool, eventFilter []string) (*models.Webhook, error) {
+// Update mutates a webhook scoped to its owning org. The org_id predicate makes
+// this IDOR-safe: a cross-org id returns pgx.ErrNoRows instead of mutating
+// another tenant's webhook.
+func (r *WebhookRepository) Update(ctx context.Context, id, orgID uuid.UUID, url *string, events []string, isActive *bool, eventFilter []string) (*models.Webhook, error) {
 	w := &models.Webhook{}
 	row := r.pool.QueryRow(ctx, `
 		UPDATE webhooks SET
-			url          = COALESCE($2, url),
-			events       = COALESCE($3, events),
-			is_active    = COALESCE($4, is_active),
-			event_filter = CASE WHEN $5::text[] IS NOT NULL THEN $5 ELSE event_filter END,
+			url          = COALESCE($3, url),
+			events       = COALESCE($4, events),
+			is_active    = COALESCE($5, is_active),
+			event_filter = CASE WHEN $6::text[] IS NOT NULL THEN $6 ELSE event_filter END,
 			updated_at   = NOW()
-		WHERE id = $1
+		WHERE id = $1 AND org_id = $2
 		RETURNING `+webhookCols,
-		id, url, events, isActive, eventFilter)
+		id, orgID, url, events, isActive, eventFilter)
 	if err := r.scanWebhook(w, row); err != nil {
 		return nil, err
 	}
 	return w, nil
 }
 
-func (r *WebhookRepository) Delete(ctx context.Context, id uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `DELETE FROM webhooks WHERE id = $1`, id)
-	return err
+// Delete removes a webhook scoped to its owning org. Returns pgx.ErrNoRows when
+// no row matches (unknown id or cross-org id) so callers surface a 404 rather
+// than silently succeeding on another tenant's resource.
+func (r *WebhookRepository) Delete(ctx context.Context, id, orgID uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `DELETE FROM webhooks WHERE id = $1 AND org_id = $2`, id, orgID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
 }
 
 // ListActiveByOrgAndEvent returns all active webhooks for an org that subscribe to the given event.
