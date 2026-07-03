@@ -614,3 +614,22 @@ prometheusRule:
 
     # HTTP 5xx rate (%) that triggers ClavexHTTPHighErrorRate.
     http5xxRatePct: 5
+
+## ── Custom-domain ingress reconciler ────────────────────────────────────────
+# Reconciles per-org custom domains into k8s Ingresses (+ TLS Secrets for BYO
+# certs) so a multi-tenant deployment can point customer domains at Clavex.
+# Requires the RBAC Role/RoleBinding (ingress-reconciler-rbac.yaml), created
+# automatically when enabled. Only relevant for multi-org (commercial) use.
+cloudIngressReconcile:
+  enabled: false
+  # Default tenant subdomains ({slug}.<wildcardBase>) are served by a shared
+  # wildcard cert and skipped; only real customer domains are reconciled. Leave
+  # empty to reconcile every active domain.
+  wildcardBase: ""
+  # Traefik ingressClassName for the generated Ingresses.
+  ingressClassName: "traefik"
+  # Traefik ACME cert-resolver name used for non-BYO (auto-cert) domains.
+  certResolver: "letsencrypt"
+  # Target customers must CNAME their domain to; the Verify endpoint checks the
+  # domain resolves here before activating it. Usually the shared ingress LB.
+  cnameTarget: ""
