@@ -66,7 +66,7 @@ func (h *WebhookHandler) Create(c echo.Context) error {
 	}
 	// Persist event_filter if provided.
 	if len(req.EventFilter) > 0 {
-		w, _ = h.repo.Update(c.Request().Context(), w.ID, nil, nil, nil, req.EventFilter)
+		w, _ = h.repo.Update(c.Request().Context(), w.ID, orgID, nil, nil, nil, req.EventFilter)
 	}
 	// Return the secret once — callers must store it immediately.
 	type createResponse struct {
@@ -120,6 +120,10 @@ type updateWebhookRequest struct {
 
 // PATCH /api/v1/organizations/:org_id/webhooks/:id
 func (h *WebhookHandler) Update(c echo.Context) error {
+	orgID, err := uuidParam(c, "org_id")
+	if err != nil {
+		return err
+	}
 	id, err := uuidParam(c, "id")
 	if err != nil {
 		return err
@@ -133,7 +137,7 @@ func (h *WebhookHandler) Update(c echo.Context) error {
 	if req.EventFilter != nil {
 		ef = req.EventFilter
 	}
-	w, err := h.repo.Update(c.Request().Context(), id, req.URL, req.Events, req.IsActive, ef)
+	w, err := h.repo.Update(c.Request().Context(), id, orgID, req.URL, req.Events, req.IsActive, ef)
 	if err != nil {
 		return echo.ErrNotFound
 	}
@@ -142,11 +146,15 @@ func (h *WebhookHandler) Update(c echo.Context) error {
 
 // DELETE /api/v1/organizations/:org_id/webhooks/:id
 func (h *WebhookHandler) Delete(c echo.Context) error {
+	orgID, err := uuidParam(c, "org_id")
+	if err != nil {
+		return err
+	}
 	id, err := uuidParam(c, "id")
 	if err != nil {
 		return err
 	}
-	if err := h.repo.Delete(c.Request().Context(), id); err != nil {
+	if err := h.repo.Delete(c.Request().Context(), id, orgID); err != nil {
 		return echo.ErrNotFound
 	}
 	return c.NoContent(http.StatusNoContent)

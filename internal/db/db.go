@@ -152,9 +152,94 @@ func newPool(dsn string, maxConns, minConns int32) (*pgxpool.Pool, error) {
 	return pool, nil
 }
 
+// reconcileMigrationsBookkeeping repairs the split-brain that exists on databases
+// upgraded across commit 22eb691f, which pinned the golang-migrate bookkeeping
+// table to public.schema_migrations.
+//
+// Before that pin, the bookkeeping table was resolved via the search_path: early
+// migrations recorded into public.schema_migrations, but once migration 000017
+// created the identity schema (first in search_path) the driver silently switched
+// to identity.schema_migrations, which then advanced to the real current version.
+// After the pin, startup reads the frozen public.schema_migrations instead, thinks
+// the DB is far behind, re-runs already-applied migrations and fails ("Dirty
+// database version N").
+//
+// This copies the real historical version forward into public.schema_migrations.
+// It is idempotent and only ever moves public forward — a fresh install (no
+// identity.schema_migrations) or an already-reconciled DB is a no-op — so it is
+// safe to run unconditionally on every boot.
+func reconcileMigrationsBookkeeping(ctx context.Context, pool *pgxpool.Pool) error {
+	// The historical table only exists on DBs that ran the pre-pin layout. Gate on
+	// to_regclass so a fresh install (identity schema absent) is a clean no-op.
+	var reg *string
+	if err := pool.QueryRow(ctx, `SELECT to_regclass('identity.schema_migrations')::text`).Scan(&reg); err != nil {
+		return fmt.Errorf("probe identity.schema_migrations: %w", err)
+	}
+	if reg == nil {
+		return nil // no historical bookkeeping table — nothing to reconcile
+	}
+
+	var histVersion int64
+	var histDirty bool
+	if err := pool.QueryRow(ctx, `SELECT version, dirty FROM identity.schema_migrations`).Scan(&histVersion, &histDirty); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return nil // table exists but empty — no version to carry forward
+		}
+		return fmt.Errorf("read identity.schema_migrations: %w", err)
+	}
+	if histDirty {
+		return nil // historical state is itself dirty — do not paper over a real failure
+	}
+
+	// Ensure the pinned table exists (golang-migrate's own schema) so we can seed it
+	// before the migrator reads it.
+	if _, err := pool.Exec(ctx, `CREATE TABLE IF NOT EXISTS public.schema_migrations (version bigint NOT NULL PRIMARY KEY, dirty boolean NOT NULL)`); err != nil {
+		return fmt.Errorf("ensure public.schema_migrations: %w", err)
+	}
+
+	var pubVersion int64
+	var pubDirty bool
+	hasRow := true
+	if err := pool.QueryRow(ctx, `SELECT version, dirty FROM public.schema_migrations`).Scan(&pubVersion, &pubDirty); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			hasRow = false
+		} else {
+			return fmt.Errorf("read public.schema_migrations: %w", err)
+		}
+	}
+
+	// Only move forward: if public is already clean and at/ahead of the historical
+	// version, it is authoritative — leave it untouched.
+	if hasRow && !pubDirty && pubVersion >= histVersion {
+		return nil
+	}
+
+	if hasRow {
+		_, err := pool.Exec(ctx, `UPDATE public.schema_migrations SET version = $1, dirty = false`, histVersion)
+		if err != nil {
+			return fmt.Errorf("reconcile public.schema_migrations: %w", err)
+		}
+	} else {
+		_, err := pool.Exec(ctx, `INSERT INTO public.schema_migrations (version, dirty) VALUES ($1, false)`, histVersion)
+		if err != nil {
+			return fmt.Errorf("seed public.schema_migrations: %w", err)
+		}
+	}
+	log.Warn().
+		Int64("from_version", pubVersion).
+		Bool("from_dirty", pubDirty).
+		Int64("to_version", histVersion).
+		Msg("reconciled public.schema_migrations from historical identity.schema_migrations")
+	return nil
+}
+
 // Migrate applies all pending up-migrations using golang-migrate.
 // Migrations are embedded at compile time from internal/db/migrations/.
 func Migrate(pool *pgxpool.Pool) error {
+	if err := reconcileMigrationsBookkeeping(context.Background(), pool); err != nil {
+		return fmt.Errorf("reconcile migrations bookkeeping: %w", err)
+	}
+
 	m, err := newMigrator(pool)
 	if err != nil {
 		return err
@@ -228,6 +313,15 @@ func newMigrator(pool *pgxpool.Pool) (*migrate.Migrate, error) {
 	cc := pool.Config().ConnConfig
 	q := url.Values{}
 	q.Set("search_path", "identity,sessions,audit,public")
+	// Pin the bookkeeping table to public.schema_migrations explicitly. Without
+	// this, the pgx driver resolves the migrations-table schema via
+	// CURRENT_SCHEMA(), which is `public` on a fresh DB (identity does not exist
+	// yet) but flips to `identity` on later runs (identity is first in
+	// search_path once migration 000017 creates it). That shift makes the driver
+	// look for identity.schema_migrations, not find it, and mis-read the version
+	// as 0 — breaking `migrate down` / `migrate to`. Quoting pins the schema.
+	q.Set("x-migrations-table", `"public"."schema_migrations"`)
+	q.Set("x-migrations-table-quoted", "true")
 	u := &url.URL{
 		Scheme:   "pgx5",
 		User:     url.UserPassword(cc.User, cc.Password),
