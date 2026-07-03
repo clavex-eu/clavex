@@ -43,6 +43,8 @@ linters:
         - Synthesized
         - specialized
         - Specialized
+        # Stripe subscription status value (API contract, US spelling)
+        - trialing
     errcheck:
       exclude-functions:
         - fmt.Fprintln
