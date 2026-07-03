@@ -17,7 +17,20 @@ import (
 	"sort"
 	"strings"
 	"time"
+
+	"github.com/clavex-eu/clavex/internal/safehttp"
 )
+
+// smsHTTPClient guards outbound SMS-gateway requests against SSRF: some
+// providers (e.g. Infobip) use a tenant-configured base_url, which must not be
+// allowed to reach private, loopback or link-local addresses.
+var smsHTTPClient = safehttp.Client(30*time.Second, false)
+
+// SetSMSHTTPClient overrides the client used for outbound SMS-gateway requests.
+// Called at startup when the operator opts into private outbound targets
+// (http.allow_private_outbound_targets), e.g. an on-prem SMS gateway. Default
+// keeps the SSRF guard on.
+func SetSMSHTTPClient(c *http.Client) { smsHTTPClient = c }
 
 func init() {
 	RegisterSMS(&SMSConnectorDef{
@@ -157,7 +170,7 @@ func (p *twilioSender) Send(ctx context.Context, to, body string) error {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.SetBasicAuth(p.accountSID, p.authToken)
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := smsHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("twilio: request: %w", err)
 	}
@@ -190,7 +203,7 @@ func (p *vonageSender) Send(ctx context.Context, to, body string) error {
 	}
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := smsHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("vonage: request: %w", err)
 	}
@@ -277,7 +290,7 @@ func snsPublishInternal(ctx context.Context, accessKeyID, secretKey, region, sen
 	req.Header.Set("x-amz-date", amzDate)
 	req.Header.Set("Authorization", authorization)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := smsHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("aws_sns: request: %w", err)
 	}
@@ -340,7 +353,7 @@ func (p *infobipSender) Send(ctx context.Context, to, body string) error {
 	req.Header.Set("Accept", "application/json")
 	req.Header.Set("Authorization", "App "+p.apiKey)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := smsHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("infobip: request: %w", err)
 	}
@@ -391,7 +404,7 @@ func (p *whatsappSender) Send(ctx context.Context, to, body string) error {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Authorization", "Bearer "+p.accessToken)
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := smsHTTPClient.Do(req)
 	if err != nil {
 		return fmt.Errorf("whatsapp: request: %w", err)
 	}

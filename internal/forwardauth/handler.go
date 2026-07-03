@@ -83,12 +83,16 @@ func (h *Handler) SignIn(c echo.Context) error {
 	if rd == "" {
 		rd = "/"
 	}
-	c.SetCookie(&http.Cookie{Name: redirectCookie, Value: rd, Path: "/", MaxAge: 300, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	// forward-auth runs behind a reverse proxy, so TLS termination shows up in
+	// X-Forwarded-Proto rather than c.Request().TLS. Mark the short-lived state
+	// and redirect cookies Secure so they are never sent over plaintext HTTP.
+	secure := c.Request().TLS != nil || c.Request().Header.Get("X-Forwarded-Proto") == "https"
+	c.SetCookie(&http.Cookie{Name: redirectCookie, Value: rd, Path: "/", MaxAge: 300, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 	state, err := generateToken()
 	if err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to generate state")
 	}
-	c.SetCookie(&http.Cookie{Name: stateCookieName, Value: state, Path: "/", MaxAge: 300, HttpOnly: true, SameSite: http.SameSiteLaxMode})
+	c.SetCookie(&http.Cookie{Name: stateCookieName, Value: state, Path: "/", MaxAge: 300, HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 	issuer := h.cfg.HTTP.IssuerURLFromBase(h.cfg.Auth.IssuerBase, org.Slug)
 	callbackURL := issuer + "/auth/callback"
 	authURL := issuer + "/authorize?" + url.Values{
@@ -131,7 +135,7 @@ func (h *Handler) Callback(c echo.Context) error {
 	if err := h.sessions.Create(c.Request().Context(), org.ID, user.ID, hash, c.Request().UserAgent(), c.RealIP(), sessionTTL); err != nil {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to persist session")
 	}
-	secure := c.Request().TLS != nil
+	secure := c.Request().TLS != nil || c.Request().Header.Get("X-Forwarded-Proto") == "https"
 	c.SetCookie(&http.Cookie{Name: cookieName, Value: raw, Path: "/", MaxAge: int(sessionTTL.Seconds()), HttpOnly: true, Secure: secure, SameSite: http.SameSiteLaxMode})
 	rd := "/"
 	if rdCookie, err := c.Cookie(redirectCookie); err == nil && rdCookie.Value != "" {

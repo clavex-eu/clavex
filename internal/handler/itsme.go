@@ -125,7 +125,17 @@ func (h *ItsmeHandler) StartSSO(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid idp_id")
 	}
 
-	provider, err := h.idpRepo.GetByID(ctx, providerID)
+	// Cross-tenant guard: bind the provider to the login session's org so an
+	// IdP registered in another tenant cannot be used to authenticate here.
+	loginSess, err := h.store.GetLoginSession(ctx, loginSessionID)
+	if err != nil || loginSess == nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "login session expired — please restart the login")
+	}
+	orgID, err := uuid.Parse(loginSess.OrgID)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
+	provider, err := h.idpRepo.GetForOrg(ctx, providerID, orgID)
 	if err != nil || !provider.IsActive || provider.ProviderType != "itsme" {
 		return echo.NewHTTPError(http.StatusNotFound, "itsme provider not found or inactive")
 	}
@@ -183,10 +193,15 @@ func (h *ItsmeHandler) CallbackSSO(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "login session expired")
 	}
 
-	providerID, _ := uuid.Parse(stateData.ProviderID)
-	provider, err := h.idpRepo.GetByID(ctx, providerID)
+	orgID, err := uuid.Parse(loginSess.OrgID)
 	if err != nil {
 		return echo.ErrInternalServerError
+	}
+	providerID, _ := uuid.Parse(stateData.ProviderID)
+	// Cross-tenant guard: the provider must belong to the login session's org.
+	provider, err := h.idpRepo.GetForOrg(ctx, providerID, orgID)
+	if err != nil {
+		return echo.ErrNotFound
 	}
 	clientSecret, _, _, _, err := h.idpRepo.GetClientSecret(ctx, provider.ID)
 	if err != nil {
@@ -221,8 +236,6 @@ func (h *ItsmeHandler) CallbackSSO(c echo.Context) error {
 	if itsmeUser.Sub == "" {
 		return echo.NewHTTPError(http.StatusBadGateway, "itsme did not return a valid identity")
 	}
-
-	orgID, _ := uuid.Parse(loginSess.OrgID)
 
 	user, err := h.users.GetByExternalID(ctx, orgID, "itsme", itsmeUser.Sub)
 	if err != nil {
