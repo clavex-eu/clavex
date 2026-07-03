@@ -112,102 +112,27 @@ func (m *Mailer) sendTLS(addr string, auth smtp.Auth, from, to string, msg []byt
 
 // SendPasswordReset delivers a password-reset email.
 func (m *Mailer) SendPasswordReset(to, orgName, resetURL string) error {
-	subject := "Reset your " + orgName + " password"
-	body := fmt.Sprintf(`
-<!DOCTYPE html>
-<html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;color:#1a2230">
-  <h2 style="color:#1D9E75">Password Reset Request</h2>
-  <p>We received a request to reset the password for your <strong>%s</strong> account.</p>
-  <p style="margin:32px 0">
-    <a href="%s" style="background:#1D9E75;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
-      Reset my password
-    </a>
-  </p>
-  <p style="color:#6b7280;font-size:13px">
-    This link expires in 1 hour. If you did not request a password reset, you can safely ignore this email.
-  </p>
-  <p style="color:#6b7280;font-size:12px">If the button above does not work, copy this URL into your browser:<br>%s</p>
-</body></html>`, orgName, resetURL, resetURL)
-	return m.Send(to, subject, body)
+	return m.renderAndSend(to, "Reset your "+orgName+" password",
+		tmplPasswordReset, emailData{OrgName: orgName, URL: resetURL})
 }
 
 // SendEmailVerification delivers an email verification link.
 func (m *Mailer) SendEmailVerification(to, orgName, verifyURL string) error {
-	subject := "Verify your " + orgName + " email address"
-	body := fmt.Sprintf(`
-<!DOCTYPE html>
-<html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;color:#1a2230">
-  <h2 style="color:#1D9E75">Verify your email</h2>
-  <p>Welcome to <strong>%s</strong>! Please verify your email address to continue.</p>
-  <p style="margin:32px 0">
-    <a href="%s" style="background:#1D9E75;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
-      Verify my email
-    </a>
-  </p>
-  <p style="color:#6b7280;font-size:13px">This link expires in 30 minutes.</p>
-  <p style="color:#6b7280;font-size:12px">If the button above does not work, copy this URL into your browser:<br>%s</p>
-</body></html>`, orgName, verifyURL, verifyURL)
-	return m.Send(to, subject, body)
+	return m.renderAndSend(to, "Verify your "+orgName+" email address",
+		tmplEmailVerification, emailData{OrgName: orgName, URL: verifyURL})
 }
 
 // SendErasureConfirmation delivers the GDPR Art.17 erasure confirmation email.
 // confirmURL is the one-time link the user must click to schedule erasure.
 // cancelURL is a link the user can click during the 30-day grace period to cancel.
 func (m *Mailer) SendErasureConfirmation(to, orgName, confirmURL, cancelURL string) error {
-	subject := "Confirm account deletion — " + orgName
-	body := fmt.Sprintf(`
-<!DOCTYPE html>
-<html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;color:#1a2230">
-  <h2 style="color:#dc2626">Account deletion request</h2>
-  <p>We received a request to permanently delete your <strong>%s</strong> account and all associated personal data (GDPR Article 17).</p>
-  <p style="margin:32px 0">
-    <a href="%s" style="background:#dc2626;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
-      Confirm account deletion
-    </a>
-  </p>
-  <p style="color:#6b7280;font-size:13px">
-    This confirmation link expires in <strong>24 hours</strong>. If you do not click it, no action will be taken.
-  </p>
-  <hr style="border:none;border-top:1px solid #e5e7eb;margin:24px 0"/>
-  <p style="color:#6b7280;font-size:13px">
-    <strong>What happens after confirmation?</strong><br>
-    Your account will be scheduled for deletion in <strong>30 days</strong>. During this grace period you may cancel the request at any time using the link below.
-    After 30 days your personal data will be permanently erased and cannot be recovered.
-  </p>
-  <p style="margin:16px 0">
-    <a href="%s" style="color:#6b7280;font-size:13px;text-decoration:underline">
-      Cancel deletion request
-    </a>
-  </p>
-  <p style="color:#9ca3af;font-size:12px">If you did not request account deletion, you can safely ignore this email. Your account remains active.</p>
-  <p style="color:#9ca3af;font-size:12px">If the button above does not work, copy this URL into your browser:<br>%s</p>
-</body></html>`, orgName, confirmURL, cancelURL, confirmURL)
-	return m.Send(to, subject, body)
+	return m.renderAndSend(to, "Confirm account deletion — "+orgName,
+		tmplErasureConfirmation, emailData{OrgName: orgName, URL: confirmURL, CancelURL: cancelURL})
 }
 
 // SendUnlockMagicLink delivers a one-time account-unlock link to a locked user.
 // The link is valid for 15 minutes and clears the adaptive lockout on click.
 func (m *Mailer) SendUnlockMagicLink(to, orgName, unlockURL string) error {
-	subject := "Unlock your " + orgName + " account"
-	body := fmt.Sprintf(`
-<!DOCTYPE html>
-<html><body style="font-family:sans-serif;max-width:600px;margin:40px auto;color:#1a2230">
-  <h2 style="color:#f59e0b">Account Unlock Request</h2>
-  <p>An administrator of <strong>%s</strong> has sent you this link to unlock your account.</p>
-  <p>Your account was temporarily locked due to too many failed login attempts or a high-risk login signal.</p>
-  <p style="margin:32px 0">
-    <a href="%s" style="background:#f59e0b;color:#fff;padding:12px 24px;border-radius:8px;text-decoration:none;font-weight:600">
-      Unlock my account
-    </a>
-  </p>
-  <p style="color:#6b7280;font-size:13px">
-    This link expires in <strong>15 minutes</strong> and can only be used once.
-    If your account is already unlocked, clicking the link is harmless.
-  </p>
-  <p style="color:#6b7280;font-size:13px">
-    If you did not expect this email, contact your administrator — do <strong>not</strong> click the link.
-  </p>
-  <p style="color:#9ca3af;font-size:12px">If the button above does not work, copy this URL into your browser:<br>%s</p>
-</body></html>`, orgName, unlockURL, unlockURL)
-	return m.Send(to, subject, body)
+	return m.renderAndSend(to, "Unlock your "+orgName+" account",
+		tmplUnlockMagicLink, emailData{OrgName: orgName, URL: unlockURL})
 }
