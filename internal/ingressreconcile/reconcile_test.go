@@ -97,7 +97,9 @@ func TestReconcile_UndecryptableKeySkipped(t *testing.T) {
 }
 
 func TestSecretNameStable(t *testing.T) {
-	if secretName("auth.acme.com") != secretName("auth.acme.com") {
+	first := secretName("auth.acme.com")
+	second := secretName("auth.acme.com")
+	if first != second {
 		t.Error("secretName must be deterministic")
 	}
 	if secretName("a.com") == secretName("b.com") {
