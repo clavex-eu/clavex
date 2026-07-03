@@ -112,8 +112,11 @@ func WsFedResponsePage(wreply, wresult string) (string, error) {
 		return "", err
 	}
 	var buf bytes.Buffer
+	// This is a text/template, so values are not auto-escaped. wresult is already
+	// HTML-escaped by the caller; escape wreply here to close the reflected-XSS
+	// vector on the form action attribute (CWE-79).
 	if err := t.Execute(&buf, map[string]string{
-		"Wreply":  wreply,
+		"Wreply":  template.HTMLEscapeString(wreply),
 		"Wresult": wresult,
 	}); err != nil {
 		return "", err

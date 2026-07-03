@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/clavex-eu/clavex/internal/models"
+	"github.com/clavex-eu/clavex/internal/safehttp"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
@@ -315,6 +316,18 @@ func isFederationClient(client *models.OIDCClient) bool {
 	return s != ""
 }
 
+// jarHTTPClient is SSRF-guarded: request_uri and jwks_uri come from OIDC client
+// requests, so it refuses to dial private/loopback targets unless the operator
+// opts in via http.allow_private_outbound_targets.
+var jarHTTPClient = safehttp.Client(10*time.Second, false)
+
+// SetJARHTTPClient overrides the JAR/JWKS HTTP client (SSRF-relaxed opt-in).
+func SetJARHTTPClient(hc *http.Client) {
+	if hc != nil {
+		jarHTTPClient = hc
+	}
+}
+
 // FetchRequestURI fetches the Request Object JWT at requestURI (RFC 9101 §5)
 // and parses it with ParseJAR.  The URI must use https (or http for local test
 // suites).  The fragment component, if present, is stripped by the HTTP client
@@ -328,7 +341,7 @@ func FetchRequestURI(ctx context.Context, requestURI string, client *models.OIDC
 		return nil, fmt.Errorf("%w: invalid request_uri: %v", errJAR, err)
 	}
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := jarHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("%w: could not fetch request_uri: %v", errJAR, err)
 	}
@@ -430,7 +443,7 @@ func fetchJWKS(ctx context.Context, uri string) (jwk.Set, error) {
 	if err != nil {
 		return nil, err
 	}
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := jarHTTPClient.Do(req)
 	if err != nil {
 		return nil, err
 	}

@@ -43,6 +43,8 @@ linters:
         - Synthesized
         - specialized
         - Specialized
+        - sanitize
+        - Sanitize
     errcheck:
       exclude-functions:
         - fmt.Fprintln

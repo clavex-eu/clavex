@@ -84,6 +84,19 @@ func (h *WSFedHandler) Endpoint(c echo.Context) error {
 		}
 		wreply := param("wreply")
 		if wreply != "" {
+			// Validate wreply against the org's registered RP reply URIs before
+			// redirecting — otherwise sign-out is an open redirect (CWE-601).
+			var allowed []string
+			if rps, lerr := h.wsfedR.List(ctx, org.ID); lerr == nil {
+				for _, rp := range rps {
+					if rp.IsActive {
+						allowed = append(allowed, rp.WreplyURIs...)
+					}
+				}
+			}
+			if !isAllowedWreply(wreply, allowed) {
+				return echo.NewHTTPError(http.StatusForbidden, "wreply not registered")
+			}
 			return c.Redirect(http.StatusFound, wreply)
 		}
 		return c.String(http.StatusOK, "<html><body>Signed out.</body></html>")

@@ -33,6 +33,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clavex-eu/clavex/internal/safehttp"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 )
@@ -136,9 +137,31 @@ func NewResolver(trustAnchors []string) *Resolver {
 		tas[strings.TrimRight(ta, "/")] = struct{}{}
 	}
 	return &Resolver{
-		hc:           &http.Client{Timeout: 10 * time.Second},
+		hc:           defaultHTTPClient,
 		trustAnchors: tas,
 	}
+}
+
+// defaultHTTPClient is SSRF-guarded: federation entity endpoints are resolved
+// from RP-supplied entity IDs, so private/loopback targets are blocked unless
+// the operator opts in via SetDefaultHTTPClient.
+var defaultHTTPClient = safehttp.Client(10*time.Second, false)
+
+// SetDefaultHTTPClient overrides the client used by resolvers created afterward
+// (SSRF-relaxed opt-in wired from the server when
+// http.allow_private_outbound_targets is set).
+func SetDefaultHTTPClient(hc *http.Client) {
+	if hc != nil {
+		defaultHTTPClient = hc
+	}
+}
+
+// WithHTTPClient overrides the outbound HTTP client for this resolver.
+func (r *Resolver) WithHTTPClient(hc *http.Client) *Resolver {
+	if hc != nil {
+		r.hc = hc
+	}
+	return r
 }
 
 // Validate validates the RP's registration request JWT, resolves the trust

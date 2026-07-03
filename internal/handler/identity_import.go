@@ -52,6 +52,7 @@ import (
 
 	"github.com/clavex-eu/clavex/internal/oid4w"
 	"github.com/clavex-eu/clavex/internal/repository"
+	"github.com/clavex-eu/clavex/internal/safehttp"
 )
 
 // IdentityImportHandler handles identity portability between Clavex installations.
@@ -64,8 +65,16 @@ type IdentityImportHandler struct {
 func NewIdentityImportHandler(users *repository.UserRepository) *IdentityImportHandler {
 	return &IdentityImportHandler{
 		users: users,
-		hc:    &http.Client{Timeout: 10 * time.Second},
+		hc:    safehttp.Client(10*time.Second, false), // SSRF guard: block private targets
 	}
+}
+
+// WithHTTPClient overrides the outbound HTTP client (SSRF-relaxed opt-in).
+func (h *IdentityImportHandler) WithHTTPClient(hc *http.Client) *IdentityImportHandler {
+	if hc != nil {
+		h.hc = hc
+	}
+	return h
 }
 
 // importIdentityRequest is the JSON body for POST …/identity/import.

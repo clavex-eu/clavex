@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/smtp"
 
+	"github.com/clavex-eu/clavex/internal/mailer"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -106,8 +107,19 @@ func (h *SMTPHandler) Test(c echo.Context) error {
 func sendTestEmail(s *models.SMTPSettings, to string) error {
 	addr := fmt.Sprintf("%s:%d", s.Host, s.Port)
 
+	// Sanitize header values to prevent SMTP header / email injection.
+	toAddr, err := mailer.SanitizeAddress(to)
+	if err != nil {
+		return err
+	}
+	fromAddr, err := mailer.SanitizeAddress(s.FromAddress)
+	if err != nil {
+		return err
+	}
+	to = toAddr
+
 	body := fmt.Sprintf("From: %s <%s>\r\nTo: %s\r\nSubject: Clavex SMTP test\r\n\r\nThis is a test email from Clavex IAM. If you received this, SMTP is configured correctly.",
-		s.FromName, s.FromAddress, to)
+		mailer.SanitizeHeader(s.FromName), fromAddr, toAddr)
 
 	var auth smtp.Auth
 	if s.Username != nil && s.Password != nil {
@@ -132,7 +144,7 @@ func sendTestEmail(s *models.SMTPSettings, to string) error {
 				return fmt.Errorf("auth: %w", err)
 			}
 		}
-		if err := client.Mail(s.FromAddress); err != nil {
+		if err := client.Mail(fromAddr); err != nil {
 			return err
 		}
 		if err := client.Rcpt(to); err != nil {
@@ -145,5 +157,5 @@ func sendTestEmail(s *models.SMTPSettings, to string) error {
 		_, _ = fmt.Fprint(w, body)
 		return w.Close()
 	}
-	return smtp.SendMail(addr, auth, s.FromAddress, []string{to}, []byte(body))
+	return smtp.SendMail(addr, auth, fromAddr, []string{to}, []byte(body))
 }
