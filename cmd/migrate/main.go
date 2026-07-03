@@ -16,7 +16,6 @@ package main
 import (
 	"flag"
 	"fmt"
-	"math"
 	"os"
 	"strconv"
 
@@ -90,12 +89,10 @@ func main() {
 		if len(cmdArgs) == 0 {
 			log.Fatal().Msg("migrate to: missing version argument")
 		}
-		v, err := strconv.ParseUint(cmdArgs[0], 10, 64)
+		// Parse with a 32-bit size so the uint conversion cannot overflow.
+		v, err := strconv.ParseUint(cmdArgs[0], 10, 32)
 		if err != nil {
-			log.Fatal().Msgf("invalid version %q: must be a non-negative integer", cmdArgs[0])
-		}
-		if v > math.MaxInt32 {
-			log.Fatal().Msgf("version %d out of range", v)
+			log.Fatal().Msgf("invalid version %q: must be a non-negative 32-bit integer", cmdArgs[0])
 		}
 		if err := db.MigrateTo(mgr.Pool, uint(v)); err != nil {
 			log.Fatal().Err(err).Msg("migrate to failed")
@@ -112,12 +109,11 @@ func main() {
 		if len(cmdArgs) == 0 {
 			log.Fatal().Msg("migrate force: missing version argument")
 		}
-		v, err := strconv.ParseUint(cmdArgs[0], 10, 64)
+		// Parse with a 31-bit size so the value fits a non-negative int on all
+		// platforms and the conversion cannot overflow.
+		v, err := strconv.ParseUint(cmdArgs[0], 10, 31)
 		if err != nil {
-			log.Fatal().Msgf("invalid version %q: must be a non-negative integer", cmdArgs[0])
-		}
-		if v > math.MaxInt32 {
-			log.Fatal().Msgf("version %d out of range", v)
+			log.Fatal().Msgf("invalid version %q: must be a non-negative 31-bit integer", cmdArgs[0])
 		}
 		if err := db.MigrateForce(mgr.Pool, int(v)); err != nil {
 			log.Fatal().Err(err).Msg("migrate force failed")

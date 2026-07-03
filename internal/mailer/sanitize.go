@@ -6,17 +6,15 @@ import (
 	"strings"
 )
 
-// headerReplacer strips CR and LF from header values to prevent SMTP header /
-// email injection (CWE-93). An attacker who controls a recipient address,
-// subject, or display name could otherwise inject extra headers or a forged
-// body by embedding "\r\n" sequences.
-var headerReplacer = strings.NewReplacer("\r", "", "\n", "")
-
-// SanitizeHeader removes CR/LF from an arbitrary header value (subject,
-// display name, ...). Use for values that are interpolated into a message
-// header line.
+// SanitizeHeader removes CR and LF from an arbitrary header value (subject,
+// display name, ...) to prevent SMTP header / email injection (CWE-93). An
+// attacker who controls a recipient address, subject, or display name could
+// otherwise inject extra headers or a forged body by embedding "\r\n"
+// sequences. Use for any value interpolated into a message header line.
 func SanitizeHeader(v string) string {
-	return headerReplacer.Replace(v)
+	v = strings.ReplaceAll(v, "\r", "")
+	v = strings.ReplaceAll(v, "\n", "")
+	return v
 }
 
 // SanitizeAddress validates an email address and returns its canonical
