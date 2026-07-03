@@ -6262,6 +6262,30 @@
         ]
       }
     },
+    "/custom-domains/{domain_id}/certificate": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Revert cert",
+        "tags": [
+          "Custom Domain"
+        ]
+      },
+      "put": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Upload cert",
+        "tags": [
+          "Custom Domain"
+        ]
+      }
+    },
     "/custom-domains/{domain_id}/verify": {
       "post": {
         "parameters": [
