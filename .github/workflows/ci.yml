@@ -102,12 +102,20 @@ jobs:
             -server internal/server/server.go \
             -update
           if ! git diff --quiet internal/handler/spec/openapi.json; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "github-actions[bot]@users.noreply.github.com"
-            git add internal/handler/spec/openapi.json
-            git commit -m "chore: scaffold missing OpenAPI stubs [skip ci]"
-            git pull --rebase origin "${GITHUB_REF_NAME}"
-            git push
+            # On branch pushes, self-heal by committing the scaffolded stubs back.
+            # On tag builds GITHUB_REF_NAME is the tag, so a push here targets a
+            # tag ref and fails (git exit 128); skip it — the spec was already
+            # validated on the branch push that produced this commit.
+            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+              echo "openapi spec drift on a tag build; not pushing (validated on branch)."
+            else
+              git config user.name  "github-actions[bot]"
+              git config user.email "github-actions[bot]@users.noreply.github.com"
+              git add internal/handler/spec/openapi.json
+              git commit -m "chore: scaffold missing OpenAPI stubs [skip ci]"
+              git pull --rebase origin "${GITHUB_REF_NAME}"
+              git push
+            fi
           fi
       - name: golangci-lint
         uses: golangci/golangci-lint-action@v9
