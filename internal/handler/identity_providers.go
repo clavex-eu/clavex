@@ -18,6 +18,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/connectorregistry"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
+	"github.com/clavex-eu/clavex/internal/safehttp"
 	"github.com/clavex-eu/clavex/internal/session"
 	"github.com/golang-jwt/jwt/v5"
 	"github.com/google/uuid"
@@ -320,7 +321,19 @@ func (h *IDPHandler) StartSSO(c echo.Context) error {
 	}
 	orgSlug := c.Param("org_slug")
 
-	provider, err := h.repo.GetByID(ctx, providerID)
+	// Bind the provider to the login session's org: an IdP registered in a
+	// different tenant must never be usable to authenticate into this org
+	// (cross-tenant account takeover). The provider's org must equal the org
+	// the user is ultimately provisioned/looked-up in (loginSess.OrgID).
+	loginSess, err := h.store.GetLoginSession(ctx, loginSessionID)
+	if err != nil || loginSess == nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "login session expired — please start over")
+	}
+	orgID, err := uuid.Parse(loginSess.OrgID)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
+	provider, err := h.repo.GetForOrg(ctx, providerID, orgID)
 	if err != nil || !provider.IsActive {
 		return echo.NewHTTPError(http.StatusNotFound, "identity provider not found or inactive")
 	}
@@ -378,10 +391,17 @@ func (h *IDPHandler) CallbackSSO(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "login session expired \u2014 please start over")
 	}
 
-	providerID, _ := uuid.Parse(stateData.ProviderID)
-	provider, err := h.repo.GetByID(ctx, providerID)
+	orgID, err := uuid.Parse(loginSess.OrgID)
 	if err != nil {
 		return echo.ErrInternalServerError
+	}
+	providerID, _ := uuid.Parse(stateData.ProviderID)
+	// Cross-tenant guard: the provider must belong to the login session's org,
+	// otherwise an attacker-controlled IdP from another tenant could assert an
+	// arbitrary identity into this org (account takeover).
+	provider, err := h.repo.GetForOrg(ctx, providerID, orgID)
+	if err != nil {
+		return echo.ErrNotFound
 	}
 	clientSecret, appleTeamID, appleKeyID, applePrivKey, err := h.repo.GetClientSecret(ctx, provider.ID)
 	if err != nil {
@@ -418,7 +438,6 @@ func (h *IDPHandler) CallbackSSO(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadGateway, "failed to retrieve user information from identity provider")
 	}
 
-	orgID, _ := uuid.Parse(loginSess.OrgID)
 	user, err := h.users.GetByEmail(ctx, orgID, email)
 	if err != nil {
 		// User does not exist — respect the allow_jit toggle.
@@ -513,6 +532,19 @@ func buildRedirectURI(c echo.Context, orgSlug, idStr string) string {
 	return scheme + "://" + c.Request().Host + "/" + orgSlug + "/idp/" + idStr + "/callback"
 }
 
+// upstreamHTTPClient is used for outbound calls to admin-configured upstream
+// IdP endpoints (token / userinfo). It refuses to connect to private, loopback
+// and link-local addresses so a malicious provider URL cannot be used to reach
+// internal services (SSRF, e.g. cloud metadata endpoints).
+var upstreamHTTPClient = safehttp.Client(30*time.Second, false)
+
+// SetUpstreamHTTPClient overrides the client used for outbound calls to
+// admin-configured upstream IdP token/userinfo endpoints. Called at startup
+// when the operator opts into private outbound targets
+// (http.allow_private_outbound_targets) so a federated IdP on an internal
+// network is reachable. Default keeps the SSRF guard on.
+func SetUpstreamHTTPClient(c *http.Client) { upstreamHTTPClient = c }
+
 // exchangeUpstreamCode posts to the upstream token endpoint.
 func exchangeUpstreamCode(ctx context.Context, tokenURL, clientID, clientSecret, code, redirectURI string) (map[string]interface{}, error) {
 	form := url.Values{
@@ -529,7 +561,7 @@ func exchangeUpstreamCode(ctx context.Context, tokenURL, clientID, clientSecret,
 	req.Header.Set("Content-Type", "application/x-www-form-urlencoded")
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := upstreamHTTPClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("token request: %w", err)
 	}
@@ -558,7 +590,7 @@ func fetchUpstreamUserInfo(ctx context.Context, p *models.IdentityProvider, acce
 	req.Header.Set("Authorization", "Bearer "+accessToken)
 	req.Header.Set("Accept", "application/json")
 
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := upstreamHTTPClient.Do(req)
 	if err != nil {
 		return
 	}

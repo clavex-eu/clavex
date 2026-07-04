@@ -14,6 +14,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/alerting"
 	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/config"
+	"github.com/clavex-eu/clavex/internal/connectorregistry"
 	"github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/enrichment"
 	"github.com/clavex-eu/clavex/internal/federation"
@@ -268,6 +269,10 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		federation.SetDefaultHTTPClient(relaxed)
 		oidc.SetJARHTTPClient(relaxed)
 		handler.SetVaultHTTPClient(relaxed)
+		// Same opt-out for admin-configured upstream IdP (token/userinfo) and
+		// SMS-gateway targets.
+		handler.SetUpstreamHTTPClient(relaxed)
+		connectorregistry.SetSMSHTTPClient(relaxed)
 	}
 	fwdAuth := forwardauth.New(cfg, pool)
 	impersonation := handler.NewImpersonationHandler(cfg, pool)

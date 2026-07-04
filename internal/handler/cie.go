@@ -114,7 +114,17 @@ func (h *CIEHandler) StartSSO(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid idp_id")
 	}
 
-	provider, err := h.idpRepo.GetByID(ctx, providerID)
+	// Cross-tenant guard: bind the provider to the login session's org so an
+	// IdP registered in another tenant cannot be used to authenticate here.
+	loginSess, err := h.store.GetLoginSession(ctx, loginSessionID)
+	if err != nil || loginSess == nil {
+		return echo.NewHTTPError(http.StatusBadRequest, "login session expired — please restart the login")
+	}
+	orgID, err := uuid.Parse(loginSess.OrgID)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
+	provider, err := h.idpRepo.GetForOrg(ctx, providerID, orgID)
 	if err != nil || !provider.IsActive || provider.ProviderType != "cie" {
 		return echo.NewHTTPError(http.StatusNotFound, "CIE provider not found or inactive")
 	}
@@ -169,10 +179,15 @@ func (h *CIEHandler) CallbackSSO(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "sessione di login scaduta")
 	}
 
-	providerID, _ := uuid.Parse(stateData.ProviderID)
-	provider, err := h.idpRepo.GetByID(ctx, providerID)
+	orgID, err := uuid.Parse(loginSess.OrgID)
 	if err != nil {
 		return echo.ErrInternalServerError
+	}
+	providerID, _ := uuid.Parse(stateData.ProviderID)
+	// Cross-tenant guard: the provider must belong to the login session's org.
+	provider, err := h.idpRepo.GetForOrg(ctx, providerID, orgID)
+	if err != nil {
+		return echo.ErrNotFound
 	}
 	clientSecret, _, _, _, err := h.idpRepo.GetClientSecret(ctx, provider.ID)
 	if err != nil {
@@ -202,7 +217,6 @@ func (h *CIEHandler) CallbackSSO(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadGateway, "CIE non ha restituito dati di identità validi")
 	}
 
-	orgID, _ := uuid.Parse(loginSess.OrgID)
 	user, err := h.users.GetByEmail(ctx, orgID, cieUser.Email)
 	if err != nil {
 		if !provider.AllowJIT {
@@ -283,7 +297,7 @@ func (h *CIEHandler) UpgradeSSO(c echo.Context) error {
 	var provider *models.IdentityProvider
 	if loginSess.LastCIEProviderID != "" {
 		if pid, err := uuid.Parse(loginSess.LastCIEProviderID); err == nil {
-			p, err := h.idpRepo.GetByID(ctx, pid)
+			p, err := h.idpRepo.GetForOrg(ctx, pid, org.ID)
 			if err == nil && p != nil && p.IsActive && p.ProviderType == "cie" {
 				provider = p
 			}

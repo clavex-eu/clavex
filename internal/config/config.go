@@ -238,9 +238,10 @@ type HTTPConfig struct {
 	// Example: ["10.0.0.0/8", "172.16.0.0/12", "192.168.0.0/16"]
 	TrustedProxies []string `mapstructure:"trusted_proxies"`
 	// AllowPrivateOutboundTargets, when true, disables the SSRF guard on
-	// operator/tenant-configured outbound requests (webhooks, SCIM push, SSF push),
+	// operator/tenant-configured outbound requests (webhooks, SCIM push, SSF push,
+	// federation/JAR fetchers, Vault, upstream IdP token/userinfo, SMS gateways),
 	// permitting connections to private/loopback/link-local addresses. Default
-	// false (block). Enable only when webhooks intentionally target internal hosts.
+	// false (block). Enable only when these intentionally target internal hosts.
 	AllowPrivateOutboundTargets bool `mapstructure:"allow_private_outbound_targets"`
 }
 
