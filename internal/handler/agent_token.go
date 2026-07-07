@@ -27,6 +27,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/config"
 	"github.com/clavex-eu/clavex/internal/middleware"
+	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/oidc"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/clavex-eu/clavex/internal/webhook"
@@ -306,6 +307,94 @@ func (h *AgentTokenHandler) Revoke(c echo.Context) error {
 		h.webhookD.Dispatch(orgID, webhook.EventAgentTokenRevoked, map[string]interface{}{
 			"token_id": tokenID.String(),
 		})
+	}
+
+	return c.NoContent(http.StatusNoContent)
+}
+
+// ── Self-service ("My Active Agents") ──────────────────────────────────────────
+
+// authenticatedUserID resolves the calling user's ID from the verified JWT.
+func authenticatedUserID(c echo.Context) (uuid.UUID, error) {
+	claims := middleware.GetClaims(c)
+	if claims == nil {
+		return uuid.Nil, echo.ErrUnauthorized
+	}
+	id, err := uuid.Parse(claims.Subject)
+	if err != nil {
+		return uuid.Nil, echo.ErrUnauthorized
+	}
+	return id, nil
+}
+
+// ListMine handles GET /api/v1/me/agent-tokens.
+//
+// Unlike the admin List (which returns every agent token in the org), this
+// endpoint returns ONLY the agent grants delegated by the authenticated user —
+// so a non-admin can review the agents acting on their behalf. Ownership is
+// enforced by keying the query on the JWT subject, never a request parameter.
+func (h *AgentTokenHandler) ListMine(c echo.Context) error {
+	userID, err := authenticatedUserID(c)
+	if err != nil {
+		return err
+	}
+	tokens, err := h.repo.ListMine(c.Request().Context(), userID)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
+	if tokens == nil {
+		tokens = []*models.AgentToken{}
+	}
+	return c.JSON(http.StatusOK, tokens)
+}
+
+// RevokeMine handles DELETE /api/v1/me/agent-tokens/:id.
+//
+// Lets a user revoke one of their own agent grants without admin permission.
+// The repository enforces ownership (user_id = authenticated user); a token
+// belonging to another user — even in the same org — returns 404, never a
+// cross-user revocation.
+func (h *AgentTokenHandler) RevokeMine(c echo.Context) error {
+	ctx := c.Request().Context()
+
+	userID, err := authenticatedUserID(c)
+	if err != nil {
+		return err
+	}
+	tokenID, err := uuidParam(c, "id")
+	if err != nil {
+		return err
+	}
+
+	if err := h.repo.RevokeByOwner(ctx, tokenID, userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return echo.ErrNotFound
+		}
+		return echo.ErrInternalServerError
+	}
+
+	// Audit under the org from the caller's JWT so the self-revocation is
+	// attributable in the org's trail.
+	resourceID := tokenID.String()
+	resourceType := "agent_token"
+	if claims := middleware.GetClaims(c); claims != nil {
+		if orgID, perr := uuid.Parse(claims.OrgID); perr == nil {
+			h.auditor.Emit(ctx, audit.EmitParams{
+				OrgID:        orgID,
+				ActorID:      &userID,
+				Action:       "agent.token.revoked",
+				ResourceType: &resourceType,
+				ResourceID:   &resourceID,
+				Status:       "success",
+				Metadata:     map[string]interface{}{"self_service": true},
+			})
+			if h.webhookD != nil {
+				h.webhookD.Dispatch(orgID, webhook.EventAgentTokenRevoked, map[string]interface{}{
+					"token_id":     tokenID.String(),
+					"self_service": true,
+				})
+			}
+		}
 	}
 
 	return c.NoContent(http.StatusNoContent)

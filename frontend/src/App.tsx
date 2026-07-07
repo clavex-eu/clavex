@@ -119,6 +119,7 @@ import MarketplaceListingsPage from '@/pages/tenant/MarketplaceListings'
 // IT Admin Self-Serve Portal
 import PortalLayout from '@/layouts/PortalLayout'
 import { SSOPortalPage, SCIMPortalPage, DomainsPortalPage, MFAPortalPage } from '@/pages/portal/SelfServePortal'
+import { MyAgentGrantsPage } from '@/pages/portal/MyAgentGrants'
 
 function RequireAuth({ children }: { children: React.ReactNode }) {
   const { authenticated, orgId, isSuperAdmin } = useAuthStore()
@@ -275,6 +276,7 @@ export default function App() {
           <Route path="scim"    element={<SCIMPortalPage />}    />
           <Route path="domains" element={<DomainsPortalPage />} />
           <Route path="mfa"     element={<MFAPortalPage />}     />
+          <Route path="my-agents" element={<MyAgentGrantsPage />} />
         </Route>
       </Routes>
     </BrowserRouter>

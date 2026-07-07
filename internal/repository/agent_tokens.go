@@ -23,14 +23,14 @@ func NewAgentTokenRepository(pool *pgxpool.Pool) *AgentTokenRepository {
 const agentTokenCols = `
 	id, org_id, user_id, agent_id, agent_name, scope, jti,
 	is_revoked, expires_at, revoked_at, revoked_by, created_at, created_by,
-	mcp_server_id, mcp_resource_url`
+	last_used_at, mcp_server_id, mcp_resource_url`
 
 func scanAgentToken(row interface{ Scan(...any) error }) (*models.AgentToken, error) {
 	t := &models.AgentToken{}
 	err := row.Scan(
 		&t.ID, &t.OrgID, &t.UserID, &t.AgentID, &t.AgentName, &t.Scope, &t.JTI,
 		&t.IsRevoked, &t.ExpiresAt, &t.RevokedAt, &t.RevokedBy, &t.CreatedAt, &t.CreatedBy,
-		&t.MCPServerID, &t.MCPResourceURL,
+		&t.LastUsedAt, &t.MCPServerID, &t.MCPResourceURL,
 	)
 	if err != nil {
 		return nil, err
@@ -114,6 +114,56 @@ func (r *AgentTokenRepository) ListByUser(ctx context.Context, orgID, userID uui
 		out = append(out, t)
 	}
 	return out, rows.Err()
+}
+
+// ListMine returns all agent tokens delegated by a specific user, keyed on
+// user_id alone. This powers the self-service "My Active Agents" panel: it must
+// NOT be scoped to an org because it deliberately returns only the caller's own
+// grants, never every token in their organization (that is the admin ListByOrg).
+func (r *AgentTokenRepository) ListMine(ctx context.Context, userID uuid.UUID) ([]*models.AgentToken, error) {
+	rows, err := r.pool.Query(ctx, `
+		SELECT `+agentTokenCols+`
+		FROM agent_tokens
+		WHERE user_id = $1
+		ORDER BY created_at DESC`, userID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*models.AgentToken
+	for rows.Next() {
+		t, err := scanAgentToken(rows)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, t)
+	}
+	return out, rows.Err()
+}
+
+// RevokeByOwner lets a user revoke one of their OWN agent tokens without admin
+// permission. Ownership is enforced in the WHERE clause (user_id = $2): a token
+// belonging to another user — even in the same org — yields pgx.ErrNoRows and is
+// never revoked. revokedBy is recorded as the acting (self) user.
+func (r *AgentTokenRepository) RevokeByOwner(ctx context.Context, id, userID uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE agent_tokens
+		SET is_revoked = TRUE, revoked_at = NOW(), revoked_by = $2
+		WHERE id = $1 AND user_id = $2 AND is_revoked = FALSE`, id, userID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
+// TouchLastUsed records that the token identified by jti was just presented to a
+// resource server. Best-effort: errors are ignored (non-critical analytics write).
+func (r *AgentTokenRepository) TouchLastUsed(ctx context.Context, jti string) {
+	_, _ = r.pool.Exec(ctx, `UPDATE agent_tokens SET last_used_at = NOW() WHERE jti = $1`, jti)
 }
 
 // Revoke marks a token as revoked, scoped to its owning org so a cross-tenant

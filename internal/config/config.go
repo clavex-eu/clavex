@@ -71,6 +71,17 @@ type Config struct {
 	PAMAlerts      PAMAlertConfig       `mapstructure:"pam_alerts"`
 	OID4VP         OID4VPConfig         `mapstructure:"oid4vp"`
 	SSF            SSFConfig            `mapstructure:"ssf"`
+	AgentTokens    AgentTokensConfig    `mapstructure:"agent_tokens"`
+}
+
+// AgentTokensConfig configures behaviour for AI-agent machine-identity tokens.
+type AgentTokensConfig struct {
+	// UEBAStepUpEnabled turns on opt-in UEBA anomaly scoring on the agent-token
+	// introspection path. When true, an agent whose call-rate or requested scope
+	// deviates from its historical baseline triggers a wallet step-up challenge
+	// for the delegating user before the next call is authorized. Default false
+	// so existing production agent tokens keep their current behaviour.
+	UEBAStepUpEnabled bool `mapstructure:"ueba_step_up_enabled"`
 }
 
 // SSFConfig configures the Shared Signals Framework receiver (inbound CAEP SETs).
@@ -510,6 +521,7 @@ func LoadFrom(path string) (*Config, error) {
 	v.SetDefault("database.embedded.password", "clavex")
 	v.SetDefault("database.embedded.database", "clavex")
 	v.SetDefault("oid4vp.require_trusted_issuer", true)
+	v.SetDefault("agent_tokens.ueba_step_up_enabled", false)
 	v.SetDefault("license.enforce_installation_binding", true)
 	v.SetDefault("redis.mode", "standalone")
 	v.SetDefault("redis.addr", "localhost:6379")
