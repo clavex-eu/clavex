@@ -2176,6 +2176,19 @@
         ]
       }
     },
+    "/agent-tokens": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "The authenticated user's own agent tokens"
+          }
+        },
+        "summary": "List mine",
+        "tags": [
+          "Me Agent Token"
+        ]
+      }
+    },
     "/agent-tokens/mcp-scopes": {
       "get": {
         "responses": {
@@ -2186,6 +2199,22 @@
         "summary": "Mcp scopes",
         "tags": [
           "Agent Token"
+        ]
+      }
+    },
+    "/agent-tokens/{id}": {
+      "delete": {
+        "responses": {
+          "204": {
+            "description": "Agent token revoked"
+          },
+          "404": {
+            "description": "Not found or not owned by the caller"
+          }
+        },
+        "summary": "Revoke mine",
+        "tags": [
+          "Me Agent Token"
         ]
       }
     },
