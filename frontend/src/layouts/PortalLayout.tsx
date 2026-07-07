@@ -1,13 +1,14 @@
 import { NavLink, Outlet } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { doLogout } from '@/lib/logout'
-import { Settings, Users, Globe, Shield, LogOut } from 'lucide-react'
+import { Settings, Users, Globe, Shield, LogOut, Cpu } from 'lucide-react'
 
 const NAV_ITEMS = [
-  { to: 'sso',     label: 'SSO / Identity',  Icon: Globe  },
-  { to: 'scim',    label: 'SCIM Sync',        Icon: Users  },
-  { to: 'domains', label: 'Domain Enrollment', Icon: Settings },
-  { to: 'mfa',     label: 'MFA Policy',       Icon: Shield },
+  { to: 'sso',       label: 'SSO / Identity',    Icon: Globe    },
+  { to: 'scim',      label: 'SCIM Sync',         Icon: Users    },
+  { to: 'domains',   label: 'Domain Enrollment', Icon: Settings },
+  { to: 'mfa',       label: 'MFA Policy',        Icon: Shield   },
+  { to: 'my-agents', label: 'My Agents',         Icon: Cpu      },
 ]
 
 export default function PortalLayout() {

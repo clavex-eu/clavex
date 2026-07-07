@@ -313,6 +313,9 @@ type AgentToken struct {
 	RevokedBy      *uuid.UUID `db:"revoked_by"       json:"revoked_by,omitempty"`
 	CreatedAt      time.Time  `db:"created_at"       json:"created_at"`
 	CreatedBy      *uuid.UUID `db:"created_by"       json:"created_by,omitempty"`
+	// LastUsedAt is the most recent time the token was presented to a resource
+	// server (updated best-effort on introspection). Nil until first use.
+	LastUsedAt     *time.Time `db:"last_used_at"     json:"last_used_at,omitempty"`
 	// MCP-specific fields (Model Context Protocol OAuth 2.0)
 	MCPServerID    *string    `db:"mcp_server_id"    json:"mcp_server_id,omitempty"`
 	MCPResourceURL *string    `db:"mcp_resource_url" json:"mcp_resource_url,omitempty"`

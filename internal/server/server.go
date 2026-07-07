@@ -331,6 +331,11 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	walletStepUpH := handler.NewWalletStepUpHandler(pool, store, keys, walletBaseURL).
 		WithSSFDispatcher(ssfDisp)
 	oidcH.WithWalletStepUp(walletStepUpH)
+	// Opt-in: score agent-token usage for anomalies on introspection and reuse
+	// the wallet step-up above for the delegating user when a token is anomalous.
+	if cfg.AgentTokens.UEBAStepUpEnabled {
+		oidcH.WithAgentUEBA(repository.NewAgentTokenRepository(pool), repository.NewAgentUsageRepository(pool))
+	}
 	ssfH.WithDispatcher(ssfDisp)
 
 	// CAEPReceiverHandler accepts inbound CAEP SETs from upstream providers
@@ -1766,6 +1771,12 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		me.GET("", users.Me)
 		me.PATCH("", users.UpdateMe)
 		me.POST("/password", users.ChangePassword)
+
+		// Self-service agent grants: a user reviews and revokes the AI agents
+		// acting on their behalf (their own tokens only, never the org's).
+		meAgentTokenH := handler.NewAgentTokenHandler(cfg, pool, keys, webhooks.Dispatcher())
+		me.GET("/agent-tokens", meAgentTokenH.ListMine)
+		me.DELETE("/agent-tokens/:id", meAgentTokenH.RevokeMine)
 
 		// Verifiable credentials (web wallet)
 		me.GET("/credentials", walletH.ListCredentials)

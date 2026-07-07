@@ -40,6 +40,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/shield"
 	"github.com/clavex-eu/clavex/internal/ssf"
 	"github.com/clavex-eu/clavex/internal/tracing"
+	"github.com/clavex-eu/clavex/internal/ueba"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
@@ -225,6 +226,22 @@ type OIDCHandler struct {
 	vciH            *OID4VCIHandler                   // nil when OID4VCI is not configured; delegates pre-authorized_code grant
 	pqcSigner       *oidc.PQCSigner                   // nil when pqc_enabled=false; passive JWKS exposure only
 	encKeys         *oidc.EncKeySet                   // nil when request-object encryption is not enabled
+	// Agent-token UEBA step-up (opt-in). When agentUEBAEnabled is true, Introspect
+	// records agent-token usage and scores it for anomalous call-rate / scope
+	// drift, reusing the wallet step-up + SSF machinery for the delegating user.
+	agentRepo        *repository.AgentTokenRepository
+	agentUsage       *repository.AgentUsageRepository
+	agentUEBAEnabled bool
+}
+
+// WithAgentUEBA enables opt-in UEBA anomaly scoring on the agent-token
+// introspection path. It reuses the already-configured wallet step-up handler
+// and SSF dispatcher; if either is unset, agent step-up simply never triggers.
+func (h *OIDCHandler) WithAgentUEBA(agentRepo *repository.AgentTokenRepository, usage *repository.AgentUsageRepository) *OIDCHandler {
+	h.agentRepo = agentRepo
+	h.agentUsage = usage
+	h.agentUEBAEnabled = true
+	return h
 }
 
 // WithOID4VCIHandler wires the OID4VCI handler so the OIDC token endpoint can
@@ -2212,6 +2229,17 @@ func (h *OIDCHandler) Introspect(c echo.Context) error {
 
 	resp := oidc.Introspect(ctx, token, tc, h.store)
 
+	// ── Agent-token UEBA step-up (opt-in) ────────────────────────────────────
+	// For active agent tokens, record the usage event and score it for anomalous
+	// call-rate / scope drift. On a high score we require the delegating human to
+	// re-establish assurance via the same wallet step-up as the login path.
+	if resp.Active && h.agentUEBAEnabled && resp.JTI != "" &&
+		h.walletStepUp != nil && h.agentUsage != nil && h.agentRepo != nil {
+		if enriched, ok := h.checkAgentStepUp(ctx, orgSlug, resp); ok {
+			return c.JSON(http.StatusOK, enriched)
+		}
+	}
+
 	// ── Wallet step-up (Continuous Adaptive Authentication) ──────────────────
 	// For active tokens, evaluate risk and — when risk is high and the org has
 	// SPID/CIE credential configurations — return a step-up enriched response
@@ -2282,6 +2310,61 @@ func (h *OIDCHandler) checkWalletStepUp(
 		return nil, false
 	}
 
+	return h.mergeIntrospectStepUp(resp, fields)
+}
+
+// checkAgentStepUp records usage of an agent token and evaluates whether its
+// current behaviour is anomalous enough to require a step-up from the delegating
+// human. It always records the usage event (building the agent's baseline) even
+// when no step-up is triggered.
+//
+// Detection: a token is treated as an agent token when a non-revoked
+// agent_tokens row exists for its JTI in the same org. When the UEBA score
+// exceeds the shared risk threshold, we reuse WalletStepUpHandler to create a
+// challenge for the delegating user (rec.UserID) — which also fires the SSF
+// assurance-level-change event notifying that user — and enrich the introspect
+// response so the resource server holds the next call pending confirmation.
+func (h *OIDCHandler) checkAgentStepUp(
+	ctx context.Context,
+	orgSlug string,
+	resp oidc.IntrospectionResponse,
+) (map[string]any, bool) {
+	orgID, err := uuid.Parse(resp.OrgID)
+	if err != nil {
+		return nil, false
+	}
+
+	rec, err := h.agentRepo.GetByJTI(ctx, resp.JTI)
+	if err != nil || rec == nil || rec.IsRevoked || rec.OrgID != orgID {
+		return nil, false // not an agent token — nothing to do
+	}
+
+	// Record the usage event and update last_used_at (best-effort; must not fail
+	// the introspection). Recorded before scoring so the current call counts.
+	_ = h.agentUsage.Record(ctx, orgID, rec.AgentID, rec.JTI, rec.Scope)
+	h.agentRepo.TouchLastUsed(ctx, rec.JTI)
+
+	stats, err := h.agentUsage.Stats(ctx, orgID, rec.AgentID)
+	if err != nil {
+		return nil, false
+	}
+	score := ueba.AgentScore(stats.CallsLastHour, rec.Scope, &ueba.AgentBaseline{
+		TotalCalls:  stats.TotalCalls,
+		FirstSeen:   stats.FirstSeen,
+		ScopeCounts: stats.ScopeCounts,
+	})
+	if score.Score < walletStepUpRiskThreshold {
+		return nil, false
+	}
+
+	// Require the delegating human to re-establish assurance. CheckAndCreateStepUp
+	// also dispatches the SSF assurance-level-change event to rec.UserID.
+	fields := h.walletStepUp.CheckAndCreateStepUp(ctx, orgID, orgSlug, rec.UserID.String(), score.Score, score.Flags)
+	if fields == nil {
+		return nil, false // org has no SPID/CIE configs — step-up not applicable
+	}
+	fields["agent_stepup_required"] = true
+	fields["agent_id"] = rec.AgentID
 	return h.mergeIntrospectStepUp(resp, fields)
 }
 
