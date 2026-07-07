@@ -42,6 +42,18 @@ func BuildServerTLSConfig(certFile, keyFile, caCertFile string) (*tls.Config, er
 			tls.TLS_ECDHE_ECDSA_WITH_CHACHA20_POLY1305_SHA256,
 			tls.TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256,
 		},
+		// Post-quantum transport: pin X25519MLKEM768 (hybrid classical+ML-KEM-768,
+		// FIPS 203) as the preferred TLS 1.3 key-exchange mechanism. Go 1.24+
+		// includes it in the default preferences when CurvePreferences is nil, but
+		// we set it explicitly so the behaviour is stable and does not silently
+		// change with future Go defaults. Classical X25519 and P-256 remain as
+		// fallbacks for clients that do not yet support the hybrid group.
+		// See docs/PQC-ROADMAP.md ("TLS Transport Layer").
+		CurvePreferences: []tls.CurveID{
+			tls.X25519MLKEM768,
+			tls.X25519,
+			tls.CurveP256,
+		},
 	}
 
 	if caCertFile != "" {
