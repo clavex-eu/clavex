@@ -4380,18 +4380,23 @@ func (h *OIDCHandler) loadIDPButtons(ctx context.Context, orgID uuid.UUID, orgSl
 	}
 
 	// SPID — global registry of Italian IdPs, separate from identity_providers.
+	// Gate on the org's SPID config being active, mirroring StartSSO (which rejects
+	// SSO when the config is absent/inactive). Without this, disabling SPID in the
+	// admin console has no effect on the login page and the buttons still render.
 	if want("spid") && h.spidRepo != nil {
-		if spidIdPs, err := h.spidRepo.ListIdPs(ctx, false); err == nil {
-			for _, idp := range spidIdPs {
-				if !idp.IsActive {
-					continue
+		if cfg, err := h.spidRepo.GetSPIDConfig(ctx, orgID); err == nil && cfg != nil && cfg.IsActive {
+			if spidIdPs, err := h.spidRepo.ListIdPs(ctx, false); err == nil {
+				for _, idp := range spidIdPs {
+					if !idp.IsActive {
+						continue
+					}
+					out = append(out, &idpButton{
+						ID:         idp.ID.String(),
+						Name:       "SPID — " + idp.DisplayName,
+						IsPromoted: false,
+						StartURL:   "/" + orgSlug + "/spid/sso/" + idp.ID.String() + "?login_session_id=",
+					})
 				}
-				out = append(out, &idpButton{
-					ID:         idp.ID.String(),
-					Name:       "SPID — " + idp.DisplayName,
-					IsPromoted: false,
-					StartURL:   "/" + orgSlug + "/spid/sso/" + idp.ID.String() + "?login_session_id=",
-				})
 			}
 		}
 	}
