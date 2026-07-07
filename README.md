@@ -346,13 +346,23 @@ Full API documentation is available via the OpenAPI spec at `/api/v1/openapi.jso
 
 Please report vulnerabilities responsibly. See [SECURITY.md](SECURITY.md).
 
-### Post-Quantum Readiness (experimental)
+### Post-Quantum Readiness (production-grade primitives, roadmap-gated)
 
-> Clavex includes experimental support for NIST FIPS 204 (ML-DSA-65 / Dilithium3)
-> for JWT signing key discovery, following the hybrid approach recommended by NIST
-> SP 800-208 and BSI TR-02102-1: classical RSA signatures remain the primary
-> mechanism while PQC keys are discoverable via JWKS for PQC-aware clients.
+> Clavex ships production-grade NIST FIPS 204 (ML-DSA-65 / Dilithium3) signing
+> primitives — sign/verify, automatic key bootstrap, encrypted key rotation, and
+> hybrid JWKS discovery — with activation staged to the standards timeline. This
+> follows the hybrid approach recommended by NIST SP 800-208 and BSI TR-02102-1:
+> classical RSA signatures remain the primary trust anchor while PQC keys are
+> discoverable via JWKS for PQC-aware clients.
 >
-> Enable with `pqc_enabled: true` in config (requires `key_backend: db`).
-> The IANA registration of PQC JWT algorithms is pending (draft-ietf-cose-dilithium).
+> PQC signing of the primary OIDC tokens is intentionally gated on IANA JOSE
+> algorithm registration (draft-ietf-cose-dilithium, in review) — signing today
+> with a vendor-private identifier would break non-PQC-aware clients. Dual-signing
+> lands once registration stabilises (~2026–2027).
+>
+> At the **transport layer** (FIPS 203 / ML-KEM), Clavex pins the hybrid
+> `X25519MLKEM768` group as the preferred TLS 1.3 key exchange — live today.
+>
+> Enable discovery with `pqc_enabled: true` in config (requires `key_backend: db`).
 > EU EUDI Wallet ARF mandates PQC readiness for credential issuers by 2030.
+> See **[docs/PQC-ROADMAP.md](docs/PQC-ROADMAP.md)** for the full roadmap.
