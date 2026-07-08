@@ -2,7 +2,7 @@ import { useParams, Link, useNavigate } from 'react-router-dom'
 import { useQuery } from '@tanstack/react-query'
 import { Users, Shield, KeyRound, Palette, FileText, ArrowRight, ShieldCheck, ShieldAlert, Rocket } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'
-import { StatCard, Card } from '@/components/ui'
+import { Card } from '@/components/ui'
 import api, { toArr } from '@/lib/api'
 
 interface SecurityPosture {
@@ -18,6 +18,51 @@ interface SecurityPosture {
   failed_logins_24h: number
 }
 
+// ── Colour helper ─────────────────────────────────────────────────────────────
+// Higher pct = healthier. Green ≥ 80, amber ≥ 50, red below.
+function pctColor(pct: number) {
+  return pct >= 80 ? '#16a34a' : pct >= 50 ? '#d97706' : '#dc2626'
+}
+
+// ── DonutRing ─────────────────────────────────────────────────────────────────
+// Compact circular gauge: an arc filled to `pct` with a big centre figure and a
+// tiny caption beneath it. Far clearer at a glance than a thin horizontal bar.
+function DonutRing({ pct, center, caption, color }: { pct: number; center: string; caption: string; color: string }) {
+  const size = 84
+  const stroke = 8
+  const r = (size - stroke) / 2
+  const c = 2 * Math.PI * r
+  const dash = (Math.max(0, Math.min(100, pct)) / 100) * c
+  return (
+    <div style={{ position: 'relative', width: size, height: size }}>
+      <svg width={size} height={size} style={{ transform: 'rotate(-90deg)' }}>
+        <circle cx={size / 2} cy={size / 2} r={r} fill="none" stroke="var(--clavex-border)" strokeWidth={stroke} />
+        <circle
+          cx={size / 2} cy={size / 2} r={r} fill="none"
+          stroke={color} strokeWidth={stroke} strokeLinecap="round"
+          strokeDasharray={`${dash} ${c}`}
+          style={{ transition: 'stroke-dasharray 0.5s ease' }}
+        />
+      </svg>
+      <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column', alignItems: 'center', justifyContent: 'center' }}>
+        <span style={{ fontSize: 18, fontWeight: 800, color: 'var(--clavex-ink)', lineHeight: 1 }}>{center}</span>
+        <span style={{ fontSize: 10, color: 'var(--clavex-neutral)', marginTop: 2 }}>{caption}</span>
+      </div>
+    </div>
+  )
+}
+
+// ── RingMetric ────────────────────────────────────────────────────────────────
+function RingMetric({ name, pct, center, caption, raw, color }: { name: string; pct: number; center: string; caption: string; raw: string; color: string }) {
+  return (
+    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', textAlign: 'center', gap: 10 }}>
+      <p style={{ fontSize: 12, fontWeight: 600, color: 'var(--clavex-ink)' }}>{name}</p>
+      <DonutRing pct={pct} center={center} caption={caption} color={color} />
+      <p style={{ fontSize: 11, color: 'var(--clavex-neutral)' }}>{raw}</p>
+    </div>
+  )
+}
+
 function SecurityPostureWidget({ orgId }: { orgId: string }) {
   const { data, isLoading } = useQuery<SecurityPosture>({
     queryKey: ['security-posture', orgId],
@@ -28,11 +73,11 @@ function SecurityPostureWidget({ orgId }: { orgId: string }) {
 
   if (isLoading || !data) {
     return (
-      <div className="p-5" style={{ gridColumn: 'span 2', background: 'var(--clavex-surface)', border: '1px solid var(--clavex-border)', borderRadius: 12 }}>
-        <div style={{ height: 80, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--clavex-neutral)', fontSize: 13 }}>
+      <Card className="p-5">
+        <div style={{ height: 140, display: 'flex', alignItems: 'center', justifyContent: 'center', color: 'var(--clavex-neutral)', fontSize: 13 }}>
           Computing posture…
         </div>
-      </div>
+      </Card>
     )
   }
 
@@ -41,37 +86,81 @@ function SecurityPostureWidget({ orgId }: { orgId: string }) {
   const Icon = score >= 55 ? ShieldCheck : ShieldAlert
   const label = score >= 80 ? 'Good' : score >= 55 ? 'Fair' : 'Poor'
 
-  const bars: { name: string; pct: number; raw: string }[] = [
-    { name: 'MFA coverage',    pct: data.mfa_coverage,    raw: `${data.users_with_mfa}/${data.total_users} users` },
-    { name: 'Passkey coverage',pct: data.passkey_coverage,raw: `${data.users_with_passkey}/${data.total_users} users` },
-    { name: 'Policy engine',   pct: data.policy_engine,   raw: data.active_policy_rules > 0 ? `${data.active_policy_rules} rules active` : 'No rules configured' },
-    { name: 'Anomaly score',   pct: data.anomaly_score,   raw: `${data.failed_logins_24h} failed logins (24 h)` },
+  const metrics = [
+    {
+      name: 'MFA coverage', pct: data.mfa_coverage,
+      center: `${data.users_with_mfa}/${data.total_users}`, caption: 'users',
+      raw: `${data.mfa_coverage}% covered`, color: pctColor(data.mfa_coverage),
+    },
+    {
+      name: 'Passkey coverage', pct: data.passkey_coverage,
+      center: `${data.users_with_passkey}/${data.total_users}`, caption: 'users',
+      raw: `${data.passkey_coverage}% covered`, color: pctColor(data.passkey_coverage),
+    },
+    {
+      name: 'Policy engine', pct: data.policy_engine,
+      center: data.active_policy_rules > 0 ? `${data.active_policy_rules}` : '—',
+      caption: data.active_policy_rules > 0 ? 'rules' : 'no rules',
+      raw: data.active_policy_rules > 0 ? `${data.active_policy_rules} rules active` : 'No rules configured',
+      color: data.active_policy_rules > 0 ? pctColor(data.policy_engine) : 'var(--clavex-neutral)',
+    },
+    {
+      name: 'Anomaly score', pct: data.anomaly_score,
+      center: `${data.anomaly_score}`, caption: 'score',
+      raw: `${data.failed_logins_24h} failed logins (24 h)`, color: pctColor(data.anomaly_score),
+    },
   ]
 
   return (
-    <div className="p-5" style={{ gridColumn: 'span 2', background: 'var(--clavex-surface)', border: '1px solid var(--clavex-border)', borderRadius: 12 }}>
-      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 16 }}>
+    <Card className="p-5">
+      <div style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between', marginBottom: 20 }}>
         <p style={{ fontSize: 10, fontWeight: 700, letterSpacing: '1.5px', color: 'var(--clavex-neutral)', textTransform: 'uppercase' }}>Security posture</p>
-        <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
-          <Icon style={{ width: 16, height: 16, color }} />
-          <span style={{ fontSize: 24, fontWeight: 800, color, lineHeight: 1 }}>{score}</span>
-          <span style={{ fontSize: 12, color: 'var(--clavex-neutral)', alignSelf: 'flex-end', paddingBottom: 2 }}>/ 100 · {label}</span>
+        <div
+          style={{
+            display: 'flex', alignItems: 'center', gap: 6,
+            padding: '4px 12px', borderRadius: 999,
+            background: `${color}14`, border: `0.5px solid ${color}55`,
+          }}
+        >
+          <Icon style={{ width: 15, height: 15, color }} />
+          <span style={{ fontSize: 15, fontWeight: 800, color, lineHeight: 1 }}>{score}</span>
+          <span style={{ fontSize: 11, color: 'var(--clavex-neutral)' }}>/ 100 · {label}</span>
         </div>
       </div>
-      <div style={{ display: 'flex', flexDirection: 'column', gap: 10 }}>
-        {bars.map(b => (
-          <div key={b.name}>
-            <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: 12, marginBottom: 4 }}>
-              <span style={{ color: 'var(--clavex-ink)', fontWeight: 500 }}>{b.name}</span>
-              <span style={{ color: 'var(--clavex-neutral)' }}>{b.raw}</span>
-            </div>
-            <div style={{ height: 6, background: 'var(--clavex-border)', borderRadius: 3, overflow: 'hidden' }}>
-              <div style={{ height: '100%', width: `${b.pct}%`, background: b.pct >= 80 ? '#16a34a' : b.pct >= 50 ? '#d97706' : '#dc2626', borderRadius: 3, transition: 'width 0.4s' }} />
-            </div>
-          </div>
+      <div className="grid grid-cols-4 gap-4">
+        {metrics.map(m => (
+          <RingMetric key={m.name} {...m} />
         ))}
       </div>
-    </div>
+    </Card>
+  )
+}
+
+// ── DashboardStatCard ─────────────────────────────────────────────────────────
+// Local, richer stat card: uppercase label + large figure on the left, a tinted
+// icon tile on the right, and a coloured accent bar along the bottom edge.
+function DashboardStatCard({ label, value, icon: Icon }: { label: string; value: string | number; icon: React.ElementType }) {
+  return (
+    <Card className="relative overflow-hidden px-5 pt-4 pb-5">
+      <div className="flex items-start justify-between">
+        <div>
+          <p style={{ fontSize: 11, color: 'var(--clavex-neutral)', fontWeight: 600, textTransform: 'uppercase', letterSpacing: '0.6px' }}>{label}</p>
+          <p style={{ fontSize: 32, fontWeight: 800, color: 'var(--clavex-ink)', letterSpacing: '-1px', lineHeight: 1.1, marginTop: 8 }}>{value}</p>
+        </div>
+        <div
+          className="flex items-center justify-center flex-shrink-0"
+          style={{ height: 44, width: 44, borderRadius: 12, background: 'var(--clavex-50)' }}
+        >
+          <Icon className="h-5 w-5" style={{ color: 'var(--clavex-700)' }} />
+        </div>
+      </div>
+      <div
+        style={{
+          position: 'absolute', left: 0, right: 0, bottom: 0, height: 3,
+          background: 'linear-gradient(90deg, var(--clavex-primary), var(--clavex-300, #86dcbf))',
+        }}
+      />
+    </Card>
   )
 }
 
@@ -145,14 +234,14 @@ export default function TenantDashboard() {
 
       {/* Stats */}
       <div className="grid grid-cols-3 gap-4 mb-8">
-        <StatCard label="Total users" value={users.length} icon={Users} />
-        <StatCard label="Roles defined" value={roles.length} icon={Shield} />
-        <StatCard label="OIDC clients" value={clients.length} icon={KeyRound} />
+        <DashboardStatCard label="Total users" value={users.length} icon={Users} />
+        <DashboardStatCard label="Roles defined" value={roles.length} icon={Shield} />
+        <DashboardStatCard label="OIDC clients" value={clients.length} icon={KeyRound} />
       </div>
 
       {/* Security posture */}
       {orgId && (
-        <div className="grid grid-cols-2 gap-4 mb-8">
+        <div className="mb-8">
           <SecurityPostureWidget orgId={orgId} />
         </div>
       )}
