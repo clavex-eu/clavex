@@ -58,6 +58,12 @@ type License struct {
 	OrgLimit       int
 	ExpiresAt      time.Time
 	Tier           string
+	// Plan is an optional finer-grained plan identifier (e.g. "business_trial").
+	// It is informational: entitlements are decided by Tier + expiry. A 30-day
+	// Business trial is simply a Tier="business" license whose exp is 30 days
+	// out; when it expires the Checker reverts to community automatically, so
+	// no special trial-expiry logic is required here.
+	Plan string
 }
 
 // licenseClaims is the registered + private JWT claims set.
@@ -65,6 +71,7 @@ type licenseClaims struct {
 	jwt.RegisteredClaims
 	OrgLimit int    `json:"org_limit"`
 	Tier     string `json:"tier"`
+	Plan     string `json:"plan"`
 }
 
 // ParseLicenseFile reads and verifies a license JWT from path.
@@ -113,6 +120,7 @@ func ParseLicenseToken(tokenStr string) (*License, error) {
 		OrgLimit:       c.OrgLimit,
 		ExpiresAt:      exp.Time,
 		Tier:           c.Tier,
+		Plan:           c.Plan,
 	}, nil
 }
 
@@ -138,6 +146,9 @@ type State struct {
 	Valid bool `json:"valid"`
 	// Tier: "community" when no license.
 	Tier string `json:"tier"`
+	// Plan: optional finer-grained plan id (e.g. "business_trial"); empty unless
+	// a valid license carries a plan claim. Informational only.
+	Plan string `json:"plan,omitempty"`
 	// OrgLimit: max allowed active organizations.
 	OrgLimit int `json:"org_limit"`
 	// CurrentOrgCount: live count at the last check cycle.
@@ -159,6 +170,24 @@ type State struct {
 	// InstallationMismatch: the license is bound (sub) to a different installation
 	// than this deployment. When enforcement is on, the licensed tier is dropped.
 	InstallationMismatch bool `json:"installation_mismatch,omitempty"`
+}
+
+// HasBusinessEntitlement reports whether the installation is entitled to the
+// Business feature set (WS-Fed, custom domains, BYOK, SIEM sinks, Marketplace
+// publishing, multi-org). True only for a currently-valid Business or Enterprise
+// license. A 30-day Business trial is a Tier=="business" license with a near
+// exp, so it satisfies this while valid and stops satisfying it the moment the
+// Checker recomputes state after expiry — no dedicated trial handling needed.
+func (s State) HasBusinessEntitlement() bool {
+	if !s.Valid {
+		return false
+	}
+	switch s.Tier {
+	case "business", "enterprise":
+		return true
+	default:
+		return false
+	}
 }
 
 // licenseBindingOK reports whether a license whose sub is licSub may run on the
@@ -202,9 +231,11 @@ type Checker struct {
 func NewChecker(pool *pgxpool.Pool, lic *License, enforceBinding bool) *Checker {
 	limit := communityOrgLimit
 	tier := "community"
+	plan := ""
 	if lic != nil {
 		limit = lic.OrgLimit
 		tier = lic.Tier
+		plan = lic.Plan
 	}
 	return &Checker{
 		pool:           pool,
@@ -214,6 +245,7 @@ func NewChecker(pool *pgxpool.Pool, lic *License, enforceBinding bool) *Checker 
 			Valid:    lic != nil,
 			Tier:     tier,
 			OrgLimit: limit,
+			Plan:     plan,
 		},
 	}
 }
@@ -262,6 +294,7 @@ func (c *Checker) refresh(ctx context.Context) {
 func (c *Checker) computeState(ctx context.Context) State {
 	limit := communityOrgLimit
 	tier := "community"
+	plan := ""
 	var licExpires time.Time
 	licValid := false
 
@@ -269,12 +302,15 @@ func (c *Checker) computeState(ctx context.Context) State {
 	if c.lic != nil {
 		limit = c.lic.OrgLimit
 		tier = c.lic.Tier
+		plan = c.lic.Plan
 		licExpires = c.lic.ExpiresAt
 		licValid = time.Now().Before(licExpires)
 		if !licValid {
-			// Expired license reverts to community limits.
+			// Expired license (incl. an expired Business trial) reverts to
+			// community limits.
 			limit = communityOrgLimit
 			tier = "community"
+			plan = ""
 		}
 		// Installation binding (anti-sharing): a license bound to a specific
 		// installation_uuid must not be honoured on a different deployment.
@@ -287,6 +323,7 @@ func (c *Checker) computeState(ctx context.Context) State {
 				mismatch = true
 				limit = communityOrgLimit
 				tier = "community"
+				plan = ""
 				licValid = false
 			}
 		}
@@ -295,6 +332,7 @@ func (c *Checker) computeState(ctx context.Context) State {
 	s := State{
 		Valid:                c.lic == nil || licValid, // community is always "valid"
 		Tier:                 tier,
+		Plan:                 plan,
 		OrgLimit:             limit,
 		LicenseExpiresAt:     licExpires,
 		InstallationMismatch: mismatch,

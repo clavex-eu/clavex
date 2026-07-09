@@ -32,6 +32,29 @@ var oidcAuthPaths = []string{
 	"/par",
 }
 
+// RequireBusinessLicense gates a route behind an active Business or Enterprise
+// license (a valid 30-day Business trial counts). On failure it returns 402
+// Payment Required with a machine-readable body pointing at the upgrade path.
+//
+// The entitlement is read through a `state` provider rather than a *license.Checker
+// value because routes are registered in Server.New() before WithLicense() has
+// attached the checker; the provider is evaluated per-request, by which time the
+// checker is wired. A nil/absent checker is treated as community (blocked).
+func RequireBusinessLicense(state func() license.State) echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			if state().HasBusinessEntitlement() {
+				return next(c)
+			}
+			return c.JSON(http.StatusPaymentRequired, map[string]string{
+				"error":       "marketplace_publish_requires_license",
+				"message":     "Publishing to the Clavex Marketplace requires a Business or Enterprise license. Contact sales@clavex.eu or start a 30-day trial.",
+				"upgrade_url": "https://clavex.eu/prices",
+			})
+		}
+	}
+}
+
 // RequireLicenseNotBlocked rejects OIDC authorize / token endpoints with 503
 // when the installation's 30-day grace period has expired and the org count
 // still exceeds the license limit. Admin API and health endpoints are unaffected.
