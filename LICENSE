@@ -5,13 +5,35 @@ Parameters
 Licensor:             Fabio Craviolatti (Clavex)
 Licensed Work:        Clavex
                       The Licensed Work is (c) 2026 Fabio Craviolatti.
-Additional Use Grant: You may make production use of the Licensed Work,
-                      provided that such use does not serve more than one
-                      (1) organisation. Local development, staging, testing,
-                      and continuous-integration use is always permitted and
-                      is not counted against this limit. Serving two (2) or
+Additional Use Grant: You may make production use of the Licensed Work free of
+                      charge, provided that BOTH of the following conditions are
+                      satisfied. These two conditions are independent: exceeding
+                      either one requires a commercial license from the Licensor.
+
+                      (a) Single organisation. Your production use must not serve
+                      more than one (1) organisation. Local development, staging,
+                      testing, and continuous-integration use is always permitted
+                      and is not counted against this limit. Serving two (2) or
                       more organisations in production requires a commercial
-                      license from the Licensor. Contact sales@clavex.eu.
+                      license, regardless of which features are used.
+
+                      (b) Community features only. Your production use must be
+                      limited to the features designated "Community" in the
+                      FEATURES.md file distributed with the Licensed Work. The
+                      features designated "Business" in that file — including,
+                      without limitation, WS-Federation for SharePoint / ADFS,
+                      custom SaaS domains, bring-your-own-key / per-organisation
+                      signing keys, native SIEM sinks (Splunk HEC, Elastic ECS,
+                      Azure Sentinel), and publishing to the Clavex Marketplace —
+                      require a commercial license, regardless of how many
+                      organisations are served. Consuming or reading the public
+                      Marketplace catalog is a Community feature and remains free.
+
+                      A 30-day trial of the Business features is available at no
+                      charge. Request one via sales@clavex.eu or through the
+                      Clavex license portal.
+
+                      For a commercial license, contact sales@clavex.eu.
 
 Change Date:          2030-06-27
 

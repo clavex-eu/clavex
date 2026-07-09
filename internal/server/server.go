@@ -94,6 +94,12 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	e.HideBanner = true
 	e.HidePort = true
 
+	// srvRef is assigned the constructed *Server at the end of New(). Route
+	// middleware registered below that needs a dependency attached after New()
+	// (e.g. the license Checker, wired via WithLicense) reads it lazily through
+	// this pointer, which is non-nil by the time any request is served.
+	var srvRef *Server
+
 	// ── Trusted-proxy IP extraction ───────────────────────────────────────────
 	// When running behind a reverse proxy or Kubernetes ingress, RemoteAddr is the
 	// pod IP. Configure Echo to extract the real client IP from X-Forwarded-For
@@ -1699,10 +1705,20 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// POST   /api/v1/organizations/:org_id/marketplace/listings         — publish new listing
 		// PUT    /api/v1/organizations/:org_id/marketplace/listings/:id     — update listing
 		// DELETE /api/v1/organizations/:org_id/marketplace/listings/:id     — delete listing
+		// Publishing (create/update/delete listings) is a Business feature and is
+		// gated behind an active Business/Enterprise license (402 otherwise).
+		// Reading — ListForOrg here, plus the public ListPublic/GetPublic — stays
+		// open so an org can always see its own listings and browse the catalog.
+		marketplaceGate := middleware.RequireBusinessLicense(func() license.State {
+			if srvRef == nil || srvRef.licenseChecker == nil {
+				return license.State{Tier: "community"}
+			}
+			return srvRef.licenseChecker.State()
+		})
 		orgScoped.GET("/marketplace/listings", marketplaceH.ListForOrg)
-		orgScoped.POST("/marketplace/listings", marketplaceH.Publish)
-		orgScoped.PUT("/marketplace/listings/:id", marketplaceH.UpdateListing)
-		orgScoped.DELETE("/marketplace/listings/:id", marketplaceH.DeleteListing)
+		orgScoped.POST("/marketplace/listings", marketplaceH.Publish, marketplaceGate)
+		orgScoped.PUT("/marketplace/listings/:id", marketplaceH.UpdateListing, marketplaceGate)
+		orgScoped.DELETE("/marketplace/listings/:id", marketplaceH.DeleteListing, marketplaceGate)
 	}
 
 	// Identity provider OAuth2 SSO flow (tenant-scoped, no admin JWT)
@@ -1818,7 +1834,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		Int("routes", len(e.Routes())).
 		Msg("routes registered")
 
-	return &Server{
+	srvRef = &Server{
 		echo:         e,
 		cfg:          cfg,
 		pool:         pool,
@@ -1835,6 +1851,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		oidcH:        oidcH,
 		fedH:         fedH,
 	}
+	return srvRef
 }
 
 // WithPQCSigner attaches a PQCSigner so its ML-DSA-65 public key appears in
