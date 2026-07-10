@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/url"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -50,7 +51,15 @@ func init() {
 		u, err := url.ParseRequestURI(raw)
 		return err == nil && u.Scheme != ""
 	})
+
+	// slug accepts lowercase alphanumeric segments joined by single hyphens,
+	// e.g. "my-org". No leading/trailing hyphen, no consecutive hyphens.
+	_ = validate.RegisterValidation("slug", func(fl validator.FieldLevel) bool {
+		return slugPattern.MatchString(fl.Field().String())
+	})
 }
+
+var slugPattern = regexp.MustCompile(`^[a-z0-9]+(?:-[a-z0-9]+)*$`)
 
 // UserHandler handles user CRUD and self-service endpoints.
 type UserHandler struct {

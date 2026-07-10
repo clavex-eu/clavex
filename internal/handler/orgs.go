@@ -30,7 +30,7 @@ func NewOrgHandler(pool *pgxpool.Pool) *OrgHandler {
 
 type createOrgRequest struct {
 	Name    string  `json:"name"     validate:"required,min=1,max=120"`
-	Slug    string  `json:"slug"     validate:"required,min=2,max=63,alphanum"`
+	Slug    string  `json:"slug"     validate:"required,min=2,max=63,slug"`
 	LogoURL *string `json:"logo_url" validate:"omitempty,url"`
 }
 
@@ -154,7 +154,7 @@ type provisionClientRequest struct {
 
 type provisionRequest struct {
 	Name         string                  `json:"name"          validate:"required,min=1,max=120"`
-	Slug         string                  `json:"slug"          validate:"required,min=2,max=63,alphanum"`
+	Slug         string                  `json:"slug"          validate:"required,min=2,max=63,slug"`
 	AdminEmail   string                  `json:"admin_email"   validate:"required,email"`
 	Plan         string                  `json:"plan"          validate:"required,oneof=community enterprise cloud"`
 	TempPassword string                  `json:"temp_password"` // optional; generated if absent
