@@ -864,7 +864,9 @@ func (h *PAMHandler) SignSSHPublicKey(c echo.Context) error {
 // unless the operator opts in via http.allow_private_outbound_targets. vaultAddr
 // comes from tenant PAM config, so it must be treated as untrusted.
 // SetVaultHTTPClient overrides the Vault HTTP client (SSRF-relaxed opt-in).
-func SetVaultHTTPClient(hc *http.Client) { vaultssh.SetHTTPClient(hc) }
+// It is only wired with the SSRF-relaxed client, so private Vault hosts are
+// permitted in pre-flight validation to match the dialer.
+func SetVaultHTTPClient(hc *http.Client) { vaultssh.SetHTTPClient(hc, true) }
 
 // fetchVaultCAPublicKey fetches the CA public key from Vault SSH secrets engine.
 func fetchVaultCAPublicKey(ctx context.Context, vaultAddr, mount, token string) (string, error) {

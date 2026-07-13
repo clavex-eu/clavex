@@ -23,6 +23,34 @@ func TestBlockedIP(t *testing.T) {
 	}
 }
 
+func TestValidateURL(t *testing.T) {
+	// Rejected regardless of allowPrivate: bad scheme / missing host.
+	for _, raw := range []string{"ftp://vault.example.com", "://nope", "https://", "not a url"} {
+		if _, err := ValidateURL(raw, true); err == nil {
+			t.Errorf("ValidateURL(%q) should fail", raw)
+		}
+	}
+
+	// Public host passes and round-trips.
+	got, err := ValidateURL("https://vault.example.com:8200/v1/ssh/ca", false)
+	if err != nil {
+		t.Fatalf("public host should pass: %v", err)
+	}
+	if want := "https://vault.example.com:8200/v1/ssh/ca"; got != want {
+		t.Errorf("ValidateURL = %q, want %q", got, want)
+	}
+
+	// Private/loopback IP literals: blocked by default, permitted when allowPrivate.
+	for _, raw := range []string{"http://127.0.0.1:8200/v1/ssh/ca", "https://10.0.0.5/v1", "http://[::1]:8200"} {
+		if _, err := ValidateURL(raw, false); err == nil {
+			t.Errorf("ValidateURL(%q, false) should be blocked", raw)
+		}
+		if _, err := ValidateURL(raw, true); err != nil {
+			t.Errorf("ValidateURL(%q, true) should be permitted: %v", raw, err)
+		}
+	}
+}
+
 func TestClient_BlocksLoopbackByDefault(t *testing.T) {
 	ts := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
 		w.WriteHeader(http.StatusOK)

@@ -24,10 +24,17 @@ import (
 // network.
 var httpClient = safehttp.Client(10*time.Second, false)
 
-// SetHTTPClient overrides the Vault HTTP client (SSRF-relaxed opt-in).
-func SetHTTPClient(hc *http.Client) {
+// allowPrivate mirrors the client: when the operator opts into private outbound
+// targets (SSRF-relaxed client), pre-flight URL validation must not reject
+// private/loopback Vault addresses.
+var allowPrivate = false
+
+// SetHTTPClient overrides the Vault HTTP client. allowPrivateHosts must match the
+// client's SSRF posture so ValidateURL agrees with the dialer.
+func SetHTTPClient(hc *http.Client, allowPrivateHosts bool) {
 	if hc != nil {
 		httpClient = hc
+		allowPrivate = allowPrivateHosts
 	}
 }
 
@@ -37,7 +44,10 @@ func HTTPClient() *http.Client { return httpClient }
 // FetchCAPublicKey fetches the CA public key from the Vault SSH secrets engine.
 // The returned value is the OpenSSH authorized_keys line (e.g. "ssh-rsa AAAA…").
 func FetchCAPublicKey(ctx context.Context, vaultAddr, mount, token string) (string, error) {
-	url := strings.TrimRight(vaultAddr, "/") + "/v1/" + mount + "/ca/public-key"
+	url, err := safehttp.ValidateURL(strings.TrimRight(vaultAddr, "/")+"/v1/"+mount+"/ca/public-key", allowPrivate)
+	if err != nil {
+		return "", err
+	}
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
 	if err != nil {
 		return "", err
@@ -61,6 +71,10 @@ func FetchCAPublicKey(ctx context.Context, vaultAddr, mount, token string) (stri
 // vaultDo issues an authenticated Vault request with an optional JSON body and
 // enforces the expected status code.
 func vaultDo(ctx context.Context, method, url, token string, body any, okStatus ...int) ([]byte, error) {
+	url, err := safehttp.ValidateURL(url, allowPrivate)
+	if err != nil {
+		return nil, err
+	}
 	var reader io.Reader
 	if body != nil {
 		b, err := json.Marshal(body)
