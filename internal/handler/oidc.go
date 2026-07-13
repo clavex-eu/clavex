@@ -14,8 +14,8 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
-	"strings"
 	"strconv"
+	"strings"
 	"time"
 
 	"github.com/clavex-eu/clavex/internal/breach"
@@ -222,9 +222,10 @@ type OIDCHandler struct {
 	bundidSAMLRepo  *repository.BundIDSAMLRepository // for rendering BundID SAML button on login page
 	serviceAccounts *repository.ServiceAccountRepository
 	flags           *repository.FeatureFlagRepository // nil when feature flags disabled
-	orgSigners      *oidc.OrgSignerCache              // nil when BYOK not enabled
+	orgSigners      *oidc.OrgSignerCache              // nil unless key_backend=db; when set, every org signs with its own auto-provisioned key
 	vciH            *OID4VCIHandler                   // nil when OID4VCI is not configured; delegates pre-authorized_code grant
-	pqcSigner       *oidc.PQCSigner                   // nil when pqc_enabled=false; passive JWKS exposure only
+	pqcSigner       *oidc.PQCSigner                   // nil when pqc_enabled=false; global passive JWKS exposure only
+	orgPQCSigners   *oidc.OrgPQCSignerCache           // nil unless pqc_enabled+key_backend=db; per-org PQC key auto-provisioned on first use
 	encKeys         *oidc.EncKeySet                   // nil when request-object encryption is not enabled
 	// Agent-token UEBA step-up (opt-in). When agentUEBAEnabled is true, Introspect
 	// records agent-token usage and scores it for anomalous call-rate / scope
@@ -299,8 +300,9 @@ func (h *OIDCHandler) WithServiceAccountRepository(r *repository.ServiceAccountR
 	return h
 }
 
-// WithOrgSigners attaches an OrgSignerCache so that organisations with a BYOK
-// signing key use their own RSA key for token issuance and JWKS.
+// WithOrgSigners attaches an OrgSignerCache so that every organisation signs
+// tokens and serves JWKS with its own RSA key. Keys are auto-provisioned on
+// first use, so this is per-org isolation by default (not gated on BYOK).
 func (h *OIDCHandler) WithOrgSigners(c *oidc.OrgSignerCache) *OIDCHandler {
 	h.orgSigners = c
 	return h
@@ -356,6 +358,14 @@ func (h *OIDCHandler) WithFeedClient(f *shield.FeedClient) *OIDCHandler {
 // JWT signing remains classical; PQC is passive (discovery only).
 func (h *OIDCHandler) WithPQCSigner(s *oidc.PQCSigner) *OIDCHandler {
 	h.pqcSigner = s
+	return h
+}
+
+// WithOrgPQCSigners attaches an OrgPQCSignerCache so that every organisation's
+// JWKS exposes its own ML-DSA-65 public key (auto-provisioned on first use),
+// instead of a single global PQC key shared by all orgs. Still passive.
+func (h *OIDCHandler) WithOrgPQCSigners(c *oidc.OrgPQCSignerCache) *OIDCHandler {
+	h.orgPQCSigners = c
 	return h
 }
 
@@ -556,8 +566,9 @@ func applyTTLOverrides(tc *oidc.TokenConfig, org *models.Organization, cl *model
 	}
 }
 
-// applyOrgOverrides applies per-org/per-client TTL overrides AND, if the org
-// has a BYOK signing key, switches tc.Keys to the org-specific signer.
+// applyOrgOverrides applies per-org/per-client TTL overrides AND switches
+// tc.Keys to the org-specific signer. Every org has its own signer (auto-
+// provisioned on first use), so this always runs when orgSigners is wired.
 // It supersedes direct calls to applyTTLOverrides at token-issuance sites.
 func (h *OIDCHandler) applyOrgOverrides(ctx context.Context, tc *oidc.TokenConfig, org *models.Organization, cl *models.OIDCClient) {
 	applyTTLOverrides(tc, org, cl)
@@ -698,25 +709,37 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 }
 
 // JWKS returns the public JSON Web Key Set.
-// If the org has a BYOK signing key, only that org's public keys are returned.
-// Otherwise the global JWKS is returned.
-// When pqc_enabled=true the ML-DSA-65 PQC key is appended to all JWKS responses
-// (hybrid mode per NIST SP 800-208 / BSI TR-02102-1).
+// When per-org signers are wired (key_backend=db), the org's own public keys
+// are returned (its active key plus any retired-within-grace keys). Otherwise
+// the global JWKS is returned.
+// When pqc_enabled=true an ML-DSA-65 PQC key is appended to all JWKS responses
+// (hybrid mode per NIST SP 800-208 / BSI TR-02102-1) — the org's own PQC key
+// when per-org PQC signers are wired, otherwise the global one.
 func (h *OIDCHandler) JWKS(c echo.Context) error {
 	c.Response().Header().Set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400")
 
+	ctx := c.Request().Context()
+
+	// Resolve the org once; reused for both per-org classical and PQC keys.
+	var orgID *uuid.UUID
+	if org, err := h.orgs.GetBySlug(ctx, c.Param("org_slug")); err == nil {
+		id := org.ID
+		orgID = &id
+	}
+
 	var jwks []byte
-	if h.orgSigners != nil {
-		ctx := c.Request().Context()
-		if org, err := h.orgs.GetBySlug(ctx, c.Param("org_slug")); err == nil {
-			jwks = h.orgSigners.For(ctx, org.ID).JWKS()
-		}
+	if h.orgSigners != nil && orgID != nil {
+		jwks = h.orgSigners.For(ctx, *orgID).JWKS()
 	}
 	if jwks == nil {
 		jwks = h.tc.Keys.JWKS()
 	}
 
-	if h.pqcSigner != nil {
+	// PQC: publish the org's own ML-DSA-65 key when per-org signers are wired,
+	// otherwise the global one. Passive discovery either way.
+	if h.orgPQCSigners != nil && orgID != nil {
+		jwks = oidc.MergeJWKS(jwks, h.orgPQCSigners.For(ctx, *orgID).JWKObject())
+	} else if h.pqcSigner != nil {
 		jwks = oidc.MergeJWKS(jwks, h.pqcSigner.JWKObject())
 	}
 

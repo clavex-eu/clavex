@@ -156,6 +156,7 @@ func main() {
 
 	// ── PQC signing key (NIST FIPS 204 / ML-DSA-65, passive JWKS mode) ──────
 	var pqcSigner *oidc.PQCSigner
+	var orgPQCSigners *oidc.OrgPQCSignerCache // per-org PQC keys (default when PQC enabled)
 	if cfg.Auth.PQCEnabled {
 		if cfg.Auth.PQCAlgorithm != oidc.PQCAlgorithmMLDSA65 {
 			log.Fatal().
@@ -173,10 +174,14 @@ func main() {
 			log.Fatal().Err(psErr).Msg("failed to initialise PQC (ML-DSA-65) signing key")
 		}
 		pqcSigner = ps
+		// Per-org PQC keys are the default (mirror of per-org OIDC): each org's
+		// JWKS exposes its own ML-DSA-65 key, auto-provisioned on first use. The
+		// global pqcSigner remains only as a fallback.
+		orgPQCSigners = oidc.NewOrgPQCSignerCacheFromKEK(dbMgr.Pool, pqcKEK, pqcSigner)
 		log.Info().
 			Str("kid", pqcSigner.KID()).
 			Str("alg", oidc.PQCJWAAlgorithm).
-			Msg("PQC signing key loaded — ML-DSA-65 public key exposed in JWKS (passive mode)")
+			Msg("PQC signing key loaded — per-org ML-DSA-65 keys exposed in JWKS (passive mode)")
 	}
 
 	// ── Connectors ────────────────────────────────────────────────────────────
@@ -285,6 +290,9 @@ func main() {
 	srv := server.New(cfg, dbMgr.Pool, rdb, keys, orgSigners).WithLicense(licChecker)
 	if pqcSigner != nil {
 		srv.WithPQCSigner(pqcSigner)
+	}
+	if orgPQCSigners != nil {
+		srv.WithOrgPQCSigners(orgPQCSigners)
 	}
 	if encKeys != nil {
 		srv.WithEncKeys(encKeys)

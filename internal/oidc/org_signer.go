@@ -202,24 +202,43 @@ var _ Signer = (*OrgDBSigner)(nil)
 // ── OrgSignerCache ────────────────────────────────────────────────────────────
 
 // OrgSignerCache lazily loads and caches per-org OrgDBSigners.
-// Callers receive the global Signer for orgs that have not registered a BYOK key.
+//
+// Per-org key isolation is the DEFAULT: the first time an org signs a token it
+// is lazily provisioned its own RSA key (see For). The global Signer is only
+// used as a fallback for transient errors, or when auto-provisioning is
+// explicitly disabled (autoProvision=false) for tests or a staged rollout.
 type OrgSignerCache struct {
-	global Signer
-	mu     sync.RWMutex
-	cache  map[uuid.UUID]*OrgDBSigner
-	repo   *repository.SigningKeyRepository
-	enc    *clavexcrypto.Encryptor
+	global        Signer
+	mu            sync.RWMutex
+	cache         map[uuid.UUID]*OrgDBSigner
+	repo          *repository.SigningKeyRepository
+	enc           *clavexcrypto.Encryptor
+	autoProvision bool
 }
 
 // NewOrgSignerCache creates a cache backed by the given repository and encryptor.
-// global is returned for any org that has no own signing key.
+// Auto-provisioning is on by default: any org without a key gets one minted on
+// first use. global is only returned as a fallback (transient error, or when
+// auto-provisioning has been disabled).
 func NewOrgSignerCache(global Signer, repo *repository.SigningKeyRepository, enc *clavexcrypto.Encryptor) *OrgSignerCache {
 	return &OrgSignerCache{
-		global: global,
-		cache:  make(map[uuid.UUID]*OrgDBSigner),
-		repo:   repo,
-		enc:    enc,
+		global:        global,
+		cache:         make(map[uuid.UUID]*OrgDBSigner),
+		repo:          repo,
+		enc:           enc,
+		autoProvision: true,
 	}
+}
+
+// DisableAutoProvision reverts For() to the legacy behaviour of falling back to
+// the shared global signer for orgs without a key. Intended for tests and
+// staged rollout only; production should keep auto-provisioning on. Returns the
+// receiver for chaining.
+func (c *OrgSignerCache) DisableAutoProvision() *OrgSignerCache {
+	c.mu.Lock()
+	c.autoProvision = false
+	c.mu.Unlock()
+	return c
 }
 
 // NewOrgSignerCacheFromKEK is a convenience constructor for the key_backend=db case.
@@ -232,29 +251,63 @@ func NewOrgSignerCacheFromKEK(pool *pgxpool.Pool, kek [32]byte, global Signer) *
 	)
 }
 
-// For returns the org-specific Signer if the org has a BYOK key, otherwise the
-// global Signer. The result is cached after the first successful load.
+// For returns the org-specific Signer for orgID. If the org has no key yet, one
+// is lazily provisioned (auto-provision default) so every org signs with its
+// own isolated RSA key. The result is cached after the first successful load.
+//
+// The global Signer is only returned as a fallback: on a transient load error,
+// on a failed provision, or when auto-provisioning has been disabled.
 func (c *OrgSignerCache) For(ctx context.Context, orgID uuid.UUID) Signer {
 	c.mu.RLock()
 	if s, ok := c.cache[orgID]; ok {
 		c.mu.RUnlock()
 		return s
 	}
+	auto := c.autoProvision
 	c.mu.RUnlock()
 
 	s, err := newOrgDBSigner(ctx, c.repo, c.enc, orgID)
-	if err != nil {
-		// org has no own key (pgx.ErrNoRows) or transient DB error — use global
-		if !errors.Is(err, pgx.ErrNoRows) {
-			log.Error().Err(err).Str("org_id", orgID.String()).Msg("org_signer: load key")
-		}
+	if err == nil {
+		c.mu.Lock()
+		c.cache[orgID] = s
+		c.mu.Unlock()
+		return s
+	}
+
+	if !errors.Is(err, pgx.ErrNoRows) {
+		// Transient DB/decrypt error — fall back to the global signer rather
+		// than minting a key we might duplicate once the DB recovers.
+		log.Error().Err(err).Str("org_id", orgID.String()).Msg("org_signer: load key")
 		return c.global
 	}
 
-	c.mu.Lock()
-	c.cache[orgID] = s
-	c.mu.Unlock()
-	return s
+	// No key exists for this org yet.
+	if !auto {
+		return c.global
+	}
+
+	// Auto-provision a fresh org key on first use.
+	if _, gerr := c.GenerateForOrg(ctx, orgID); gerr != nil {
+		// A concurrent For() for the same org may have won the race and already
+		// inserted the active key (unique index violation here); try to load it.
+		if s2, lerr := newOrgDBSigner(ctx, c.repo, c.enc, orgID); lerr == nil {
+			c.mu.Lock()
+			c.cache[orgID] = s2
+			c.mu.Unlock()
+			return s2
+		}
+		log.Error().Err(gerr).Str("org_id", orgID.String()).Msg("org_signer: auto-provision key")
+		return c.global
+	}
+
+	// GenerateForOrg populated the cache; reuse that entry.
+	c.mu.RLock()
+	provisioned := c.cache[orgID]
+	c.mu.RUnlock()
+	if provisioned == nil {
+		return c.global
+	}
+	return provisioned
 }
 
 // Invalidate removes an org's entry from the cache so that the next call to
@@ -284,15 +337,19 @@ func (c *OrgSignerCache) GenerateForOrg(ctx context.Context, orgID uuid.UUID) (s
 		return "", fmt.Errorf("org signer: insert generated key: %w", err)
 	}
 
-	// Build JWKS for new key only (grace period keys will be loaded next time).
-	jwksJSON, err := buildJWKS(&priv.PublicKey, kid)
-	if err != nil {
-		return "", fmt.Errorf("org signer: build JWKS: %w", err)
-	}
-
 	tmp.mu.Lock()
 	tmp.privateKey = priv
 	tmp.kid = kid
+	tmp.mu.Unlock()
+
+	// Build JWKS from the DB so it includes the new active key AND the global
+	// key still in its transition/grace window (continuity for pre-switch
+	// tokens). Falls back to the in-memory key inside buildJWKSFromDB.
+	jwksJSON, err := tmp.buildJWKSFromDB(ctx)
+	if err != nil {
+		return "", fmt.Errorf("org signer: build JWKS: %w", err)
+	}
+	tmp.mu.Lock()
 	tmp.jwks = jwksJSON
 	tmp.mu.Unlock()
 
@@ -300,6 +357,13 @@ func (c *OrgSignerCache) GenerateForOrg(ctx context.Context, orgID uuid.UUID) (s
 	c.cache[orgID] = tmp
 	c.mu.Unlock()
 	return kid, nil
+}
+
+// RotateForOrg rotates an org's OIDC signing key: it generates a fresh key,
+// retiring the previous one into the JWKS grace window (via GenerateForOrg) so
+// outstanding tokens stay verifiable. Used by the scheduled key-rotation worker.
+func (c *OrgSignerCache) RotateForOrg(ctx context.Context, orgID uuid.UUID) (string, error) {
+	return c.GenerateForOrg(ctx, orgID)
 }
 
 // ImportForOrg stores a caller-supplied RSA private key as the BYOK key for
@@ -326,7 +390,10 @@ func (c *OrgSignerCache) ImportForOrg(ctx context.Context, orgID uuid.UUID, pkcs
 
 	_ = c.repo.RetireActiveForOrg(ctx, orgID)
 
-	if err := c.repo.InsertForOrg(ctx, orgID, kid, "PS256", keyEnc); err != nil {
+	// Imported (BYOK / external custody) keys are tagged so that scheduled
+	// rotation never regenerates them — the server does not hold their canonical
+	// material and must not silently replace it.
+	if err := c.repo.InsertImportedForOrg(ctx, orgID, kid, "PS256", keyEnc); err != nil {
 		return "", fmt.Errorf("org signer: insert imported key: %w", err)
 	}
 

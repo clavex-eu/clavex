@@ -27,6 +27,7 @@ is staged, and when each stage lands.
 | Key rotation | ✅ Done | `Rotate()` retires the active key and promotes a fresh one; retired keys persist through a grace period. |
 | JWKS discovery (hybrid) | ✅ Done — **this release** | PQC public key is published in the JWKS endpoint alongside the classical RSA key, so PQC-aware clients can discover the capability. |
 | Stable key IDs | ✅ Done | `kid` derived as SHA-256(pubkey)[:8], base64url — same scheme as the RSA signer. |
+| **Per-organisation PQC keys** | ✅ Done — **this release** | Each org gets its own ML-DSA-65 key, auto-provisioned on first use and published in that org's JWKS — the same free per-org isolation default as the classical OIDC key. No shared global PQC key for new orgs. |
 | **Dual-signing of OIDC tokens** | 🚧 Gated | Waiting on IANA JOSE algorithm registration (see below). |
 | ML-KEM (FIPS 203) key encapsulation | 📋 Roadmap | Transport-layer complement; not yet wired. |
 | SLH-DSA (FIPS 205) hash-based signatures | 📋 Roadmap | Conservative, no lattice assumptions. |
@@ -34,6 +35,20 @@ is staged, and when each stage lands.
 The signer is intentionally **passive**: it exposes the ML-DSA-65 public key for
 discovery but does not yet sign the JWTs that clients validate. Classical RSA
 remains the sole primary trust anchor.
+
+### Per-organisation PQC keys
+
+As of this release the PQC key is **isolated per organisation**, mirroring the
+per-org isolation already applied to the classical OIDC signing key (and free by
+default, not a paid BYOK feature). Each org's JWKS advertises that org's own
+ML-DSA-65 key, auto-provisioned on first use; there is no shared global PQC key
+for new orgs.
+
+This isolation is **orthogonal to dual-signing**: it changes *which* key an org
+publishes, not *when* the key starts signing real tokens. When IANA registration
+lands and Clavex begins issuing dual-signed tokens, each org will simply sign
+with the per-org PQC key it already has — no re-architecture, and the backfill /
+rotation machinery built for the classical key already covers PQC.
 
 ---
 
