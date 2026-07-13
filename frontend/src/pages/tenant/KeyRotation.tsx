@@ -73,10 +73,10 @@ function KeyCard({ entry, orgId }: { entry: KeyEntry; orgId: string }) {
     },
   })
 
-  // OIDC/PQC are process-global singleton keys shared by every org; they are
-  // read-only here and managed in the superadmin console.
-  const installationManaged = entry.key_kind === 'oidc' || entry.key_kind === 'pqc'
-  const editable = entry.schedulable && !installationManaged
+  // OIDC and PQC keys are both per-org now, so an org admin manages their own
+  // rotation policy for each. Non-schedulable entries (an imported BYOK OIDC
+  // key, or the BYOK card) are read-only and show a reason instead.
+  const editable = entry.schedulable
   const dirty = policy !== entry.rotation_policy || interval !== entry.rotation_interval_days
 
   return (
@@ -127,19 +127,6 @@ function KeyCard({ entry, orgId }: { entry: KeyEntry; orgId: string }) {
             onClick={() => save.mutate({ rotation_policy: policy, rotation_interval_days: interval })}>
             <RotateCw size={14} /> {save.isPending ? 'Saving…' : 'Save'}
           </button>
-        </div>
-      ) : installationManaged ? (
-        <div style={{ marginTop: 14 }}>
-          <div style={{ fontSize: 12, color: 'var(--clavex-neutral)', marginBottom: 8 }}>
-            Policy: <strong>{entry.rotation_policy}</strong>
-            {entry.rotation_policy === 'scheduled' && <> · every <strong>{entry.rotation_interval_days}</strong> days</>}
-          </div>
-          <div style={{ padding: '10px 14px', borderRadius: 8, background: '#f1f5f9', border: '0.5px solid var(--clavex-border)' }}>
-            <p style={{ fontSize: 12, margin: 0, color: 'var(--clavex-neutral)' }}>
-              This key is shared across all organizations on this installation and is managed at the installation level.
-              Contact your Clavex administrator to change this policy.
-            </p>
-          </div>
         </div>
       ) : (
         <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: '#fef9c3', border: '0.5px solid #fde68a' }}>

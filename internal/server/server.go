@@ -67,12 +67,14 @@ type Server struct {
 	licenseChecker *license.Checker
 	ssfDisp        *ssf.Dispatcher
 	pamNotifier    *alerting.PAMNotifier
-	feedClient     *shield.FeedClient   // nil when distributed threat feed disabled
-	merkleSealer   *merkle.Sealer       // nil when signing key is not configured
+	feedClient     *shield.FeedClient      // nil when distributed threat feed disabled
+	merkleSealer   *merkle.Sealer          // nil when signing key is not configured
 	oidcH          *handler.OIDCHandler    // kept for post-New wiring (e.g. WithPQCSigner)
 	fedH           *federation.Handler     // kept for post-New wiring (WithEncKeys)
-	dbSigner       *oidc.DBSigner       // nil unless key_backend=db; target of scheduled OIDC rotation
-	pqcSigner      *oidc.PQCSigner      // nil unless PQC enabled; target of scheduled PQC rotation
+	dbSigner       *oidc.DBSigner          // nil unless key_backend=db; target of scheduled global OIDC rotation
+	pqcSigner      *oidc.PQCSigner         // nil unless PQC enabled; target of scheduled global PQC rotation
+	orgSigners     *oidc.OrgSignerCache    // nil unless key_backend=db; target of scheduled per-org OIDC rotation
+	orgPQCSigners  *oidc.OrgPQCSignerCache // nil unless PQC enabled+key_backend=db; target of scheduled per-org PQC rotation
 }
 
 // SSFDispatcher returns the SSF event dispatcher. Used by workers that need
@@ -1600,10 +1602,10 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		keyRotationH := handler.NewKeyRotationHandler(cfg, pool)
 		keyRotation := orgScoped.Group("/key-rotation", middleware.RequireResourcePermission("security"))
 		keyRotation.GET("", keyRotationH.Status)
-		// OIDC/PQC are process-global singleton keys shared by every org, so
-		// changing their policy is superadmin-only. Org admins get 403 here;
-		// they still manage BYOK/SSH CA policies through their own endpoints.
-		keyRotation.PUT("/:kind", keyRotationH.SetPolicy, middleware.RequireSuperAdmin())
+		// OIDC keys are now per-org, so an org's security admin manages their own
+		// OIDC rotation policy here. PQC is still a process-global singleton, so
+		// SetPolicy enforces superadmin-only for kind=pqc internally.
+		keyRotation.PUT("/:kind", keyRotationH.SetPolicy)
 
 		// ── Fine-Grained Authorization (OpenFGA ReBAC) ────────────────────────
 		var fgaClient *fga.Client
@@ -1910,6 +1912,10 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	// Keep a typed reference to the DB signer (if that is the active backend)
 	// so the scheduled key-rotation worker can call Rotate() on it.
 	srvRef.dbSigner, _ = keys.(*oidc.DBSigner)
+	// Keep the per-org signer cache so the worker can rotate per-org OIDC keys.
+	if len(orgSigners) > 0 {
+		srvRef.orgSigners = orgSigners[0]
+	}
 	return srvRef
 }
 
@@ -1921,6 +1927,17 @@ func (s *Server) WithPQCSigner(signer *oidc.PQCSigner) *Server {
 		s.oidcH.WithPQCSigner(signer)
 	}
 	s.pqcSigner = signer // target of scheduled PQC rotation
+	return s
+}
+
+// WithOrgPQCSigners attaches the per-org PQC signer cache so each org's JWKS
+// exposes its own ML-DSA-65 key and the worker can rotate per-org PQC keys.
+// Must be called after New() and before Start().
+func (s *Server) WithOrgPQCSigners(cache *oidc.OrgPQCSignerCache) *Server {
+	if s.oidcH != nil {
+		s.oidcH.WithOrgPQCSigners(cache)
+	}
+	s.orgPQCSigners = cache
 	return s
 }
 
@@ -1992,7 +2009,7 @@ func (s *Server) Start() error {
 	}
 	go worker.RunEntityReviewWorker(ctx, s.pool, entityReviewBaseURL)
 	go worker.RunPAMRotationWorker(ctx, s.pool, s.enc, s.pamNotifier, s.webhookDisp)
-	go worker.RunKeyRotationWorker(ctx, s.pool, s.dbSigner, s.pqcSigner)
+	go worker.RunKeyRotationWorker(ctx, s.pool, s.dbSigner, s.pqcSigner, s.orgSigners, s.orgPQCSigners)
 	go worker.RunEntityEventsProjectionWorker(ctx, s.pool)
 
 	// Custom-domain ingress reconciler (opt-in, in-cluster only) + re-verify.

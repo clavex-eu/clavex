@@ -1,13 +1,17 @@
 package handler
 
-// KeyRotationHandler exposes the scheduled-rotation policy for the global
-// signing keys (OIDC/PQC). Per-org BYOK keys are surfaced read-only: automatic
-// rotation is never available for them.
+// KeyRotationHandler exposes the scheduled-rotation policy for signing keys.
+//
+// OIDC and PQC keys are now both per-org (every org has its own key), so their
+// rotation policy is org-scoped and managed by the org's security admins.
+// Imported (BYOK / external-custody) org keys are surfaced read-only: Clavex
+// cannot auto-rotate material it does not hold. (Global installation-wide
+// policies remain manageable via the superadmin console.)
 //
 // Endpoints (under /api/v1/organizations/:org_id):
 //
 //	GET /key-rotation          — policy + schedulability for every key category
-//	PUT /key-rotation/:kind     — set policy for oidc|pqc (rejects BYOK)
+//	PUT /key-rotation/:kind     — set org policy for oidc | pqc
 
 import (
 	"errors"
@@ -57,21 +61,25 @@ type keyRotationEntry struct {
 	Reason         string  `json:"reason,omitempty"`
 }
 
-// orgHasBYOK reports whether the org has its own active signing key.
-func (h *KeyRotationHandler) orgHasBYOK(c echo.Context, orgID uuid.UUID) (bool, error) {
-	_, err := h.signRepo.GetActiveForOrg(c.Request().Context(), orgID)
-	if err == nil {
-		return true, nil
+// orgKeyImported reports whether the org's active signing key is imported
+// (BYOK / external custody), i.e. material Clavex does not hold and must never
+// regenerate. Auto-provisioned ("generated") keys, or the absence of any key
+// yet, are not imported. hasKey distinguishes "generated" from "no key yet".
+func (h *KeyRotationHandler) orgKeyImported(c echo.Context, orgID uuid.UUID) (imported, hasKey bool, err error) {
+	src, e := h.signRepo.GetActiveKeySourceForOrg(c.Request().Context(), orgID)
+	if e == nil {
+		return src == "imported", true, nil
 	}
-	if errors.Is(err, pgx.ErrNoRows) {
-		return false, nil
+	if errors.Is(e, pgx.ErrNoRows) {
+		return false, false, nil
 	}
-	return false, err
+	return false, false, e
 }
 
 // policyEntry loads a kind's stored policy (defaulting to manual) and stamps
-// schedulability.
-func (h *KeyRotationHandler) policyEntry(c echo.Context, kind string, schedulable bool, reason string) keyRotationEntry {
+// schedulability. When orgID is non-nil the org-scoped policy is read (OIDC);
+// when nil the global policy is read (PQC, legacy global OIDC).
+func (h *KeyRotationHandler) policyEntry(c echo.Context, kind string, orgID *uuid.UUID, schedulable bool, reason string) keyRotationEntry {
 	entry := keyRotationEntry{
 		KeyKind:        kind,
 		RotationPolicy: repository.RotationPolicyManual,
@@ -79,7 +87,15 @@ func (h *KeyRotationHandler) policyEntry(c echo.Context, kind string, schedulabl
 		Schedulable:    schedulable,
 		Reason:         reason,
 	}
-	p, err := h.repo.Get(c.Request().Context(), kind)
+	var (
+		p   *repository.KeyRotationPolicy
+		err error
+	)
+	if orgID != nil {
+		p, err = h.repo.GetForOrg(c.Request().Context(), kind, *orgID)
+	} else {
+		p, err = h.repo.Get(c.Request().Context(), kind)
+	}
 	if err == nil {
 		entry.RotationPolicy = p.RotationPolicy
 		entry.IntervalDays = p.IntervalDays
@@ -97,25 +113,28 @@ func (h *KeyRotationHandler) Status(c echo.Context) error {
 	if err != nil {
 		return err
 	}
-	hasBYOK, err := h.orgHasBYOK(c, orgID)
+	imported, _, err := h.orgKeyImported(c, orgID)
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
 
-	// OIDC: schedulable only when the org is NOT using a BYOK key (a BYOK org's
-	// OIDC signing key IS its own key, which we never auto-rotate).
+	// OIDC is per-org: schedulable unless the org runs an imported (BYOK / HSM)
+	// key, whose material Clavex does not hold and therefore cannot auto-rotate.
 	oidcReason := ""
-	if hasBYOK {
+	if imported {
 		oidcReason = byokRotationMessage
 	}
 	entries := []keyRotationEntry{
-		h.policyEntry(c, repository.KeyKindOIDC, !hasBYOK, oidcReason),
-		h.policyEntry(c, repository.KeyKindPQC, true, ""),
+		h.policyEntry(c, repository.KeyKindOIDC, &orgID, !imported, oidcReason),
+		// PQC is now per-org too (auto-provisioned, always server-generated), so
+		// its rotation policy is org-scoped and org-manageable.
+		h.policyEntry(c, repository.KeyKindPQC, &orgID, true, ""),
 	}
 
-	// BYOK is always read-only.
-	byokReason := "No organization-provided (BYOK) key is configured."
-	if hasBYOK {
+	// The BYOK card reflects imported / external-custody material only. A plain
+	// auto-provisioned org key is NOT BYOK — that isolation is now free.
+	byokReason := "No imported key is configured — Clavex generates and manages this org's OIDC key automatically."
+	if imported {
 		byokReason = byokRotationMessage
 	}
 	entries = append(entries, keyRotationEntry{
@@ -125,7 +144,7 @@ func (h *KeyRotationHandler) Status(c echo.Context) error {
 		Reason:         byokReason,
 	})
 
-	return c.JSON(http.StatusOK, map[string]any{"keys": entries, "byok_active": hasBYOK})
+	return c.JSON(http.StatusOK, map[string]any{"keys": entries, "byok_active": imported})
 }
 
 type setPolicyBody struct {
@@ -137,8 +156,8 @@ type setPolicyBody struct {
 // global OIDC/PQC rotation policy, independent of any org.
 func (h *KeyRotationHandler) InstallationStatus(c echo.Context) error {
 	entries := []keyRotationEntry{
-		h.policyEntry(c, repository.KeyKindOIDC, true, ""),
-		h.policyEntry(c, repository.KeyKindPQC, true, ""),
+		h.policyEntry(c, repository.KeyKindOIDC, nil, true, ""),
+		h.policyEntry(c, repository.KeyKindPQC, nil, true, ""),
 	}
 	return c.JSON(http.StatusOK, map[string]any{"keys": entries})
 }
@@ -223,13 +242,14 @@ func (h *KeyRotationHandler) SetPolicy(c echo.Context) error {
 		if body.IntervalDays < 1 || body.IntervalDays > 3650 {
 			return echo.NewHTTPError(http.StatusBadRequest, "rotation_interval_days must be between 1 and 3650")
 		}
-		// Reject scheduled rotation for a BYOK-backed OIDC key.
+		// Reject scheduled rotation for an imported (BYOK / HSM) OIDC key: Clavex
+		// cannot regenerate material it does not hold.
 		if kind == repository.KeyKindOIDC {
-			hasBYOK, err := h.orgHasBYOK(c, orgID)
+			imported, _, err := h.orgKeyImported(c, orgID)
 			if err != nil {
 				return echo.ErrInternalServerError
 			}
-			if hasBYOK {
+			if imported {
 				return echo.NewHTTPError(http.StatusConflict, byokRotationMessage)
 			}
 		}
@@ -238,7 +258,9 @@ func (h *KeyRotationHandler) SetPolicy(c echo.Context) error {
 		body.IntervalDays = 90
 	}
 
-	if err := h.repo.Upsert(ctx, kind, body.RotationPolicy, body.IntervalDays); err != nil {
+	// Both OIDC and PQC are now per-org: each org has its own key, so its
+	// rotation policy is org-scoped.
+	if err := h.repo.UpsertForOrg(ctx, kind, orgID, body.RotationPolicy, body.IntervalDays); err != nil {
 		return echo.ErrInternalServerError
 	}
 
