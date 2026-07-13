@@ -26,6 +26,10 @@ import (
 	"github.com/clavex-eu/clavex/internal/alerting"
 	"github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/repository"
+	"github.com/clavex-eu/clavex/internal/sshca"
+	"github.com/clavex-eu/clavex/internal/vaultssh"
+	"github.com/clavex-eu/clavex/internal/webhook"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/rs/zerolog/log"
 )
@@ -37,19 +41,51 @@ const (
 	pamRotationPasswordBytes = 24
 )
 
+// webhookDispatcher is the subset of *webhook.Dispatcher the worker needs.
+// Declared as an interface so the worker can be unit-tested with a fake
+// (the concrete Dispatcher's fields are unexported).
+type webhookDispatcher interface {
+	Dispatch(orgID uuid.UUID, event string, data any)
+}
+
+// rotationStore is the subset of *repository.PAMRepository that
+// rotatePAMCredential needs. Declared as an interface so the rotation
+// decision (dispatch vs. skip, per credential type) is unit-testable
+// without a database.
+type rotationStore interface {
+	RotateCredentialSecret(ctx context.Context, credID uuid.UUID, encryptedSecret string) error
+	LogRotation(ctx context.Context, credID, orgID uuid.UUID, rotatedBy, rotationType, note string) error
+}
+
+// sshCAStore is the subset of *repository.PAMRepository the SSH CA
+// reconciliation needs. Interface for the same unit-testing reason as above.
+type sshCAStore interface {
+	ListSSHCAConfigsForReconcile(ctx context.Context) ([]repository.SSHCAReconcileRow, error)
+	UpdateSSHCAPublicKey(ctx context.Context, orgID uuid.UUID, pubKey string) error
+}
+
+// caKeyFetcher fetches the current CA public key from Vault. Declared as a
+// type so tests can stub the network call; production uses
+// vaultssh.FetchCAPublicKey.
+type caKeyFetcher func(ctx context.Context, vaultAddr, mount, token string) (string, error)
+
 // RunPAMRotationWorker starts the credential auto-rotation goroutine.
-// Blocks until ctx is cancelled. Call as `go RunPAMRotationWorker(ctx, pool, enc, notifier)`.
+// Blocks until ctx is cancelled. Call as `go RunPAMRotationWorker(ctx, pool, enc, notifier, disp)`.
 // Pass a zero-enabled notifier (alerting.NewPAMNotifier with empty URLs) to disable alerts.
-func RunPAMRotationWorker(ctx context.Context, pool *pgxpool.Pool, enc *crypto.Encryptor, notifier *alerting.PAMNotifier) {
+func RunPAMRotationWorker(ctx context.Context, pool *pgxpool.Pool, enc *crypto.Encryptor, notifier *alerting.PAMNotifier, disp webhookDispatcher) {
 	repo := repository.NewPAMRepository(pool)
+	sshCASvc := sshca.NewService(repo, enc, disp)
 
 	log.Info().Str("interval", pamRotationWorkerInterval.String()).
 		Msg("pam-rotation-worker: started")
 
 	// Run immediately on startup to clear any backlog.
-	processPAMRotations(ctx, repo, enc)
+	processPAMRotations(ctx, repo, enc, disp)
 	processStaleCredentialAlerts(ctx, repo, notifier)
 	processLongSessionAlerts(ctx, repo, notifier)
+	processSSHCARotations(ctx, repo, enc, disp, vaultssh.FetchCAPublicKey)
+	processSSHCAScheduledStarts(ctx, repo, sshCASvc)
+	sshCASvc.CleanupExpiredGrace(ctx)
 
 	ticker := time.NewTicker(pamRotationWorkerInterval)
 	defer ticker.Stop()
@@ -60,14 +96,116 @@ func RunPAMRotationWorker(ctx context.Context, pool *pgxpool.Pool, enc *crypto.E
 			log.Info().Msg("pam-rotation-worker: stopping")
 			return
 		case <-ticker.C:
-			processPAMRotations(ctx, repo, enc)
+			processPAMRotations(ctx, repo, enc, disp)
 			processStaleCredentialAlerts(ctx, repo, notifier)
 			processLongSessionAlerts(ctx, repo, notifier)
+			processSSHCARotations(ctx, repo, enc, disp, vaultssh.FetchCAPublicKey)
+			processSSHCAScheduledStarts(ctx, repo, sshCASvc)
+			sshCASvc.CleanupExpiredGrace(ctx)
 		}
 	}
 }
 
-func processPAMRotations(ctx context.Context, repo *repository.PAMRepository, enc *crypto.Encryptor) {
+// sshCARotationStarter is the Start subset the scheduler uses (interface for
+// unit-testing the "start-only, never complete" guarantee).
+type sshCARotationStarter interface {
+	Start(ctx context.Context, orgID uuid.UUID, startedBy, policy string, intervalDays *int) (*repository.PAMSSHCARotation, string, error)
+}
+
+// processSSHCAScheduledStarts triggers ONLY the Start step for orgs whose
+// scheduled SSH CA rotation interval has elapsed. It never advances a rotation
+// to cutover_ready or complete — those are always explicit operator/agent steps.
+func processSSHCAScheduledStarts(ctx context.Context, repo *repository.PAMRepository, svc sshCARotationStarter) {
+	due, err := repo.ListSSHCAConfigsForScheduledRotation(ctx, time.Now())
+	if err != nil {
+		log.Error().Err(err).Msg("pam-rotation-worker: list scheduled ssh ca rotations")
+		return
+	}
+	for i := range due {
+		cfg := due[i]
+		interval := cfg.IntervalDays
+		if _, _, err := svc.Start(ctx, cfg.OrgID, "scheduler", "scheduled", &interval); err != nil {
+			log.Warn().Err(err).Str("org_id", cfg.OrgID.String()).
+				Msg("pam-rotation-worker: scheduled ssh ca rotation start")
+			continue
+		}
+		log.Info().Str("org_id", cfg.OrgID.String()).
+			Msg("pam-rotation-worker: scheduled ssh ca rotation started")
+	}
+}
+
+// processSSHCARotations re-fetches each org's Vault SSH CA public key and, when
+// it differs from the last cached value, caches the new key and dispatches a
+// pam.ssh_ca.rotated webhook. The first successful fetch for an org just seeds
+// the cache (no event — nothing to compare against).
+func processSSHCARotations(ctx context.Context, repo sshCAStore, enc *crypto.Encryptor, disp webhookDispatcher, fetch caKeyFetcher) {
+	rows, err := repo.ListSSHCAConfigsForReconcile(ctx)
+	if err != nil {
+		log.Error().Err(err).Msg("pam-rotation-worker: failed to list ssh ca configs")
+		return
+	}
+	for _, row := range rows {
+		token, err := enc.Decrypt(row.EncryptedToken)
+		if err != nil {
+			log.Error().Err(err).Str("org_id", row.OrgID.String()).
+				Msg("pam-rotation-worker: decrypt ssh ca token")
+			continue
+		}
+		fetched, err := fetch(ctx, row.VaultAddr, row.VaultMount, token)
+		if err != nil {
+			log.Warn().Err(err).Str("org_id", row.OrgID.String()).
+				Msg("pam-rotation-worker: fetch ssh ca public key")
+			continue
+		}
+		if fetched == "" {
+			continue
+		}
+
+		// First observation for this org: seed the cache, do not alert.
+		if row.CAPublicKey == nil || *row.CAPublicKey == "" {
+			if err := repo.UpdateSSHCAPublicKey(ctx, row.OrgID, fetched); err != nil {
+				log.Error().Err(err).Str("org_id", row.OrgID.String()).
+					Msg("pam-rotation-worker: cache initial ssh ca key")
+			}
+			continue
+		}
+		if fetched == *row.CAPublicKey {
+			continue // no rotation
+		}
+
+		// Rotation detected.
+		newFP, err := vaultssh.FingerprintSHA256(fetched)
+		if err != nil {
+			log.Error().Err(err).Str("org_id", row.OrgID.String()).
+				Msg("pam-rotation-worker: fingerprint rotated ssh ca key")
+			continue
+		}
+		prevFP, _ := vaultssh.FingerprintSHA256(*row.CAPublicKey) // best effort
+
+		// Persist before dispatching so a persist failure retries next tick
+		// without emitting a duplicate event.
+		if err := repo.UpdateSSHCAPublicKey(ctx, row.OrgID, fetched); err != nil {
+			log.Error().Err(err).Str("org_id", row.OrgID.String()).
+				Msg("pam-rotation-worker: cache rotated ssh ca key")
+			continue
+		}
+
+		log.Info().Str("org_id", row.OrgID.String()).
+			Str("new_fingerprint", newFP).
+			Msg("pam-rotation-worker: ssh ca rotated")
+
+		if disp != nil {
+			disp.Dispatch(row.OrgID, webhook.EventPAMSSHCARotated, map[string]any{
+				"org_id":               row.OrgID,
+				"new_fingerprint":      newFP,
+				"previous_fingerprint": prevFP,
+				"rotated_at":           time.Now().UTC(),
+			})
+		}
+	}
+}
+
+func processPAMRotations(ctx context.Context, repo *repository.PAMRepository, enc *crypto.Encryptor, disp webhookDispatcher) {
 	due, err := repo.ListDueForRotation(ctx)
 	if err != nil {
 		log.Error().Err(err).Msg("pam-rotation-worker: failed to list due credentials")
@@ -80,7 +218,7 @@ func processPAMRotations(ctx context.Context, repo *repository.PAMRepository, en
 	log.Info().Int("count", len(due)).Msg("pam-rotation-worker: rotating due credentials")
 
 	for _, cred := range due {
-		if err := rotatePAMCredential(ctx, repo, enc, cred); err != nil {
+		if err := rotatePAMCredential(ctx, repo, enc, disp, cred); err != nil {
 			log.Error().Err(err).
 				Str("credential_id", cred.ID.String()).
 				Str("org_id", cred.OrgID.String()).
@@ -90,7 +228,7 @@ func processPAMRotations(ctx context.Context, repo *repository.PAMRepository, en
 	}
 }
 
-func rotatePAMCredential(ctx context.Context, repo *repository.PAMRepository, enc *crypto.Encryptor, cred repository.PAMCredential) error {
+func rotatePAMCredential(ctx context.Context, repo rotationStore, enc *crypto.Encryptor, disp webhookDispatcher, cred repository.PAMCredential) error {
 	// SSH keys and certificates cannot be auto-rotated — they require PKI.
 	// Log a warning and return without error so the loop continues.
 	switch cred.CredentialType {
@@ -135,6 +273,17 @@ func rotatePAMCredential(ctx context.Context, repo *repository.PAMRepository, en
 		Str("name", cred.Name).
 		Str("type", cred.CredentialType).
 		Msg("pam-rotation-worker: credential rotated")
+
+	// Notify subscribers so they can refresh downstream copies without polling.
+	if disp != nil {
+		disp.Dispatch(cred.OrgID, webhook.EventPAMCredentialRotated, map[string]any{
+			"org_id":          cred.OrgID,
+			"credential_id":   cred.ID,
+			"credential_type": cred.CredentialType,
+			"rotated_at":      time.Now().UTC(),
+			"rotated_by":      "system",
+		})
+	}
 
 	return nil
 }

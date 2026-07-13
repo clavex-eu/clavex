@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { doLogout } from '@/lib/logout'
-import { Activity, Building2, LogOut, Zap, Key, ShieldCheck, Fingerprint } from 'lucide-react'
+import { Activity, Building2, LogOut, Zap, Key, ShieldCheck, Fingerprint, RotateCw } from 'lucide-react'
 import { ClavexLogo } from '@/components/logo/ClavexLogo'
 
 export default function SuperAdminLayout() {
@@ -68,6 +68,13 @@ export default function SuperAdminLayout() {
           >
             <Key className="h-4 w-4" />
             API Keys
+          </NavLink>
+          <NavLink
+            to="/admin/signing-keys"
+            className={({ isActive }) => `sidebar-link ${isActive ? 'active' : ''}`}
+          >
+            <RotateCw className="h-4 w-4" />
+            Signing Keys
           </NavLink>
           <NavLink
             to="/admin/license"

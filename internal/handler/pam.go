@@ -51,7 +51,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/middleware"
 	"github.com/clavex-eu/clavex/internal/repository"
-	"github.com/clavex-eu/clavex/internal/safehttp"
+	"github.com/clavex-eu/clavex/internal/vaultssh"
 	"github.com/clavex-eu/clavex/internal/webhook"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -751,25 +751,47 @@ func (h *PAMHandler) GetCAPublicKey(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusInternalServerError, "failed to get SSH CA config")
 	}
 
-	// Return cached key if available.
+	// Resolve the primary (current) CA key — cached, else fetched from Vault.
+	primary := ""
 	if cfg.CAPublicKey != nil && *cfg.CAPublicKey != "" {
-		return c.String(http.StatusOK, *cfg.CAPublicKey)
+		primary = *cfg.CAPublicKey
+	} else {
+		token, err := h.enc.Decrypt(encToken)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusInternalServerError, "failed to decrypt vault token")
+		}
+		pubKey, err := fetchVaultCAPublicKey(c.Request().Context(), cfg.VaultAddr, cfg.VaultMount, token)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadGateway, fmt.Sprintf("failed to fetch CA public key from Vault: %v", err))
+		}
+		_ = h.repo.UpdateSSHCAPublicKey(c.Request().Context(), orgID, pubKey)
+		primary = pubKey
 	}
 
-	// Decrypt token and fetch from Vault.
-	token, err := h.enc.Decrypt(encToken)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusInternalServerError, "failed to decrypt vault token")
-	}
-	pubKey, err := fetchVaultCAPublicKey(c.Request().Context(), cfg.VaultAddr, cfg.VaultMount, token)
-	if err != nil {
-		return echo.NewHTTPError(http.StatusBadGateway, fmt.Sprintf("failed to fetch CA public key from Vault: %v", err))
+	// Backward-compatible default: single primary key as plain text.
+	if c.QueryParam("format") != "json" {
+		return c.String(http.StatusOK, primary)
 	}
 
-	// Cache the key.
-	_ = h.repo.UpdateSSHCAPublicKey(c.Request().Context(), orgID, pubKey)
-
-	return c.String(http.StatusOK, pubKey)
+	// JSON form (?format=json): during an active rotation, return BOTH the
+	// current and the incoming CA so consumers can trust both across cutover.
+	keys := []string{primary}
+	state := repository.SSHCARotationIdle
+	if rot, rerr := h.repo.GetActiveRotation(c.Request().Context(), orgID); rerr == nil && rot != nil {
+		state = rot.State
+		if rot.NewVaultMount != nil {
+			if token, derr := h.enc.Decrypt(encToken); derr == nil {
+				if nk, ferr := fetchVaultCAPublicKey(c.Request().Context(), cfg.VaultAddr, *rot.NewVaultMount, token); ferr == nil && nk != "" && nk != primary {
+					keys = append(keys, nk)
+				}
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]any{
+		"ca_public_keys": keys,
+		"primary":        primary,
+		"rotation_state": state,
+	})
 }
 
 type pamSignBody struct {
@@ -841,36 +863,12 @@ func (h *PAMHandler) SignSSHPublicKey(c echo.Context) error {
 // vaultHTTPClient is SSRF-guarded: it refuses to dial private/loopback targets
 // unless the operator opts in via http.allow_private_outbound_targets. vaultAddr
 // comes from tenant PAM config, so it must be treated as untrusted.
-var vaultHTTPClient = safehttp.Client(10*time.Second, false)
-
 // SetVaultHTTPClient overrides the Vault HTTP client (SSRF-relaxed opt-in).
-func SetVaultHTTPClient(hc *http.Client) {
-	if hc != nil {
-		vaultHTTPClient = hc
-	}
-}
+func SetVaultHTTPClient(hc *http.Client) { vaultssh.SetHTTPClient(hc) }
 
 // fetchVaultCAPublicKey fetches the CA public key from Vault SSH secrets engine.
 func fetchVaultCAPublicKey(ctx context.Context, vaultAddr, mount, token string) (string, error) {
-	url := strings.TrimRight(vaultAddr, "/") + "/v1/" + mount + "/ca/public-key"
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
-	if err != nil {
-		return "", err
-	}
-	req.Header.Set("X-Vault-Token", token)
-	resp, err := vaultHTTPClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode != http.StatusOK {
-		return "", fmt.Errorf("vault returned %d", resp.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(resp.Body, 4096))
-	if err != nil {
-		return "", err
-	}
-	return strings.TrimSpace(string(body)), nil
+	return vaultssh.FetchCAPublicKey(ctx, vaultAddr, mount, token)
 }
 
 // signWithVaultSSHCA calls Vault SSH CA sign endpoint and returns the signed cert.
@@ -890,7 +888,7 @@ func signWithVaultSSHCA(ctx context.Context, vaultAddr, mount, role, token, publ
 	req.Header.Set("X-Vault-Token", token)
 	req.Header.Set("Content-Type", "application/json")
 
-	resp, err := vaultHTTPClient.Do(req)
+	resp, err := vaultssh.HTTPClient().Do(req)
 	if err != nil {
 		return "", err
 	}

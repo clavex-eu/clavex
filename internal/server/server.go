@@ -71,6 +71,8 @@ type Server struct {
 	merkleSealer   *merkle.Sealer       // nil when signing key is not configured
 	oidcH          *handler.OIDCHandler    // kept for post-New wiring (e.g. WithPQCSigner)
 	fedH           *federation.Handler     // kept for post-New wiring (WithEncKeys)
+	dbSigner       *oidc.DBSigner       // nil unless key_backend=db; target of scheduled OIDC rotation
+	pqcSigner      *oidc.PQCSigner      // nil unless PQC enabled; target of scheduled PQC rotation
 }
 
 // SSFDispatcher returns the SSF event dispatcher. Used by workers that need
@@ -940,6 +942,13 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// when request-object encryption is not enabled (key_backend != db).
 		adminSuperadmin.POST("/rotate-enc-key", oidcH.RotateEncKey)
 
+		// Installation-level signing-key rotation policy (OIDC/PQC). These keys
+		// are global singletons; only a superadmin may change their policy.
+		// Manual immediate rotation is the rotate-signing-key endpoints above.
+		srKeyRotH := handler.NewKeyRotationHandler(cfg, pool)
+		adminSuperadmin.GET("/signing-keys", srKeyRotH.InstallationStatus)
+		adminSuperadmin.PUT("/signing-keys/:kind", srKeyRotH.InstallationSetPolicy)
+
 		// SPID instance config — global, not org-scoped (singleton SP identity + keypair)
 		admin.GET("/spid/instance-config", spidH.GetInstanceConfig)
 		admin.PUT("/spid/instance-config", spidH.UpsertInstanceConfig)
@@ -1587,6 +1596,15 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Public scope-discovery endpoint (no auth guard — safe, read-only, no PII).
 		orgScoped.GET("/agent-tokens/mcp-scopes", agentTokenH.MCPScopes)
 
+		// ── Signing-key rotation policy (global OIDC/PQC keys) ────────────────
+		keyRotationH := handler.NewKeyRotationHandler(cfg, pool)
+		keyRotation := orgScoped.Group("/key-rotation", middleware.RequireResourcePermission("security"))
+		keyRotation.GET("", keyRotationH.Status)
+		// OIDC/PQC are process-global singleton keys shared by every org, so
+		// changing their policy is superadmin-only. Org admins get 403 here;
+		// they still manage BYOK/SSH CA policies through their own endpoints.
+		keyRotation.PUT("/:kind", keyRotationH.SetPolicy, middleware.RequireSuperAdmin())
+
 		// ── Fine-Grained Authorization (OpenFGA ReBAC) ────────────────────────
 		var fgaClient *fga.Client
 		if cfg.FGA.Enabled && cfg.FGA.Endpoint != "" {
@@ -1699,6 +1717,44 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		pamG.DELETE("/ssh-ca", pamH.DeleteSSHCA)
 		pamG.GET("/ssh-ca/public-key", pamH.GetCAPublicKey)
 		pamG.POST("/ssh-ca/sign", pamH.SignSSHPublicKey)
+
+		// ── SSH CA staged rotation ────────────────────────────────────────────
+		// start/status/abort are admin (under pamG's admin JWT). mark-ready and
+		// complete are Agent-Token only and therefore registered on a separate
+		// group (below) that bypasses the admin-JWT/CSRF middleware.
+		sshcaRotH := handler.NewPAMSSHCARotationHandler(cfg, pool, enc, keys, webhooks.Dispatcher())
+		pamG.POST("/ssh-ca/rotation/start", sshcaRotH.Start)
+		pamG.GET("/ssh-ca/rotation", sshcaRotH.Status)
+		pamG.POST("/ssh-ca/rotation/:rotation_id/abort", sshcaRotH.Abort)
+
+		// mark-ready/complete accept EITHER an agent token (bearer, scope
+		// pam:ssh_ca:rotation:manage) OR an admin org session (cookie + CSRF,
+		// "security" permission). A bearer Authorization header routes to the
+		// agent path; otherwise the admin middleware chain runs (cookie auth +
+		// CSRF, so it is not registered under a bearer-only or CSRF-less group).
+		adminRotMW := []echo.MiddlewareFunc{
+			middleware.RequireAdminJWT(cfg),
+			middleware.CSRFProtect(cfg),
+			middleware.RequireOrgAccess(),
+			middleware.RequireResourcePermission("security"),
+		}
+		agentRotMW := sshcaRotH.RequireAgentScope(handler.ScopeSSHCARotationManage)
+		dualRotation := func(real echo.HandlerFunc) echo.HandlerFunc {
+			adminH := real
+			for i := len(adminRotMW) - 1; i >= 0; i-- {
+				adminH = adminRotMW[i](adminH)
+			}
+			agentH := agentRotMW(real)
+			return func(c echo.Context) error {
+				if hasBearerAuth(c.Request()) {
+					return agentH(c)
+				}
+				return adminH(c)
+			}
+		}
+		rotationGroup := e.Group("/api/v1/organizations/:org_id/pam/ssh-ca/rotation")
+		rotationGroup.POST("/:rotation_id/mark-ready", dualRotation(sshcaRotH.MarkReady))
+		rotationGroup.POST("/:rotation_id/complete", dualRotation(sshcaRotH.Complete))
 
 		// ── Credential Marketplace — org-admin listing management ─────────────────
 		// GET    /api/v1/organizations/:org_id/marketplace/listings         — list org's listings
@@ -1851,6 +1907,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		oidcH:        oidcH,
 		fedH:         fedH,
 	}
+	// Keep a typed reference to the DB signer (if that is the active backend)
+	// so the scheduled key-rotation worker can call Rotate() on it.
+	srvRef.dbSigner, _ = keys.(*oidc.DBSigner)
 	return srvRef
 }
 
@@ -1861,6 +1920,7 @@ func (s *Server) WithPQCSigner(signer *oidc.PQCSigner) *Server {
 	if s.oidcH != nil {
 		s.oidcH.WithPQCSigner(signer)
 	}
+	s.pqcSigner = signer // target of scheduled PQC rotation
 	return s
 }
 
@@ -1903,6 +1963,13 @@ func (s *Server) addLicenseRoutes() {
 }
 
 // Start begins accepting connections. Blocks until the server stops.
+// hasBearerAuth reports whether the request carries a Bearer Authorization
+// header — used to route the dual-auth rotation endpoints to the agent path.
+func hasBearerAuth(r *http.Request) bool {
+	h := r.Header.Get("Authorization")
+	return len(h) >= 7 && strings.EqualFold(h[:7], "bearer ")
+}
+
 func (s *Server) Start() error {
 	ctx := context.Background()
 	s.dispatcher.Start(ctx)
@@ -1924,7 +1991,8 @@ func (s *Server) Start() error {
 		go s.merkleSealer.RunAllOrgs(ctx, 5*time.Minute)
 	}
 	go worker.RunEntityReviewWorker(ctx, s.pool, entityReviewBaseURL)
-	go worker.RunPAMRotationWorker(ctx, s.pool, s.enc, s.pamNotifier)
+	go worker.RunPAMRotationWorker(ctx, s.pool, s.enc, s.pamNotifier, s.webhookDisp)
+	go worker.RunKeyRotationWorker(ctx, s.pool, s.dbSigner, s.pqcSigner)
 	go worker.RunEntityEventsProjectionWorker(ctx, s.pool)
 
 	// Custom-domain ingress reconciler (opt-in, in-cluster only) + re-verify.
