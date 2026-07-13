@@ -8,12 +8,52 @@
 package safehttp
 
 import (
+	"errors"
 	"fmt"
 	"net"
 	"net/http"
+	"net/url"
 	"syscall"
 	"time"
 )
+
+// Validation errors returned by ValidateURL.
+var (
+	ErrInvalidURL  = errors.New("safehttp: URL is not parseable")
+	ErrBadScheme   = errors.New("safehttp: URL scheme must be http or https")
+	ErrNoHost      = errors.New("safehttp: URL has no host")
+	ErrPrivateHost = errors.New("safehttp: URL host is a non-public address")
+)
+
+// ValidateURL parses raw, enforces an http(s) scheme and a non-empty host, and —
+// unless allowPrivate is set — rejects hosts written as private, loopback or
+// link-local IP literals. It returns the re-serialised URL so callers pass the
+// parsed-and-validated value to the request rather than the raw input.
+//
+// The connect-time Dialer.Control guard in Client remains the authoritative SSRF
+// barrier: it also blocks hostnames that resolve to non-public addresses, which a
+// pre-flight check cannot (DNS rebinding). ValidateURL is defence-in-depth and a
+// recognisable validation point for callers that build a URL from configured
+// input. allowPrivate must mirror the client in use so the operator opt-in for
+// private outbound targets is not broken here.
+func ValidateURL(raw string, allowPrivate bool) (string, error) {
+	u, err := url.Parse(raw)
+	if err != nil {
+		return "", fmt.Errorf("%w: %v", ErrInvalidURL, err)
+	}
+	if u.Scheme != "http" && u.Scheme != "https" {
+		return "", ErrBadScheme
+	}
+	if u.Hostname() == "" {
+		return "", ErrNoHost
+	}
+	if !allowPrivate {
+		if ip := net.ParseIP(u.Hostname()); ip != nil && blockedIP(ip) {
+			return "", ErrPrivateHost
+		}
+	}
+	return u.String(), nil
+}
 
 //nolint:misspell // blockedIP reports whether ip must not be dialed for SSRF safety. IsPrivate
 // covers RFC1918 and IPv6 ULA (fc00::/7).

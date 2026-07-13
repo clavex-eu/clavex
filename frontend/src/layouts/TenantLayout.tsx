@@ -1,7 +1,7 @@
 import { Outlet, NavLink, useNavigate, useParams } from 'react-router-dom'
 import { useAuthStore } from '@/stores/auth'
 import { doLogout } from '@/lib/logout'
-import { Users, Shield, KeyRound, Palette, FileText, LogOut, LayoutDashboard, ArrowLeft, Network, FolderOpen, Activity, Settings2, Globe, Layers, ShieldCheck, ShieldAlert, Award, BadgeCheck, BarChart2, FlaskConical, Webhook, Share2, ScrollText, Radio, Brain, SlidersHorizontal, QrCode, Rocket, ScanLine, Zap, Database, ClipboardCheck, GitBranch, ShieldOff, Sparkles, Bot, Cpu, Share, ArrowRightLeft, MailCheck, Gauge, LayoutTemplate, UserPlus, PieChart, Antenna, Store } from 'lucide-react'
+import { Users, Shield, KeyRound, Palette, FileText, LogOut, LayoutDashboard, ArrowLeft, Network, FolderOpen, Activity, Settings2, Globe, Layers, ShieldCheck, ShieldAlert, Award, BadgeCheck, BarChart2, FlaskConical, Webhook, Share2, ScrollText, Radio, Brain, SlidersHorizontal, QrCode, Rocket, ScanLine, Zap, Database, ClipboardCheck, GitBranch, ShieldOff, Sparkles, Bot, Cpu, Share, ArrowRightLeft, MailCheck, Gauge, LayoutTemplate, UserPlus, PieChart, Antenna, Store, RotateCw } from 'lucide-react'
 import { ClavexLogo } from '@/components/logo/ClavexLogo'
 
 export default function TenantLayout() {
@@ -79,6 +79,7 @@ export default function TenantLayout() {
         { to: `${base}/passkey-policy`,              icon: ShieldCheck, label: 'Keys'                },
         { to: `${base}/passkey-exchange`,            icon: KeyRound,    label: 'Keys Portability'    },
         { to: `${base}/mds-catalog`,                 icon: Database,    label: 'TrustScore (MDS3)'   },
+        { to: `${base}/key-rotation`,                icon: RotateCw,    label: 'Key Rotation'        },
       ],
     },
     {

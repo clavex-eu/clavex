@@ -94,6 +94,18 @@ const (
 	// EventPAMSessionLong fires when a privileged session has been running
 	// longer than the configured SessionMaxHours threshold.
 	EventPAMSessionLong = "pam.session.long_running"
+	// EventPAMCredentialRotated fires when a vault credential's secret has been
+	// rotated successfully (auto-rotation by the PAM worker, or an explicit
+	// rotation). Lets consumers refresh downstream copies without polling.
+	EventPAMCredentialRotated = "pam.credential.rotated"
+	// EventPAMSSHCARotated fires when the Vault SSH CA public key for an org has
+	// changed (detected by the reconciliation worker). Lets trust-anchor
+	// consumers refresh their pinned CA key without polling Vault themselves.
+	EventPAMSSHCARotated = "pam.ssh_ca.rotated"
+	// EventPAMSSHCARotationStarted fires when a staged SSH CA rotation begins.
+	// Payload carries rotation_id and new_ca_public_key so consumers can begin
+	// trusting the new CA before cutover.
+	EventPAMSSHCARotationStarted = "pam.ssh_ca.rotation_started"
 
 	dispatchTimeout     = 10 * time.Second
 	maxRetries          = 3

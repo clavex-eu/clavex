@@ -11940,6 +11940,32 @@
         ]
       }
     },
+    "/signing-keys": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Installation status",
+        "tags": [
+          "Sr Key Rot"
+        ]
+      }
+    },
+    "/signing-keys/{kind}": {
+      "put": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Installation set policy",
+        "tags": [
+          "Sr Key Rot"
+        ]
+      }
+    },
     "/sms": {
       "get": {
         "description": "Returns the org SMS gateway config with secret fields redacted. Empty object if not configured.",
@@ -12539,6 +12565,45 @@
         "summary": "Get CA public key",
         "tags": [
           "PAM"
+        ]
+      }
+    },
+    "/ssh-ca/rotation": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Status",
+        "tags": [
+          "Sshca Rot"
+        ]
+      }
+    },
+    "/ssh-ca/rotation/start": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Start",
+        "tags": [
+          "Sshca Rot"
+        ]
+      }
+    },
+    "/ssh-ca/rotation/{rotation_id}/abort": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Abort",
+        "tags": [
+          "Sshca Rot"
         ]
       }
     },
@@ -15726,6 +15791,19 @@
         ]
       }
     },
+    "/{kind}": {
+      "put": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Set policy",
+        "tags": [
+          "Key Rotation"
+        ]
+      }
+    },
     "/{offer_id}/qr": {
       "get": {
         "parameters": [
@@ -16423,6 +16501,32 @@
         "summary": "Assign role",
         "tags": [
           "Users"
+        ]
+      }
+    },
+    "/{rotation_id}/complete": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Dual rotation",
+        "tags": [
+          "Complete"
+        ]
+      }
+    },
+    "/{rotation_id}/mark-ready": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Dual rotation",
+        "tags": [
+          "Mark-ready"
         ]
       }
     },

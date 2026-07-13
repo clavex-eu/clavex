@@ -32,6 +32,7 @@ import MarketplacePage from '@/pages/Marketplace'
 
 // Superadmin
 import SuperAdminLayout from '@/layouts/SuperAdminLayout'
+import SuperadminSigningKeysPage from '@/pages/superadmin/SigningKeys'
 import OrgsPage from '@/pages/superadmin/Orgs'
 import OrgDetailPage from '@/pages/superadmin/OrgDetail'
 import OrgUsersPage from '@/pages/superadmin/OrgUsers'
@@ -92,6 +93,7 @@ import IPRulesPage from '@/pages/tenant/IPRules'
 import BreachedPasswordsPage from '@/pages/tenant/BreachedPasswords'
 import ServiceAccountsPage from '@/pages/tenant/ServiceAccounts'
 import AgentTokensPage from '@/pages/tenant/AgentTokens'
+import KeyRotationPage from '@/pages/tenant/KeyRotation'
 import ActionsV2Page from '@/pages/tenant/ActionsV2'
 import WsFedRPsPage from '@/pages/tenant/WsFedRPs'
 import AppFamiliesPage from '@/pages/tenant/AppFamilies'
@@ -178,6 +180,7 @@ export default function App() {
           <Route path="provision" element={<ProvisionOrgPage />} />
           <Route path="health" element={<HealthDashboardPage />} />
           <Route path="api-keys" element={<SuperadminAPIKeysPage />} />
+          <Route path="signing-keys" element={<SuperadminSigningKeysPage />} />
           <Route path="license" element={<LicensePage />} />
           <Route path="spid-instance" element={<SPIDInstanceConfigPage />} />
         </Route>
@@ -240,6 +243,7 @@ export default function App() {
           <Route path="ip-rules" element={<IPRulesPage />} />
           <Route path="service-accounts" element={<ServiceAccountsPage />} />
           <Route path="agent-tokens" element={<AgentTokensPage />} />
+          <Route path="key-rotation" element={<KeyRotationPage />} />
           <Route path="actions" element={<ActionsV2Page />} />
           <Route path="wsfed-rps" element={<WsFedRPsPage />} />
           <Route path="app-families" element={<AppFamiliesPage />} />

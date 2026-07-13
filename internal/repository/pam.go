@@ -122,6 +122,8 @@ type PAMSSHCAConfig struct {
 	CAPublicKey          *string    `db:"ca_public_key"          json:"ca_public_key,omitempty"`
 	CertTTLSeconds       int        `db:"cert_ttl_seconds"       json:"cert_ttl_seconds"`
 	RequireAccessRequest bool       `db:"require_access_request" json:"require_access_request"`
+	RotationPolicy       string     `db:"rotation_policy"        json:"rotation_policy"`
+	RotationIntervalDays *int       `db:"rotation_interval_days" json:"rotation_interval_days,omitempty"`
 	CreatedAt            time.Time  `db:"created_at"             json:"created_at"`
 	UpdatedAt            time.Time  `db:"updated_at"             json:"updated_at"`
 }
@@ -577,7 +579,7 @@ func (r *PAMRepository) ListActiveCheckouts(ctx context.Context, credID uuid.UUI
 // GetSSHCAConfig returns the SSH CA config for an org (encrypted token NOT included).
 func (r *PAMRepository) GetSSHCAConfig(ctx context.Context, orgID uuid.UUID) (*PAMSSHCAConfig, error) {
 	const q = `SELECT org_id,vault_addr,vault_mount,vault_role,ca_public_key,
-		cert_ttl_seconds,require_access_request,created_at,updated_at
+		cert_ttl_seconds,require_access_request,rotation_policy,rotation_interval_days,created_at,updated_at
 		FROM pam_ssh_ca_configs WHERE org_id=$1`
 	rows, err := r.pool.Query(ctx, q, orgID)
 	if err != nil {
@@ -590,7 +592,8 @@ func (r *PAMRepository) GetSSHCAConfig(ctx context.Context, orgID uuid.UUID) (*P
 	var c PAMSSHCAConfig
 	if err := rows.Scan(
 		&c.OrgID, &c.VaultAddr, &c.VaultMount, &c.VaultRole, &c.CAPublicKey,
-		&c.CertTTLSeconds, &c.RequireAccessRequest, &c.CreatedAt, &c.UpdatedAt,
+		&c.CertTTLSeconds, &c.RequireAccessRequest, &c.RotationPolicy, &c.RotationIntervalDays,
+		&c.CreatedAt, &c.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -652,6 +655,39 @@ func (r *PAMRepository) UpdateSSHCAPublicKey(ctx context.Context, orgID uuid.UUI
 func (r *PAMRepository) DeleteSSHCAConfig(ctx context.Context, orgID uuid.UUID) error {
 	_, err := r.pool.Exec(ctx, `DELETE FROM pam_ssh_ca_configs WHERE org_id=$1`, orgID)
 	return err
+}
+
+// SSHCAReconcileRow is a single org's SSH CA config as needed by the
+// reconciliation worker: enough to re-fetch the CA key from Vault and compare
+// it against the last cached value.
+type SSHCAReconcileRow struct {
+	OrgID          uuid.UUID
+	VaultAddr      string
+	VaultMount     string
+	EncryptedToken string
+	CAPublicKey    *string // last cached CA key; nil if never fetched
+}
+
+// ListSSHCAConfigsForReconcile returns every org's SSH CA config with its
+// encrypted Vault token, for the rotation-reconciliation worker.
+func (r *PAMRepository) ListSSHCAConfigsForReconcile(ctx context.Context) ([]SSHCAReconcileRow, error) {
+	const q = `SELECT org_id,vault_addr,vault_mount,encrypted_vault_token,ca_public_key
+		FROM pam_ssh_ca_configs`
+	rows, err := r.pool.Query(ctx, q)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []SSHCAReconcileRow
+	for rows.Next() {
+		var row SSHCAReconcileRow
+		if err := rows.Scan(&row.OrgID, &row.VaultAddr, &row.VaultMount,
+			&row.EncryptedToken, &row.CAPublicKey); err != nil {
+			return nil, err
+		}
+		out = append(out, row)
+	}
+	return out, rows.Err()
 }
 
 // ── Scan helpers ──────────────────────────────────────────────────────────────
