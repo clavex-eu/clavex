@@ -23,14 +23,14 @@ func NewAgentTokenRepository(pool *pgxpool.Pool) *AgentTokenRepository {
 const agentTokenCols = `
 	id, org_id, user_id, agent_id, agent_name, scope, jti,
 	is_revoked, expires_at, revoked_at, revoked_by, created_at, created_by,
-	last_used_at, mcp_server_id, mcp_resource_url`
+	last_used_at, mcp_server_id, mcp_resource_url, audience`
 
 func scanAgentToken(row interface{ Scan(...any) error }) (*models.AgentToken, error) {
 	t := &models.AgentToken{}
 	err := row.Scan(
 		&t.ID, &t.OrgID, &t.UserID, &t.AgentID, &t.AgentName, &t.Scope, &t.JTI,
 		&t.IsRevoked, &t.ExpiresAt, &t.RevokedAt, &t.RevokedBy, &t.CreatedAt, &t.CreatedBy,
-		&t.LastUsedAt, &t.MCPServerID, &t.MCPResourceURL,
+		&t.LastUsedAt, &t.MCPServerID, &t.MCPResourceURL, &t.Audience,
 	)
 	if err != nil {
 		return nil, err
@@ -39,7 +39,8 @@ func scanAgentToken(row interface{ Scan(...any) error }) (*models.AgentToken, er
 }
 
 // Create persists a new agent token record (the signed JWT string is returned
-// by the handler; only metadata is stored here).
+// by the handler; only metadata is stored here). audience is nil when the
+// token was issued with the issuer default (legacy behaviour).
 func (r *AgentTokenRepository) Create(
 	ctx context.Context,
 	orgID, userID uuid.UUID,
@@ -48,15 +49,16 @@ func (r *AgentTokenRepository) Create(
 	createdBy *uuid.UUID,
 	mcpServerID *string,
 	mcpResourceURL *string,
+	audience *string,
 ) (*models.AgentToken, error) {
 	row := r.pool.QueryRow(ctx, `
 		INSERT INTO agent_tokens
 			(org_id, user_id, agent_id, agent_name, scope, jti, expires_at, created_by,
-			 mcp_server_id, mcp_resource_url)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
+			 mcp_server_id, mcp_resource_url, audience)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
 		RETURNING `+agentTokenCols,
 		orgID, userID, agentID, agentName, scope, jti, expiresAt, createdBy,
-		mcpServerID, mcpResourceURL)
+		mcpServerID, mcpResourceURL, audience)
 	return scanAgentToken(row)
 }
 

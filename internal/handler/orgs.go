@@ -259,6 +259,54 @@ func (h *OrgHandler) SetEmailPolicy(c echo.Context) error {
 	return c.JSON(http.StatusOK, emailPolicyResponse(req))
 }
 
+// ── Agent Token Allowed Audiences ─────────────────────────────────────────────
+
+type agentTokenAudiencePolicyResponse struct {
+	AllowedAudiences []string `json:"allowed_audiences"`
+}
+
+// GetAgentTokenAudiencePolicy returns the "aud" allowlist agent-token
+// issuance may request beyond the issuer itself.
+// GET /api/v1/organizations/:id/agent-token-audiences
+func (h *OrgHandler) GetAgentTokenAudiencePolicy(c echo.Context) error {
+	id, err := uuidParam(c, "id")
+	if err != nil {
+		return err
+	}
+	audiences, err := h.repo.GetAgentTokenAllowedAudiences(c.Request().Context(), id)
+	if err != nil {
+		return echo.ErrNotFound
+	}
+	return c.JSON(http.StatusOK, agentTokenAudiencePolicyResponse{AllowedAudiences: audiences})
+}
+
+type setAgentTokenAudiencePolicyRequest struct {
+	AllowedAudiences []string `json:"allowed_audiences"`
+}
+
+// SetAgentTokenAudiencePolicy overwrites the "aud" allowlist for an org.
+// Typical entries: cloud STS/WIF audiences for Terraform federation, e.g.
+// "sts.amazonaws.com" (AWS), "api://AzureADTokenExchange" (Azure), or a GCP
+// Workload Identity Federation pool provider audience.
+// PUT /api/v1/organizations/:id/agent-token-audiences
+func (h *OrgHandler) SetAgentTokenAudiencePolicy(c echo.Context) error {
+	id, err := uuidParam(c, "id")
+	if err != nil {
+		return err
+	}
+	var req setAgentTokenAudiencePolicyRequest
+	if err := c.Bind(&req); err != nil {
+		return echo.ErrBadRequest
+	}
+	for i, a := range req.AllowedAudiences {
+		req.AllowedAudiences[i] = strings.TrimSpace(a)
+	}
+	if err := h.repo.SetAgentTokenAllowedAudiences(c.Request().Context(), id, req.AllowedAudiences); err != nil {
+		return echo.ErrInternalServerError
+	}
+	return c.JSON(http.StatusOK, agentTokenAudiencePolicyResponse(req))
+}
+
 // ── Feature Flags ─────────────────────────────────────────────────────────────
 
 type upsertFlagRequest struct {
@@ -408,6 +456,12 @@ func (h *OrgHandler) GetEmailPolicyOrgAdmin(c echo.Context) error {
 }
 func (h *OrgHandler) SetEmailPolicyOrgAdmin(c echo.Context) error {
 	return orgAdminDelegate(c, "org_id", h.SetEmailPolicy)
+}
+func (h *OrgHandler) GetAgentTokenAudiencePolicyOrgAdmin(c echo.Context) error {
+	return orgAdminDelegate(c, "org_id", h.GetAgentTokenAudiencePolicy)
+}
+func (h *OrgHandler) SetAgentTokenAudiencePolicyOrgAdmin(c echo.Context) error {
+	return orgAdminDelegate(c, "org_id", h.SetAgentTokenAudiencePolicy)
 }
 func (h *OrgHandler) ListFeatureFlagsOrgAdmin(c echo.Context) error {
 	return orgAdminDelegate(c, "org_id", h.ListFeatureFlags)

@@ -875,10 +875,15 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		if auth == nil {
 			return nil, nil // not our format, fall through to JWT
 		}
-		return &middleware.Claims{
+		claims := &middleware.Claims{
 			IsAdmin:      true,
-			IsSuperAdmin: true,
-		}, nil
+			IsSuperAdmin: auth.OrgID == nil,
+			Permissions:  auth.Permissions,
+		}
+		if auth.OrgID != nil {
+			claims.OrgID = auth.OrgID.String()
+		}
+		return claims, nil
 	})
 
 	// ── Admin API (JWT-authenticated) ─────────────────────────────────────────
@@ -896,6 +901,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Email policy (blocklist / allowlist)
 		adminOrgs.GET("/:id/email-policy", orgs.GetEmailPolicy)
 		adminOrgs.PUT("/:id/email-policy", orgs.SetEmailPolicy)
+		// Agent-token audience allowlist (cloud STS/WIF federation for Terraform)
+		adminOrgs.GET("/:id/agent-token-audiences", orgs.GetAgentTokenAudiencePolicy)
+		adminOrgs.PUT("/:id/agent-token-audiences", orgs.SetAgentTokenAudiencePolicy)
 		// Feature flags
 		adminOrgs.GET("/:id/feature-flags", orgs.ListFeatureFlags)
 		adminOrgs.POST("/:id/feature-flags", orgs.UpsertFeatureFlag)
@@ -1135,6 +1143,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Email policy — org admins can configure blocklist/allowlist
 		orgScoped.GET("/email-policy", orgs.GetEmailPolicyOrgAdmin, middleware.RequireResourcePermission("security"))
 		orgScoped.PUT("/email-policy", orgs.SetEmailPolicyOrgAdmin, middleware.RequireResourcePermission("security"))
+		// Agent-token audience allowlist — org admins can approve cloud STS/WIF targets
+		orgScoped.GET("/agent-token-audiences", orgs.GetAgentTokenAudiencePolicyOrgAdmin, middleware.RequireResourcePermission("security"))
+		orgScoped.PUT("/agent-token-audiences", orgs.SetAgentTokenAudiencePolicyOrgAdmin, middleware.RequireResourcePermission("security"))
 		// Feature flags — org admins can manage flags and overrides
 		orgScoped.GET("/feature-flags", orgs.ListFeatureFlagsOrgAdmin, middleware.RequireResourcePermission("security"))
 		orgScoped.POST("/feature-flags", orgs.UpsertFeatureFlagOrgAdmin, middleware.RequireResourcePermission("security"))

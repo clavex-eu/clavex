@@ -303,3 +303,33 @@ func (r *OrgRepository) GetEmailPolicy(ctx context.Context, orgID uuid.UUID) (bl
 	}
 	return
 }
+
+// ─── Agent Token Allowed Audiences ───────────────────────────────────────────
+
+// SetAgentTokenAllowedAudiences overwrites the "aud" allowlist agent-token
+// issuance may request for this org (see internal/handler/agent_token.go).
+// Pass an empty slice to restrict agent tokens back to the issuer-only default.
+func (r *OrgRepository) SetAgentTokenAllowedAudiences(ctx context.Context, orgID uuid.UUID, audiences []string) error {
+	if audiences == nil {
+		audiences = []string{}
+	}
+	_, err := r.pool.Exec(ctx, `
+		UPDATE organizations
+		   SET agent_token_allowed_audiences = $2,
+		       updated_at                    = NOW()
+		 WHERE id = $1
+	`, orgID, audiences)
+	return err
+}
+
+// GetAgentTokenAllowedAudiences returns the "aud" allowlist for an org.
+func (r *OrgRepository) GetAgentTokenAllowedAudiences(ctx context.Context, orgID uuid.UUID) ([]string, error) {
+	var audiences []string
+	err := r.pool.QueryRow(ctx, `
+		SELECT agent_token_allowed_audiences FROM organizations WHERE id = $1
+	`, orgID).Scan(&audiences)
+	if audiences == nil {
+		audiences = []string{}
+	}
+	return audiences, err
+}

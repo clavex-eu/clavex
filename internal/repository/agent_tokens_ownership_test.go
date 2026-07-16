@@ -22,7 +22,7 @@ func createAgentToken(t *testing.T, ctx context.Context, repo *AgentTokenReposit
 	t.Helper()
 	tok, err := repo.Create(ctx, orgID, userID,
 		"agent-"+uuid.NewString(), "Test Agent", scope, "jti-"+uuid.NewString(),
-		time.Now().Add(1*time.Hour), &userID, nil, nil)
+		time.Now().Add(1*time.Hour), &userID, nil, nil, nil)
 	require.NoError(t, err)
 	return tok.ID
 }
