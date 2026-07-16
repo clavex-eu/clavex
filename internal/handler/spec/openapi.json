@@ -2176,6 +2176,48 @@
         ]
       }
     },
+    "/agent-token-audiences": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Get agent token audience policy org admin",
+        "tags": [
+          "Organizations"
+        ]
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "allowed_audiences": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Set agent token audience policy org admin",
+        "tags": [
+          "Organizations"
+        ]
+      }
+    },
     "/agent-tokens": {
       "get": {
         "responses": {
@@ -14879,6 +14921,48 @@
           }
         },
         "summary": "Update",
+        "tags": [
+          "Organizations"
+        ]
+      }
+    },
+    "/{id}/agent-token-audiences": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Get agent token audience policy",
+        "tags": [
+          "Organizations"
+        ]
+      },
+      "put": {
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "properties": {
+                  "allowed_audiences": {
+                    "items": {
+                      "type": "string"
+                    },
+                    "type": "array"
+                  }
+                },
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Set agent token audience policy",
         "tags": [
           "Organizations"
         ]
