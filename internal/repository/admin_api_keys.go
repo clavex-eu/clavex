@@ -30,8 +30,10 @@ func NewAdminAPIKeyRepository(pool *pgxpool.Pool) *AdminAPIKeyRepository {
 // APIKeyAuth is the minimal identity returned after a successful key verification.
 // Server.go converts this to middleware.Claims.
 type APIKeyAuth struct {
-	KeyID uuid.UUID
-	Scope string
+	KeyID       uuid.UUID
+	Scope       string
+	OrgID       *uuid.UUID // nil = superadmin key (cross-org)
+	Permissions []string   // nil = unrestricted within Scope
 }
 
 // generateKey creates a new raw key: "clv_" + 32 random bytes (base64url, no padding).
@@ -50,9 +52,16 @@ func hashKey(rawKey string) string {
 
 // Create generates a new API key, persists the hash, and returns the model along
 // with the raw key (shown once — the caller must relay it to the user).
+//
+// orgID scopes the key to a single organization; pass nil for a legacy
+// superadmin (cross-org) key. permissions further restricts the key beyond
+// scope (e.g. []string{"clients:write"}); pass nil for unrestricted access
+// within scope.
 func (r *AdminAPIKeyRepository) Create(
 	ctx context.Context,
 	name, scope string,
+	orgID *uuid.UUID,
+	permissions []string,
 	createdBy *uuid.UUID,
 	expiresAt *string, // optional ISO-8601 string; nil = never expires
 ) (*models.AdminAPIKey, string, error) {
@@ -68,13 +77,13 @@ func (r *AdminAPIKeyRepository) Create(
 
 	k := &models.AdminAPIKey{}
 	err = r.pool.QueryRow(ctx, `
-		INSERT INTO admin_api_keys (name, key_hash, key_prefix, scope, created_by, expires_at)
-		VALUES ($1, $2, $3, $4, $5,
-		        CASE WHEN $6::text IS NULL THEN NULL
-		             ELSE $6::timestamptz END)
-		RETURNING id, name, key_prefix, scope, created_by, last_used_at, expires_at, is_active, created_at
-	`, name, hash, prefix, scope, createdBy, expiresAt).Scan(
-		&k.ID, &k.Name, &k.KeyPrefix, &k.Scope, &k.CreatedBy,
+		INSERT INTO admin_api_keys (name, key_hash, key_prefix, scope, org_id, permissions, created_by, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7,
+		        CASE WHEN $8::text IS NULL THEN NULL
+		             ELSE $8::timestamptz END)
+		RETURNING id, name, key_prefix, scope, org_id, permissions, created_by, last_used_at, expires_at, is_active, created_at
+	`, name, hash, prefix, scope, orgID, permissions, createdBy, expiresAt).Scan(
+		&k.ID, &k.Name, &k.KeyPrefix, &k.Scope, &k.OrgID, &k.Permissions, &k.CreatedBy,
 		&k.LastUsedAt, &k.ExpiresAt, &k.IsActive, &k.CreatedAt,
 	)
 	if err != nil {
@@ -84,12 +93,15 @@ func (r *AdminAPIKeyRepository) Create(
 }
 
 // List returns all API keys (active and revoked) ordered newest first.
-func (r *AdminAPIKeyRepository) List(ctx context.Context) ([]*models.AdminAPIKey, error) {
+// If orgID is non-nil, only keys scoped to that org are returned (superadmin
+// keys with org_id NULL are excluded — they are not "this org's" keys).
+func (r *AdminAPIKeyRepository) List(ctx context.Context, orgID *uuid.UUID) ([]*models.AdminAPIKey, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, name, key_prefix, scope, created_by, last_used_at, expires_at, is_active, created_at
+		SELECT id, name, key_prefix, scope, org_id, permissions, created_by, last_used_at, expires_at, is_active, created_at
 		FROM admin_api_keys
+		WHERE $1::uuid IS NULL OR org_id = $1
 		ORDER BY created_at DESC
-	`)
+	`, orgID)
 	if err != nil {
 		return nil, err
 	}
@@ -99,7 +111,7 @@ func (r *AdminAPIKeyRepository) List(ctx context.Context) ([]*models.AdminAPIKey
 	for rows.Next() {
 		k := &models.AdminAPIKey{}
 		if err := rows.Scan(
-			&k.ID, &k.Name, &k.KeyPrefix, &k.Scope, &k.CreatedBy,
+			&k.ID, &k.Name, &k.KeyPrefix, &k.Scope, &k.OrgID, &k.Permissions, &k.CreatedBy,
 			&k.LastUsedAt, &k.ExpiresAt, &k.IsActive, &k.CreatedAt,
 		); err != nil {
 			return nil, err
@@ -133,11 +145,11 @@ func (r *AdminAPIKeyRepository) VerifyKey(ctx context.Context, rawKey string) (*
 
 	auth := &APIKeyAuth{}
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, scope FROM admin_api_keys
+		SELECT id, scope, org_id, permissions FROM admin_api_keys
 		WHERE key_hash = $1
 		  AND is_active = TRUE
 		  AND (expires_at IS NULL OR expires_at > NOW())
-	`, hash).Scan(&auth.KeyID, &auth.Scope)
+	`, hash).Scan(&auth.KeyID, &auth.Scope, &auth.OrgID, &auth.Permissions)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, errors.New("invalid or revoked api key")
 	}

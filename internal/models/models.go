@@ -19,7 +19,7 @@ type Organization struct {
 	// ClaimsEnrichmentURL is the optional per-org HTTPS endpoint Clavex POSTs to
 	// during token issuance for synchronous claims enrichment (Auth0 Actions-style).
 	// Nil = feature disabled for this org.
-	ClaimsEnrichmentURL    *string `db:"claims_enrichment_url"    json:"claims_enrichment_url,omitempty"`
+	ClaimsEnrichmentURL *string `db:"claims_enrichment_url"    json:"claims_enrichment_url,omitempty"`
 	// ClaimsEnrichmentSecret is sent as Bearer token in the Authorization header.
 	// Never exposed in API responses (json:"-").
 	ClaimsEnrichmentSecret *string `db:"claims_enrichment_secret" json:"-"`
@@ -28,7 +28,7 @@ type Organization struct {
 	CustomLoginHTML *string `db:"custom_login_html"         json:"-"`
 	// AutoEnrollDomains is a list of email domains that trigger automatic org
 	// membership on registration / JIT provisioning. E.g. ["acme.com", "acme.eu"].
-	AutoEnrollDomains []string   `db:"auto_enroll_domains" json:"auto_enroll_domains"`
+	AutoEnrollDomains []string `db:"auto_enroll_domains" json:"auto_enroll_domains"`
 	// AutoEnrollRoleID is the role automatically assigned to auto-enrolled users.
 	// Nil = no role assigned (membership only).
 	AutoEnrollRoleID *uuid.UUID `db:"auto_enroll_role_id" json:"auto_enroll_role_id,omitempty"`
@@ -42,9 +42,15 @@ type Organization struct {
 	// FleetIngestSecret is the shared secret fleet agents supply in X-Fleet-Token.
 	// Nil means fleet ingestion is disabled for this organization.
 	FleetIngestSecret *string `db:"fleet_ingest_secret" json:"-"`
+	// AgentTokenAllowedAudiences lists "aud" values agent-token issuance may
+	// request beyond the issuer itself (e.g. cloud STS/WIF audiences such as
+	// "sts.amazonaws.com" for AWS, "api://AzureADTokenExchange" for Azure, or
+	// a GCP Workload Identity Federation pool provider audience). Empty =
+	// agent tokens are only ever audienced to the issuer (legacy behaviour).
+	AgentTokenAllowedAudiences []string `db:"agent_token_allowed_audiences" json:"agent_token_allowed_audiences"`
 	// AccessTokenTTL overrides the server-default access token lifetime (seconds)
 	// for all clients in this org.  nil = use server default.
-	AccessTokenTTL  *int `db:"access_token_ttl"  json:"access_token_ttl,omitempty"`
+	AccessTokenTTL *int `db:"access_token_ttl"  json:"access_token_ttl,omitempty"`
 	// RefreshTokenTTL overrides the server-default refresh token lifetime (seconds)
 	// for all clients in this org.  nil = use server default.
 	RefreshTokenTTL *int `db:"refresh_token_ttl" json:"refresh_token_ttl,omitempty"`
@@ -52,8 +58,8 @@ type Organization struct {
 	// credential_request_encryption) for this org's OID4VCI issuer metadata endpoint.
 	// Set true for orgs used in OIDF conformance testing.
 	ConformanceMode bool      `db:"conformance_mode" json:"conformance_mode"`
-	CreatedAt   time.Time              `db:"created_at"   json:"created_at"`
-	UpdatedAt   time.Time              `db:"updated_at"   json:"updated_at"`
+	CreatedAt       time.Time `db:"created_at"   json:"created_at"`
+	UpdatedAt       time.Time `db:"updated_at"   json:"updated_at"`
 }
 
 // User represents a user within an organization.
@@ -76,9 +82,9 @@ type User struct {
 	// IdentitySourceIssuer is the base URL of the Clavex installation whose
 	// SD-JWT-VC was used to import the user's verified identity claims.
 	// Non-nil when identity was imported via POST /identity/import.
-	IdentitySourceIssuer *string    `db:"identity_source_issuer" json:"identity_source_issuer,omitempty"`
+	IdentitySourceIssuer *string `db:"identity_source_issuer" json:"identity_source_issuer,omitempty"`
 	// IdentityImportedAt is the timestamp of the last successful identity import.
-	IdentityImportedAt   *time.Time `db:"identity_imported_at"   json:"identity_imported_at,omitempty"`
+	IdentityImportedAt *time.Time `db:"identity_imported_at"   json:"identity_imported_at,omitempty"`
 }
 
 // GetID returns the user's UUID as string (satisfies oidc.userClaimsFromModel interface).
@@ -138,15 +144,15 @@ type OrgBranding struct {
 
 // OIDCClient represents a registered OAuth2/OIDC application.
 type OIDCClient struct {
-	ClientID                string                 `db:"client_id"                    json:"client_id"`
-	OrgID                   uuid.UUID              `db:"org_id"                       json:"org_id"`
-	ClientSecretHash        *string                `db:"client_secret_hash"           json:"-"`
-	Name                    string                 `db:"name"                         json:"name"`
-	RedirectURIs            []string               `db:"redirect_uris"                json:"redirect_uris"`
-	PostLogoutRedirectURIs  []string               `db:"post_logout_redirect_uris"    json:"post_logout_redirect_uris"`
-	GrantTypes              []string               `db:"grant_types"                  json:"grant_types"`
-	ResponseTypes           []string               `db:"response_types"               json:"response_types"`
-	Scopes                  []string               `db:"scopes"                       json:"scopes"`
+	ClientID               string    `db:"client_id"                    json:"client_id"`
+	OrgID                  uuid.UUID `db:"org_id"                       json:"org_id"`
+	ClientSecretHash       *string   `db:"client_secret_hash"           json:"-"`
+	Name                   string    `db:"name"                         json:"name"`
+	RedirectURIs           []string  `db:"redirect_uris"                json:"redirect_uris"`
+	PostLogoutRedirectURIs []string  `db:"post_logout_redirect_uris"    json:"post_logout_redirect_uris"`
+	GrantTypes             []string  `db:"grant_types"                  json:"grant_types"`
+	ResponseTypes          []string  `db:"response_types"               json:"response_types"`
+	Scopes                 []string  `db:"scopes"                       json:"scopes"`
 	// AllowedAudiences restricts the target audiences this client may request via
 	// the RFC 8693 token-exchange grant (resource/audience parameter). Empty means
 	// the client may only obtain tokens audienced to itself.
@@ -158,20 +164,20 @@ type OIDCClient struct {
 	KeycloakCompat          bool                   `db:"keycloak_compat"              json:"keycloak_compat"`
 	Metadata                map[string]interface{} `db:"metadata"                     json:"metadata"`
 	// JAR (RFC 9101): optional JWKS URI and declared signing algorithm for request objects.
-	JWKSUri                 *string          `db:"jwks_uri"                     json:"jwks_uri,omitempty"`
-	RequestObjectSigningAlg string           `db:"request_object_signing_alg"   json:"request_object_signing_alg"`
+	JWKSUri                 *string `db:"jwks_uri"                     json:"jwks_uri,omitempty"`
+	RequestObjectSigningAlg string  `db:"request_object_signing_alg"   json:"request_object_signing_alg"`
 	// IDTokenSignedResponseAlg is the algorithm the server MUST use to sign ID tokens
 	// for this client (RFC 7591 / OIDC Core §2). Empty string means server default (PS256).
 	// Registered during dynamic client registration via id_token_signed_response_alg.
-	IDTokenSignedResponseAlg string          `db:"id_token_signed_response_alg" json:"id_token_signed_response_alg,omitempty"`
+	IDTokenSignedResponseAlg string `db:"id_token_signed_response_alg" json:"id_token_signed_response_alg,omitempty"`
 	// UserInfoSignedResponseAlg is the algorithm the server MUST use to sign UserInfo
 	// responses for this client (OIDC Core §5.3.2). When non-empty (and not "none"),
 	// the userinfo endpoint returns a signed JWT with Content-Type: application/jwt.
-	UserInfoSignedResponseAlg string         `db:"userinfo_signed_response_alg" json:"userinfo_signed_response_alg,omitempty"`
+	UserInfoSignedResponseAlg string `db:"userinfo_signed_response_alg" json:"userinfo_signed_response_alg,omitempty"`
 	// JWKS holds an inline JSON Web Key Set for clients that use private_key_jwt
 	// client authentication (RFC 7523). When non-nil it takes precedence over
 	// JWKSUri for verifying client assertions.
-	JWKS                    *json.RawMessage `db:"jwks"                         json:"jwks,omitempty"`
+	JWKS *json.RawMessage `db:"jwks"                         json:"jwks,omitempty"`
 	// Mutual-TLS client authentication fields (RFC 8705 §2.3).
 	// Set token_endpoint_auth_method to "tls_client_auth" to activate.
 	TLSClientAuthSubjectDN *string `db:"tls_client_auth_subject_dn" json:"tls_client_auth_subject_dn,omitempty"`
@@ -199,7 +205,7 @@ type OIDCClient struct {
 	// AccessTokenTTL overrides the access token lifetime (seconds) for tokens issued
 	// to this client.  nil = inherit from org-level override, then server default.
 	// 0 treated as nil (revert to inherited value).
-	AccessTokenTTL  *int `db:"access_token_ttl"  json:"access_token_ttl,omitempty"`
+	AccessTokenTTL *int `db:"access_token_ttl"  json:"access_token_ttl,omitempty"`
 	// RefreshTokenTTL overrides the refresh token lifetime (seconds) for this client.
 	// nil = inherit from org-level override, then server default.
 	RefreshTokenTTL *int `db:"refresh_token_ttl" json:"refresh_token_ttl,omitempty"`
@@ -214,9 +220,9 @@ type OIDCClient struct {
 	// LastUsedAt records the most recent successful token issuance for this client.
 	// Nil means the client has never obtained a token. Used by the Object Lifecycle
 	// Management dashboard to surface stale / unused applications.
-	LastUsedAt              *time.Time `db:"last_used_at"                json:"last_used_at,omitempty"`
-	CreatedAt               time.Time `db:"created_at"                   json:"created_at"`
-	UpdatedAt               time.Time `db:"updated_at"                   json:"updated_at"`
+	LastUsedAt *time.Time `db:"last_used_at"                json:"last_used_at,omitempty"`
+	CreatedAt  time.Time  `db:"created_at"                   json:"created_at"`
+	UpdatedAt  time.Time  `db:"updated_at"                   json:"updated_at"`
 }
 
 // CaptchaSettings holds per-org CAPTCHA provider configuration.
@@ -281,10 +287,10 @@ func (s *SAMLServiceProvider) GetNameIDFormat() string { return s.NameIDFormat }
 // Webhook represents a per-tenant HTTP callback registered for one or more events.
 // The Secret is used to sign the request body with HMAC-SHA256 (X-Clavex-Signature header).
 type Webhook struct {
-	ID          uuid.UUID `db:"id"           json:"id"`
-	OrgID       uuid.UUID `db:"org_id"       json:"org_id"`
-	URL         string    `db:"url"          json:"url"`
-	Events      []string  `db:"events"       json:"events"`
+	ID     uuid.UUID `db:"id"           json:"id"`
+	OrgID  uuid.UUID `db:"org_id"       json:"org_id"`
+	URL    string    `db:"url"          json:"url"`
+	Events []string  `db:"events"       json:"events"`
 	// EventFilter holds optional fine-grained event subtypes (e.g. "user.login.new_device").
 	// When non-empty, the webhook fires ONLY for events that match one of these subtypes.
 	// An empty slice means "all events in Events[]" (backwards-compatible behaviour).
@@ -300,25 +306,31 @@ type Webhook struct {
 // token_type=agent, agent_id, delegated_by. Revocable independently from the
 // user's browser session — supports MCP (Model Context Protocol) OAuth 2.0 flows.
 type AgentToken struct {
-	ID             uuid.UUID  `db:"id"               json:"id"`
-	OrgID          uuid.UUID  `db:"org_id"           json:"org_id"`
-	UserID         uuid.UUID  `db:"user_id"          json:"user_id"`
-	AgentID        string     `db:"agent_id"         json:"agent_id"`
-	AgentName      string     `db:"agent_name"       json:"agent_name"`
-	Scope          string     `db:"scope"            json:"scope"`
-	JTI            string     `db:"jti"              json:"jti"`
-	IsRevoked      bool       `db:"is_revoked"       json:"is_revoked"`
-	ExpiresAt      time.Time  `db:"expires_at"       json:"expires_at"`
-	RevokedAt      *time.Time `db:"revoked_at"       json:"revoked_at,omitempty"`
-	RevokedBy      *uuid.UUID `db:"revoked_by"       json:"revoked_by,omitempty"`
-	CreatedAt      time.Time  `db:"created_at"       json:"created_at"`
-	CreatedBy      *uuid.UUID `db:"created_by"       json:"created_by,omitempty"`
+	ID        uuid.UUID  `db:"id"               json:"id"`
+	OrgID     uuid.UUID  `db:"org_id"           json:"org_id"`
+	UserID    uuid.UUID  `db:"user_id"          json:"user_id"`
+	AgentID   string     `db:"agent_id"         json:"agent_id"`
+	AgentName string     `db:"agent_name"       json:"agent_name"`
+	Scope     string     `db:"scope"            json:"scope"`
+	JTI       string     `db:"jti"              json:"jti"`
+	IsRevoked bool       `db:"is_revoked"       json:"is_revoked"`
+	ExpiresAt time.Time  `db:"expires_at"       json:"expires_at"`
+	RevokedAt *time.Time `db:"revoked_at"       json:"revoked_at,omitempty"`
+	RevokedBy *uuid.UUID `db:"revoked_by"       json:"revoked_by,omitempty"`
+	CreatedAt time.Time  `db:"created_at"       json:"created_at"`
+	CreatedBy *uuid.UUID `db:"created_by"       json:"created_by,omitempty"`
 	// LastUsedAt is the most recent time the token was presented to a resource
 	// server (updated best-effort on introspection). Nil until first use.
-	LastUsedAt     *time.Time `db:"last_used_at"     json:"last_used_at,omitempty"`
+	LastUsedAt *time.Time `db:"last_used_at"     json:"last_used_at,omitempty"`
 	// MCP-specific fields (Model Context Protocol OAuth 2.0)
-	MCPServerID    *string    `db:"mcp_server_id"    json:"mcp_server_id,omitempty"`
-	MCPResourceURL *string    `db:"mcp_resource_url" json:"mcp_resource_url,omitempty"`
+	MCPServerID    *string `db:"mcp_server_id"    json:"mcp_server_id,omitempty"`
+	MCPResourceURL *string `db:"mcp_resource_url" json:"mcp_resource_url,omitempty"`
+	// Audience is the "aud" claim embedded in the signed JWT at issuance
+	// time. Nil means the issuer default (legacy behaviour); a non-nil value
+	// must have been present in the issuing org's
+	// AgentTokenAllowedAudiences at issuance time (e.g. a cloud STS/WIF
+	// audience for Terraform federation — see internal/handler/agent_token.go).
+	Audience *string `db:"audience" json:"audience,omitempty"`
 }
 
 // WebhookDelivery records one delivery attempt for a webhook.
@@ -426,11 +438,11 @@ type AdminRole struct {
 	Description *string   `db:"description" json:"description,omitempty"`
 	// Permissions is the set of permission tokens granted by this role.
 	// See internal/middleware/permissions.go for the canonical list.
-	Permissions []string  `db:"permissions" json:"permissions"`
+	Permissions []string `db:"permissions" json:"permissions"`
 	// IsSystem marks roles created by Clavex itself; they cannot be deleted.
-	IsSystem    bool      `db:"is_system"   json:"is_system"`
-	CreatedAt   time.Time `db:"created_at"  json:"created_at"`
-	UpdatedAt   time.Time `db:"updated_at"  json:"updated_at"`
+	IsSystem  bool      `db:"is_system"   json:"is_system"`
+	CreatedAt time.Time `db:"created_at"  json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at"  json:"updated_at"`
 }
 
 // AdminRoleAssignment records that a user has been granted an admin role.
@@ -445,7 +457,8 @@ type AdminRoleAssignment struct {
 }
 
 // SMTPSettings holds per-org SMTP server configuration.
-type SMTPSettings struct {	OrgID       uuid.UUID `db:"org_id"       json:"org_id"`
+type SMTPSettings struct {
+	OrgID       uuid.UUID `db:"org_id"       json:"org_id"`
 	Host        string    `db:"host"         json:"host"`
 	Port        int       `db:"port"         json:"port"`
 	Username    *string   `db:"username"     json:"username,omitempty"`
@@ -484,11 +497,11 @@ type IdentityProvider struct {
 	// the developer's .p8 private key.  These three fields supply the JWT
 	// signing material so Clavex can generate a fresh secret on every
 	// token exchange instead of storing a (quickly-expiring) static token.
-	AppleTeamID     *string `db:"apple_team_id"     json:"apple_team_id,omitempty"`
-	AppleKeyID      *string `db:"apple_key_id"      json:"apple_key_id,omitempty"`
-	ApplePrivateKey *string `db:"apple_private_key" json:"-"` // never serialised; sensitive
-	CreatedAt         time.Time         `db:"created_at"          json:"created_at"`
-	UpdatedAt         time.Time         `db:"updated_at"          json:"updated_at"`
+	AppleTeamID     *string   `db:"apple_team_id"     json:"apple_team_id,omitempty"`
+	AppleKeyID      *string   `db:"apple_key_id"      json:"apple_key_id,omitempty"`
+	ApplePrivateKey *string   `db:"apple_private_key" json:"-"` // never serialised; sensitive
+	CreatedAt       time.Time `db:"created_at"          json:"created_at"`
+	UpdatedAt       time.Time `db:"updated_at"          json:"updated_at"`
 }
 
 // ClientScope is a reusable, org-level scope definition assignable to OIDC clients.
@@ -603,25 +616,25 @@ type CredentialConfig struct {
 	// ── Adaptive Credential Freshness ────────────────────────────────────────
 	// AdaptiveTTL enables the adaptive lifecycle worker for this credential type.
 	// Credentials used frequently are silently renewed; dormant ones are revoked.
-	AdaptiveTTL           bool    `db:"adaptive_ttl"            json:"adaptive_ttl"`
+	AdaptiveTTL bool `db:"adaptive_ttl"            json:"adaptive_ttl"`
 	// MinTTLSeconds is the floor for renewed credential lifetime (default 7 days).
-	MinTTLSeconds         int     `db:"min_ttl_seconds"         json:"min_ttl_seconds"`
+	MinTTLSeconds int `db:"min_ttl_seconds"         json:"min_ttl_seconds"`
 	// MaxTTLSeconds is the ceiling beyond which no further renewals are granted (default 1 year).
-	MaxTTLSeconds         int     `db:"max_ttl_seconds"         json:"max_ttl_seconds"`
+	MaxTTLSeconds int `db:"max_ttl_seconds"         json:"max_ttl_seconds"`
 	// RenewalThreshold is the fraction of TTL elapsed that triggers renewal (0.0–1.0, default 0.8).
-	RenewalThreshold      float64 `db:"renewal_threshold"       json:"renewal_threshold"`
+	RenewalThreshold float64 `db:"renewal_threshold"       json:"renewal_threshold"`
 	// InactivityRevokeDays is the number of days without login after which an
 	// unused credential is proactively revoked (default 90).
-	InactivityRevokeDays  int     `db:"inactivity_revoke_days"  json:"inactivity_revoke_days"`
-	IsActive      bool                   `db:"is_active"      json:"is_active"`
+	InactivityRevokeDays int  `db:"inactivity_revoke_days"  json:"inactivity_revoke_days"`
+	IsActive             bool `db:"is_active"      json:"is_active"`
 	// Category is the credential class: identity | training | qualification | badge.
-	Category     string            `db:"category"      json:"category"`
+	Category string `db:"category"      json:"category"`
 	// SchemaFields declares the expected payload fields for the admin issue UI.
-	SchemaFields []SchemaFieldDef  `db:"schema_fields" json:"schema_fields"`
+	SchemaFields []SchemaFieldDef `db:"schema_fields" json:"schema_fields"`
 	// PreIssuanceWebhookURL is the optional HTTPS endpoint called before issuing
 	// this credential type. Clavex POSTs a signed request and gates issuance on
 	// {"allowed":true/false}. Nil = hook disabled.
-	PreIssuanceWebhookURL    *string `db:"pre_issuance_webhook_url"    json:"pre_issuance_webhook_url,omitempty"`
+	PreIssuanceWebhookURL *string `db:"pre_issuance_webhook_url"    json:"pre_issuance_webhook_url,omitempty"`
 	// PreIssuanceWebhookSecret is the HMAC-SHA256 signing secret sent in
 	// X-Clavex-Signature. Never exposed in API responses (json:"-").
 	PreIssuanceWebhookSecret *string `db:"pre_issuance_webhook_secret" json:"-"`
@@ -664,14 +677,14 @@ type CredentialConfig struct {
 	//
 	// Use case: present CIE digital → automatically receive a residence
 	// certificate — zero extra auth steps, eIDAS LoA High assurance.
-	ChainSourceVCT     *string                `db:"chain_source_vct"     json:"chain_source_vct,omitempty"`
+	ChainSourceVCT *string `db:"chain_source_vct"     json:"chain_source_vct,omitempty"`
 	// ChainClaimsMapping transforms input VP claims into output credential claims.
 	// Format: {"<output_claim>": "<input_vp_claim>"}.
 	// When nil, all non-system VP claims are forwarded verbatim as the payload.
 	ChainClaimsMapping map[string]interface{} `db:"chain_claims_mapping"  json:"chain_claims_mapping,omitempty"`
 	// ChainOfferTTLMins is the lifetime (minutes) of the auto-generated
 	// pre-authorized code offer. Defaults to 15 minutes.
-	ChainOfferTTLMins  int                    `db:"chain_offer_ttl_mins"  json:"chain_offer_ttl_mins"`
+	ChainOfferTTLMins int `db:"chain_offer_ttl_mins"  json:"chain_offer_ttl_mins"`
 	// RequireKeyAttestation controls whether key_attestations_required is
 	// advertised in the OID4VCI issuer metadata for this credential type.
 	// When false (default) standard wallets (e.g. EUDI reference wallet) can
@@ -682,13 +695,13 @@ type CredentialConfig struct {
 	// DelegatedBy is the entity ID (URL) of the issuer that granted this org the
 	// right to issue credentials under this VCT (ARF EUDIW §6.3.4).
 	// When non-nil this config operates in "delegated issuance" mode.
-	DelegatedBy    *string `db:"delegated_by"    json:"delegated_by,omitempty"`
+	DelegatedBy *string `db:"delegated_by"    json:"delegated_by,omitempty"`
 	// DelegationJWT is the compact JWS delegation grant signed by the delegating
 	// issuer.  It is embedded as the "del.proof" claim in every issued SD-JWT-VC
 	// so wallets can verify the delegation chain offline.
-	DelegationJWT  *string `db:"delegation_jwt"  json:"delegation_jwt,omitempty"`
-	CreatedAt        time.Time              `db:"created_at"     json:"created_at"`
-	UpdatedAt        time.Time              `db:"updated_at"     json:"updated_at"`
+	DelegationJWT *string   `db:"delegation_jwt"  json:"delegation_jwt,omitempty"`
+	CreatedAt     time.Time `db:"created_at"     json:"created_at"`
+	UpdatedAt     time.Time `db:"updated_at"     json:"updated_at"`
 }
 
 // MarketplaceListing is a public-facing credential template in the Clavex
@@ -696,24 +709,24 @@ type CredentialConfig struct {
 // PA and private issuers publish listings so wallet developers can discover
 // and import credential configurations with one click.
 type MarketplaceListing struct {
-	ID                  uuid.UUID              `db:"id"                    json:"id"`
-	OrgID               uuid.UUID              `db:"org_id"                json:"org_id"`
-	CredentialConfigID  *uuid.UUID             `db:"credential_config_id"  json:"credential_config_id,omitempty"`
-	DisplayName         string                 `db:"display_name"          json:"display_name"`
-	Description         *string                `db:"description"           json:"description,omitempty"`
-	IssuerName          string                 `db:"issuer_name"           json:"issuer_name"`
-	VCT                 string                 `db:"vct"                   json:"vct"`
-	CredentialFormat    string                 `db:"credential_format"     json:"credential_format"`
-	Lang                string                 `db:"lang"                  json:"lang"`
-	IssuerEndpoint      string                 `db:"issuer_endpoint"       json:"issuer_endpoint"`
-	SchemaJSON          map[string]interface{} `db:"schema_json"           json:"schema_json"`
-	OfferTemplate       *string                `db:"offer_template"        json:"offer_template,omitempty"`
-	Tags                []string               `db:"tags"                  json:"tags"`
-	Status              string                 `db:"status"                json:"status"`
-	IsPublic            bool                   `db:"is_public"             json:"is_public"`
-	ModerationNote      *string                `db:"moderation_note"       json:"moderation_note,omitempty"`
-	CreatedAt           time.Time              `db:"created_at"            json:"created_at"`
-	UpdatedAt           time.Time              `db:"updated_at"            json:"updated_at"`
+	ID                 uuid.UUID              `db:"id"                    json:"id"`
+	OrgID              uuid.UUID              `db:"org_id"                json:"org_id"`
+	CredentialConfigID *uuid.UUID             `db:"credential_config_id"  json:"credential_config_id,omitempty"`
+	DisplayName        string                 `db:"display_name"          json:"display_name"`
+	Description        *string                `db:"description"           json:"description,omitempty"`
+	IssuerName         string                 `db:"issuer_name"           json:"issuer_name"`
+	VCT                string                 `db:"vct"                   json:"vct"`
+	CredentialFormat   string                 `db:"credential_format"     json:"credential_format"`
+	Lang               string                 `db:"lang"                  json:"lang"`
+	IssuerEndpoint     string                 `db:"issuer_endpoint"       json:"issuer_endpoint"`
+	SchemaJSON         map[string]interface{} `db:"schema_json"           json:"schema_json"`
+	OfferTemplate      *string                `db:"offer_template"        json:"offer_template,omitempty"`
+	Tags               []string               `db:"tags"                  json:"tags"`
+	Status             string                 `db:"status"                json:"status"`
+	IsPublic           bool                   `db:"is_public"             json:"is_public"`
+	ModerationNote     *string                `db:"moderation_note"       json:"moderation_note,omitempty"`
+	CreatedAt          time.Time              `db:"created_at"            json:"created_at"`
+	UpdatedAt          time.Time              `db:"updated_at"            json:"updated_at"`
 }
 
 // MarketplaceListingPublic is the redacted view exposed in the public catalog.
@@ -738,34 +751,34 @@ type MarketplaceListingPublic struct {
 type SchemaFieldDef struct {
 	Name      string `json:"name"`
 	Label     string `json:"label"`
-	Type      string `json:"type"`      // "string" | "date" | "number" | "url"
+	Type      string `json:"type"` // "string" | "date" | "number" | "url"
 	Mandatory bool   `json:"mandatory"`
 }
 
 // CredentialOffer represents a pending OID4VCI pre-authorized code offer.
 type CredentialOffer struct {
-	ID              uuid.UUID              `db:"id"                json:"id"`
-	OrgID           uuid.UUID              `db:"org_id"            json:"org_id"`
-	UserID          *uuid.UUID             `db:"user_id"           json:"user_id,omitempty"`
-	VCT             string                 `db:"vct"               json:"vct"`
-	PreAuthCode     string                 `db:"pre_auth_code"     json:"-"`
-	TxCodeHash      *string                `db:"tx_code_hash"      json:"-"`
-	AccessTokenHash *string                `db:"access_token_hash" json:"-"`
-	Status          string                 `db:"status"            json:"status"`
-	ExpiresAt       time.Time              `db:"expires_at"        json:"expires_at"`
-	CreatedAt       time.Time              `db:"created_at"        json:"created_at"`
+	ID              uuid.UUID  `db:"id"                json:"id"`
+	OrgID           uuid.UUID  `db:"org_id"            json:"org_id"`
+	UserID          *uuid.UUID `db:"user_id"           json:"user_id,omitempty"`
+	VCT             string     `db:"vct"               json:"vct"`
+	PreAuthCode     string     `db:"pre_auth_code"     json:"-"`
+	TxCodeHash      *string    `db:"tx_code_hash"      json:"-"`
+	AccessTokenHash *string    `db:"access_token_hash" json:"-"`
+	Status          string     `db:"status"            json:"status"`
+	ExpiresAt       time.Time  `db:"expires_at"        json:"expires_at"`
+	CreatedAt       time.Time  `db:"created_at"        json:"created_at"`
 	// Payload carries arbitrary claim data for Verified credentials (training,
 	// qualification, badge). When non-nil it is used as the SD-JWT claims source
 	// instead of the user's profile attributes.
-	Payload         map[string]interface{} `db:"payload"           json:"payload,omitempty"`
+	Payload map[string]interface{} `db:"payload"           json:"payload,omitempty"`
 	// VPSessionID links this offer to a pending OID4VP presentation session when
 	// the credential config requires a Verifiable Presentation (RequireVP=true).
-	VPSessionID     *string                `db:"vp_session_id"     json:"vp_session_id,omitempty"`
+	VPSessionID *string `db:"vp_session_id"     json:"vp_session_id,omitempty"`
 	// CNonce is the c_nonce issued for this offer at the token endpoint; the
 	// holder key proof presented at the credential endpoint MUST carry it
 	// (OID4VCI §8.2). CNonceExpiresAt bounds its validity.
-	CNonce          *string                `db:"c_nonce"           json:"-"`
-	CNonceExpiresAt *time.Time             `db:"c_nonce_expires_at" json:"-"`
+	CNonce          *string    `db:"c_nonce"           json:"-"`
+	CNonceExpiresAt *time.Time `db:"c_nonce_expires_at" json:"-"`
 }
 
 // IssuedCredential is an audit record of a credential that was issued to a wallet.
@@ -785,9 +798,9 @@ type IssuedCredential struct {
 	// ── Adaptive TTL tracking ─────────────────────────────────────────────────
 	// LastPresentedAt is updated each time the credential's status-list slot is
 	// queried by a verifier — a reliable proxy for "credential was presented".
-	LastPresentedAt  *time.Time `db:"last_presented_at"  json:"last_presented_at,omitempty"`
+	LastPresentedAt *time.Time `db:"last_presented_at"  json:"last_presented_at,omitempty"`
 	// PresentationCount is a monotonically-increasing counter (never-used vs used).
-	PresentationCount int       `db:"presentation_count" json:"presentation_count"`
+	PresentationCount int `db:"presentation_count" json:"presentation_count"`
 	// AdaptiveRenewedAt records the last time the adaptive worker extended this
 	// credential's ExpiresAt (audit trail).
 	AdaptiveRenewedAt *time.Time `db:"adaptive_renewed_at" json:"adaptive_renewed_at,omitempty"`
@@ -796,22 +809,22 @@ type IssuedCredential struct {
 // FederatedInstallation is a partner Clavex instance registered for cross-
 // installation revocation propagation (migration 000156).
 type FederatedInstallation struct {
-	ID                uuid.UUID `db:"id"                  json:"id"`
-	OrgID             uuid.UUID `db:"org_id"              json:"org_id"`
+	ID    uuid.UUID `db:"id"                  json:"id"`
+	OrgID uuid.UUID `db:"org_id"              json:"org_id"`
 	// EntityID is the partner's canonical base URL / OIDF entity identifier.
-	EntityID          string    `db:"entity_id"           json:"entity_id"`
-	DisplayName       string    `db:"display_name"        json:"display_name"`
+	EntityID    string `db:"entity_id"           json:"entity_id"`
+	DisplayName string `db:"display_name"        json:"display_name"`
 	// JWKSUri is fetched on demand to verify inbound SET signatures.
-	JWKSUri           string    `db:"jwks_uri"            json:"jwks_uri"`
-	InboundTokenHash  string    `db:"inbound_token_hash"  json:"-"`
-	OutboundToken     string    `db:"outbound_token"      json:"-"`
+	JWKSUri          string `db:"jwks_uri"            json:"jwks_uri"`
+	InboundTokenHash string `db:"inbound_token_hash"  json:"-"`
+	OutboundToken    string `db:"outbound_token"      json:"-"`
 	// SSFEndpoint is the partner's inbound endpoint where we POST revocation SETs.
-	SSFEndpoint       string    `db:"ssf_endpoint"        json:"ssf_endpoint"`
+	SSFEndpoint string `db:"ssf_endpoint"        json:"ssf_endpoint"`
 	// PropagateOn lists the revocation reasons that trigger cross-installation propagation.
-	PropagateOn       []string  `db:"propagate_on"        json:"propagate_on"`
-	IsActive          bool      `db:"is_active"           json:"is_active"`
-	CreatedAt         time.Time `db:"created_at"          json:"created_at"`
-	UpdatedAt         time.Time `db:"updated_at"          json:"updated_at"`
+	PropagateOn []string  `db:"propagate_on"        json:"propagate_on"`
+	IsActive    bool      `db:"is_active"           json:"is_active"`
+	CreatedAt   time.Time `db:"created_at"          json:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"          json:"updated_at"`
 }
 
 // PresentationSession tracks an in-flight OID4VP presentation request.
@@ -843,24 +856,24 @@ type PresentationSession struct {
 	PresentationDefinition map[string]interface{} `db:"presentation_definition" json:"presentation_definition,omitempty"`
 	// DCQLQuery is the OID4VP 1.0 Final DCQL query (OID4VP §6).
 	// When non-nil it takes precedence over PresentationDefinition.
-	DCQLQuery              map[string]interface{} `db:"dcql_query"              json:"dcql_query,omitempty"`
-	ResponseURI            string                 `db:"response_uri"            json:"response_uri"`
-	RedirectURI            *string                `db:"redirect_uri"            json:"redirect_uri,omitempty"`
-	State                  *string                `db:"state"                   json:"state,omitempty"`
-	Nonce                  string                 `db:"nonce"                   json:"nonce"`
-	Status                 string                 `db:"status"                  json:"status"`
-	VPClaims               map[string]interface{} `db:"vp_claims"               json:"vp_claims,omitempty"`
+	DCQLQuery   map[string]interface{} `db:"dcql_query"              json:"dcql_query,omitempty"`
+	ResponseURI string                 `db:"response_uri"            json:"response_uri"`
+	RedirectURI *string                `db:"redirect_uri"            json:"redirect_uri,omitempty"`
+	State       *string                `db:"state"                   json:"state,omitempty"`
+	Nonce       string                 `db:"nonce"                   json:"nonce"`
+	Status      string                 `db:"status"                  json:"status"`
+	VPClaims    map[string]interface{} `db:"vp_claims"               json:"vp_claims,omitempty"`
 	// CIBAAuthReqID links this VP session to a CIBA backchannel auth request.
 	// Non-nil when this session was created as part of a CIBA+OID4VP SCA flow:
 	// after successful VP verification the CIBA request is auto-approved.
-	CIBAAuthReqID          *string                `db:"ciba_auth_req_id"        json:"ciba_auth_req_id,omitempty"`
+	CIBAAuthReqID *string `db:"ciba_auth_req_id"        json:"ciba_auth_req_id,omitempty"`
 	// ClientID is the OID4VP client_id used in the authorization request.
 	// For redirect_uri scheme: "redirect_uri:<response_uri>".
 	// For x509_san_dns scheme: "x509_san_dns:<hostname>".
 	// Used by the response handler to verify KB-JWT aud (OID4VP 1.0 Final §11.4).
-	ClientID               string                 `db:"client_id"               json:"client_id,omitempty"`
-	CreatedAt              time.Time              `db:"created_at"              json:"created_at"`
-	ExpiresAt              time.Time              `db:"expires_at"              json:"expires_at"`
+	ClientID  string    `db:"client_id"               json:"client_id,omitempty"`
+	CreatedAt time.Time `db:"created_at"              json:"created_at"`
+	ExpiresAt time.Time `db:"expires_at"              json:"expires_at"`
 }
 
 // GDPRProcessingRecord is an Article 30 Record of Processing Activity.
@@ -990,15 +1003,17 @@ type ClientBranding struct {
 
 // AdminAPIKey is a long-lived machine-to-machine credential for the superadmin API.
 type AdminAPIKey struct {
-	ID         uuid.UUID  `json:"id"`
-	Name       string     `json:"name"`
-	KeyPrefix  string     `json:"key_prefix"`
-	Scope      string     `json:"scope"`
-	CreatedBy  *uuid.UUID `json:"created_by,omitempty"`
-	LastUsedAt *time.Time `json:"last_used_at,omitempty"`
-	ExpiresAt  *time.Time `json:"expires_at,omitempty"`
-	IsActive   bool       `json:"is_active"`
-	CreatedAt  time.Time  `json:"created_at"`
+	ID          uuid.UUID  `json:"id"`
+	Name        string     `json:"name"`
+	KeyPrefix   string     `json:"key_prefix"`
+	Scope       string     `json:"scope"`
+	OrgID       *uuid.UUID `json:"org_id,omitempty"`
+	Permissions []string   `json:"permissions,omitempty"`
+	CreatedBy   *uuid.UUID `json:"created_by,omitempty"`
+	LastUsedAt  *time.Time `json:"last_used_at,omitempty"`
+	ExpiresAt   *time.Time `json:"expires_at,omitempty"`
+	IsActive    bool       `json:"is_active"`
+	CreatedAt   time.Time  `json:"created_at"`
 }
 
 // RARGrant is a persistent record of an RFC 9396 authorization_details consent.
@@ -1080,19 +1095,19 @@ type OrgIACARoot struct {
 // ISO 18013-5 mdoc credentials via OID4VCI (format: "mso_mdoc").
 // The DS certificate must be signed by the org's IACA CA.
 type OrgMdocIssuer struct {
-	ID                  uuid.UUID  `db:"id"                   json:"id"`
-	OrgID               uuid.UUID  `db:"org_id"               json:"org_id"`
-	DisplayName         string     `db:"display_name"         json:"display_name"`
-	DocType             string     `db:"doc_type"             json:"doc_type"`
+	ID          uuid.UUID `db:"id"                   json:"id"`
+	OrgID       uuid.UUID `db:"org_id"               json:"org_id"`
+	DisplayName string    `db:"display_name"         json:"display_name"`
+	DocType     string    `db:"doc_type"             json:"doc_type"`
 	// DSPrivateKeyPEM is the PKCS#8 PEM-encoded ECDSA private key.
 	// Nil when the key is managed by an external KMS.
-	DSPrivateKeyPEM     *string    `db:"ds_private_key_pem"   json:"-"`
-	DSCertificatePEM    string     `db:"ds_certificate_pem"   json:"ds_certificate_pem"`
-	IACACertificatePEM  *string    `db:"iaca_certificate_pem" json:"iaca_certificate_pem,omitempty"`
-	ValidityHours       int        `db:"validity_hours"       json:"validity_hours"`
-	IsActive            bool       `db:"is_active"            json:"is_active"`
-	CreatedAt           time.Time  `db:"created_at"           json:"created_at"`
-	UpdatedAt           time.Time  `db:"updated_at"           json:"updated_at"`
+	DSPrivateKeyPEM    *string   `db:"ds_private_key_pem"   json:"-"`
+	DSCertificatePEM   string    `db:"ds_certificate_pem"   json:"ds_certificate_pem"`
+	IACACertificatePEM *string   `db:"iaca_certificate_pem" json:"iaca_certificate_pem,omitempty"`
+	ValidityHours      int       `db:"validity_hours"       json:"validity_hours"`
+	IsActive           bool      `db:"is_active"            json:"is_active"`
+	CreatedAt          time.Time `db:"created_at"           json:"created_at"`
+	UpdatedAt          time.Time `db:"updated_at"           json:"updated_at"`
 }
 
 // ── Shared Signals Framework (SSF) ───────────────────────────────────────────
@@ -1118,7 +1133,7 @@ type SSFStream struct {
 type SSFPendingSet struct {
 	JTI       string    `db:"jti"`
 	StreamID  uuid.UUID `db:"stream_id"`
-	Payload   string    `db:"payload"`    // compact JWT
+	Payload   string    `db:"payload"` // compact JWT
 	EventType string    `db:"event_type"`
 	CreatedAt time.Time `db:"created_at"`
 	ExpiresAt time.Time `db:"expires_at"`
@@ -1183,16 +1198,16 @@ type LifecycleRule struct {
 // AccessReviewCampaign represents a periodic certification campaign where
 // reviewers certify that users should retain their current role assignments.
 type AccessReviewCampaign struct {
-	ID           uuid.UUID  `db:"id"            json:"id"`
-	OrgID        uuid.UUID  `db:"org_id"        json:"org_id"`
-	Name         string     `db:"name"          json:"name"`
-	Description  *string    `db:"description"   json:"description,omitempty"`
+	ID          uuid.UUID `db:"id"            json:"id"`
+	OrgID       uuid.UUID `db:"org_id"        json:"org_id"`
+	Name        string    `db:"name"          json:"name"`
+	Description *string   `db:"description"   json:"description,omitempty"`
 	// frequency: "monthly" | "quarterly" | "annual" | "one_time"
-	Frequency    string     `db:"frequency"     json:"frequency"`
+	Frequency string `db:"frequency"     json:"frequency"`
 	// status: "pending" | "active" | "completed" | "cancelled"
-	Status       string     `db:"status"        json:"status"`
-	StartsAt     time.Time  `db:"starts_at"     json:"starts_at"`
-	EndsAt       time.Time  `db:"ends_at"       json:"ends_at"`
+	Status   string    `db:"status"        json:"status"`
+	StartsAt time.Time `db:"starts_at"     json:"starts_at"`
+	EndsAt   time.Time `db:"ends_at"       json:"ends_at"`
 	// ReminderDays: days before EndsAt to send reminder emails (e.g. [3,1])
 	ReminderDays []int      `db:"reminder_days" json:"reminder_days"`
 	AutoRevoke   bool       `db:"auto_revoke"   json:"auto_revoke"`
@@ -1209,25 +1224,25 @@ type AccessReviewCampaign struct {
 
 // AccessReviewItem is a single user × role certification task within a campaign.
 type AccessReviewItem struct {
-	ID           uuid.UUID  `db:"id"              json:"id"`
-	CampaignID   uuid.UUID  `db:"campaign_id"     json:"campaign_id"`
-	OrgID        uuid.UUID  `db:"org_id"          json:"org_id"`
-	UserID       uuid.UUID  `db:"user_id"         json:"user_id"`
-	RoleID       uuid.UUID  `db:"role_id"         json:"role_id"`
-	ReviewerID   uuid.UUID  `db:"reviewer_id"     json:"reviewer_id"`
+	ID         uuid.UUID `db:"id"              json:"id"`
+	CampaignID uuid.UUID `db:"campaign_id"     json:"campaign_id"`
+	OrgID      uuid.UUID `db:"org_id"          json:"org_id"`
+	UserID     uuid.UUID `db:"user_id"         json:"user_id"`
+	RoleID     uuid.UUID `db:"role_id"         json:"role_id"`
+	ReviewerID uuid.UUID `db:"reviewer_id"     json:"reviewer_id"`
 	// decision: "pending" | "approved" | "revoked" | "auto_revoked"
-	Decision     string     `db:"decision"        json:"decision"`
-	Token        string     `db:"token"           json:"-"` // never expose in API responses
-	DecidedAt    *time.Time `db:"decided_at"      json:"decided_at,omitempty"`
-	Comment      *string    `db:"comment"         json:"comment,omitempty"`
+	Decision       string     `db:"decision"        json:"decision"`
+	Token          string     `db:"token"           json:"-"` // never expose in API responses
+	DecidedAt      *time.Time `db:"decided_at"      json:"decided_at,omitempty"`
+	Comment        *string    `db:"comment"         json:"comment,omitempty"`
 	LastRemindedAt *time.Time `db:"last_reminded_at" json:"last_reminded_at,omitempty"`
-	CreatedAt    time.Time  `db:"created_at"      json:"created_at"`
-	UpdatedAt    time.Time  `db:"updated_at"      json:"updated_at"`
+	CreatedAt      time.Time  `db:"created_at"      json:"created_at"`
+	UpdatedAt      time.Time  `db:"updated_at"      json:"updated_at"`
 
 	// Denormalised fields populated by JOIN queries (not stored)
-	UserEmail    string `db:"user_email"    json:"user_email,omitempty"`
-	UserName     string `db:"user_name"     json:"user_name,omitempty"`
-	RoleName     string `db:"role_name"     json:"role_name,omitempty"`
+	UserEmail     string `db:"user_email"    json:"user_email,omitempty"`
+	UserName      string `db:"user_name"     json:"user_name,omitempty"`
+	RoleName      string `db:"role_name"     json:"role_name,omitempty"`
 	ReviewerEmail string `db:"reviewer_email" json:"reviewer_email,omitempty"`
 	ReviewerName  string `db:"reviewer_name"  json:"reviewer_name,omitempty"`
 }
@@ -1237,14 +1252,14 @@ type AccessReviewItem struct {
 // LoginFlow is a named sequence of steps applied during the authentication
 // interaction for an organisation (or a specific OIDC client).
 type LoginFlow struct {
-	ID          uuid.UUID  `db:"id"          json:"id"`
-	OrgID       uuid.UUID  `db:"org_id"      json:"org_id"`
-	Name        string     `db:"name"        json:"name"`
-	Description *string    `db:"description" json:"description,omitempty"`
-	IsDefault   bool       `db:"is_default"  json:"is_default"`
-	IsActive    bool       `db:"is_active"   json:"is_active"`
-	CreatedAt   time.Time  `db:"created_at"  json:"created_at"`
-	UpdatedAt   time.Time  `db:"updated_at"  json:"updated_at"`
+	ID          uuid.UUID `db:"id"          json:"id"`
+	OrgID       uuid.UUID `db:"org_id"      json:"org_id"`
+	Name        string    `db:"name"        json:"name"`
+	Description *string   `db:"description" json:"description,omitempty"`
+	IsDefault   bool      `db:"is_default"  json:"is_default"`
+	IsActive    bool      `db:"is_active"   json:"is_active"`
+	CreatedAt   time.Time `db:"created_at"  json:"created_at"`
+	UpdatedAt   time.Time `db:"updated_at"  json:"updated_at"`
 
 	// Steps populated by JOIN — not stored in this row.
 	Steps []LoginFlowStep `db:"-" json:"steps,omitempty"`
@@ -1283,23 +1298,23 @@ type LoginFlowStep struct {
 // groups, or roles. Admins confirm each entity is still needed; unconfirmed
 // entities are auto-disabled when the campaign deadline passes.
 type EntityReviewCampaign struct {
-	ID            uuid.UUID  `db:"id"             json:"id"`
-	OrgID         uuid.UUID  `db:"org_id"         json:"org_id"`
-	Name          string     `db:"name"           json:"name"`
-	Description   *string    `db:"description"    json:"description,omitempty"`
+	ID          uuid.UUID `db:"id"             json:"id"`
+	OrgID       uuid.UUID `db:"org_id"         json:"org_id"`
+	Name        string    `db:"name"           json:"name"`
+	Description *string   `db:"description"    json:"description,omitempty"`
 	// EntityType: "client" | "group" | "role"
-	EntityType    string     `db:"entity_type"    json:"entity_type"`
+	EntityType string `db:"entity_type"    json:"entity_type"`
 	// FrequencyDays: recurrence interval (0 = one-shot).
-	FrequencyDays int        `db:"frequency_days" json:"frequency_days"`
+	FrequencyDays int `db:"frequency_days" json:"frequency_days"`
 	// Status: "pending" | "active" | "completed" | "cancelled"
-	Status        string     `db:"status"         json:"status"`
-	StartsAt      time.Time  `db:"starts_at"      json:"starts_at"`
-	EndsAt        time.Time  `db:"ends_at"        json:"ends_at"`
-	ReminderDays  []int      `db:"reminder_days"  json:"reminder_days"`
-	AutoDisable   bool       `db:"auto_disable"   json:"auto_disable"`
-	CreatedBy     *uuid.UUID `db:"created_by"     json:"created_by,omitempty"`
-	CreatedAt     time.Time  `db:"created_at"     json:"created_at"`
-	UpdatedAt     time.Time  `db:"updated_at"     json:"updated_at"`
+	Status       string     `db:"status"         json:"status"`
+	StartsAt     time.Time  `db:"starts_at"      json:"starts_at"`
+	EndsAt       time.Time  `db:"ends_at"        json:"ends_at"`
+	ReminderDays []int      `db:"reminder_days"  json:"reminder_days"`
+	AutoDisable  bool       `db:"auto_disable"   json:"auto_disable"`
+	CreatedBy    *uuid.UUID `db:"created_by"     json:"created_by,omitempty"`
+	CreatedAt    time.Time  `db:"created_at"     json:"created_at"`
+	UpdatedAt    time.Time  `db:"updated_at"     json:"updated_at"`
 
 	// Computed counts (populated on read, not stored).
 	TotalItems      int `db:"-" json:"total_items,omitempty"`
@@ -1310,21 +1325,21 @@ type EntityReviewCampaign struct {
 
 // EntityReviewItem is a single entity certification task within a campaign.
 type EntityReviewItem struct {
-	ID            uuid.UUID  `db:"id"               json:"id"`
-	CampaignID    uuid.UUID  `db:"campaign_id"      json:"campaign_id"`
-	OrgID         uuid.UUID  `db:"org_id"           json:"org_id"`
-	EntityType    string     `db:"entity_type"      json:"entity_type"`
-	EntityID      string     `db:"entity_id"        json:"entity_id"`
-	EntityName    string     `db:"entity_name"      json:"entity_name"`
-	ReviewerID    uuid.UUID  `db:"reviewer_id"      json:"reviewer_id"`
+	ID         uuid.UUID `db:"id"               json:"id"`
+	CampaignID uuid.UUID `db:"campaign_id"      json:"campaign_id"`
+	OrgID      uuid.UUID `db:"org_id"           json:"org_id"`
+	EntityType string    `db:"entity_type"      json:"entity_type"`
+	EntityID   string    `db:"entity_id"        json:"entity_id"`
+	EntityName string    `db:"entity_name"      json:"entity_name"`
+	ReviewerID uuid.UUID `db:"reviewer_id"      json:"reviewer_id"`
 	// Decision: "pending" | "confirmed" | "deprecated" | "auto_deprecated"
-	Decision      string     `db:"decision"         json:"decision"`
-	Token         string     `db:"token"            json:"-"`
-	DecidedAt     *time.Time `db:"decided_at"       json:"decided_at,omitempty"`
-	Comment       *string    `db:"comment"          json:"comment,omitempty"`
+	Decision       string     `db:"decision"         json:"decision"`
+	Token          string     `db:"token"            json:"-"`
+	DecidedAt      *time.Time `db:"decided_at"       json:"decided_at,omitempty"`
+	Comment        *string    `db:"comment"          json:"comment,omitempty"`
 	LastRemindedAt *time.Time `db:"last_reminded_at" json:"last_reminded_at,omitempty"`
-	CreatedAt     time.Time  `db:"created_at"       json:"created_at"`
-	UpdatedAt     time.Time  `db:"updated_at"       json:"updated_at"`
+	CreatedAt      time.Time  `db:"created_at"       json:"created_at"`
+	UpdatedAt      time.Time  `db:"updated_at"       json:"updated_at"`
 
 	// Denormalised reviewer info (populated by JOIN queries).
 	ReviewerEmail string `db:"reviewer_email" json:"reviewer_email,omitempty"`
@@ -1336,12 +1351,12 @@ type EntityReviewItem struct {
 // ActionTarget is a named external HTTP endpoint that receives event hooks,
 // or an inline JS sandbox that runs directly in-process.
 type ActionTarget struct {
-	ID            uuid.UUID `db:"id"             json:"id"`
-	OrgID         uuid.UUID `db:"org_id"         json:"org_id"`
-	Name          string    `db:"name"           json:"name"`
+	ID    uuid.UUID `db:"id"             json:"id"`
+	OrgID uuid.UUID `db:"org_id"         json:"org_id"`
+	Name  string    `db:"name"           json:"name"`
 	// TargetType is "http" (default) or "sandbox" (inline JS).
-	TargetType    string    `db:"target_type"    json:"target_type"`
-	URL           string    `db:"url"            json:"url"`
+	TargetType string `db:"target_type"    json:"target_type"`
+	URL        string `db:"url"            json:"url"`
 	// SandboxCode holds the JS source when TargetType == "sandbox".
 	// The code must export an onEvent(event) function.
 	SandboxCode   *string   `db:"sandbox_code"   json:"sandbox_code,omitempty"`
@@ -1356,10 +1371,10 @@ type ActionTarget struct {
 // When the event fires Clavex calls the target and (for sync events) uses
 // the response to modify behaviour.
 type ActionExecution struct {
-	ID        uuid.UUID       `db:"id"         json:"id"`
-	OrgID     uuid.UUID       `db:"org_id"     json:"org_id"`
-	TargetID  uuid.UUID       `db:"target_id"  json:"target_id"`
-	Name      string          `db:"name"       json:"name"`
+	ID       uuid.UUID `db:"id"         json:"id"`
+	OrgID    uuid.UUID `db:"org_id"     json:"org_id"`
+	TargetID uuid.UUID `db:"target_id"  json:"target_id"`
+	Name     string    `db:"name"       json:"name"`
 	// EventType: "user.pre_login" | "user.pre_token" | "user.created" |
 	//            "user.updated" | "user.deleted" | "user.pre_create" |
 	//            "user.pre_update" | "user.pre_password_change"
@@ -1369,10 +1384,10 @@ type ActionExecution struct {
 	//   fire_and_forget — POST asynchronously, ignore response (default)
 	//   mutation        — POST synchronously, use modified response body as
 	//                     the actual request data (request/response mutation)
-	Mode      string          `db:"mode"       json:"mode"`
-	IsActive  bool            `db:"is_active"  json:"is_active"`
-	CreatedAt time.Time       `db:"created_at" json:"created_at"`
-	UpdatedAt time.Time       `db:"updated_at" json:"updated_at"`
+	Mode      string    `db:"mode"       json:"mode"`
+	IsActive  bool      `db:"is_active"  json:"is_active"`
+	CreatedAt time.Time `db:"created_at" json:"created_at"`
+	UpdatedAt time.Time `db:"updated_at" json:"updated_at"`
 
 	// Denormalised (populated by JOIN).
 	TargetName string `db:"target_name" json:"target_name,omitempty"`
@@ -1483,8 +1498,8 @@ type AccountCenterConfig struct {
 	ShowDataExport bool      `db:"show_data_export" json:"show_data_export"`
 	// PageTitle is an optional custom heading shown inside the widget.
 	// Defaults to "My Account" when nil.
-	PageTitle  *string   `db:"page_title"       json:"page_title,omitempty"`
-	UpdatedAt  time.Time `db:"updated_at"       json:"updated_at"`
+	PageTitle *string   `db:"page_title"       json:"page_title,omitempty"`
+	UpdatedAt time.Time `db:"updated_at"       json:"updated_at"`
 }
 
 // DefaultAccountCenterConfig returns an AccountCenterConfig with all sections

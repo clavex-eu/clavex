@@ -97,12 +97,40 @@ type issueAgentTokenRequest struct {
 	// (RFC 8707 Resource Indicators).  Embedded as "mcp_resource_url" JWT claim.
 	// Example: "https://api.example.com/mcp".
 	MCPResourceURL *string `json:"mcp_resource_url"`
+	// Audience optionally overrides the token's "aud" claim (default: the
+	// issuer). Must be present in the org's agent_token_allowed_audiences,
+	// otherwise the request is rejected with error=invalid_target — mirrors
+	// the RFC 8693 token-exchange audience allowlist (oidc_clients.allowed_
+	// audiences), but scoped per-org since agent tokens have no client_id.
+	// Typical use: cloud STS/WIF audiences for Terraform federation, e.g.
+	// "sts.amazonaws.com" (AWS), "api://AzureADTokenExchange" (Azure), or a
+	// GCP Workload Identity Federation pool provider audience.
+	Audience *string `json:"audience"`
 }
 
 type issueAgentTokenResponse struct {
 	Token     string `json:"token"`      // signed JWT — shown once
 	TokenID   string `json:"token_id"`   // database record ID for revocation
 	ExpiresAt string `json:"expires_at"` // RFC 3339
+}
+
+// audiencePermitted reports whether an agent-token issuance request may set
+// the given target audience: an empty request defaults to the issuer, the
+// issuer itself is always allowed, and any explicitly allow-listed audience
+// (org.AgentTokenAllowedAudiences) is permitted. Everything else is rejected
+// (invalid_target) — mirrors internal/oidc.audiencePermitted (RFC 8693
+// token-exchange), but keyed on the issuer rather than a client_id since
+// agent tokens have no oidc_clients row.
+func audiencePermitted(requested, issuer string, allowed []string) bool {
+	if requested == "" || requested == issuer {
+		return true
+	}
+	for _, a := range allowed {
+		if a == requested {
+			return true
+		}
+	}
+	return false
 }
 
 // ── Handlers ──────────────────────────────────────────────────────────────────
@@ -150,13 +178,24 @@ func (h *AgentTokenHandler) Issue(c echo.Context) error {
 	}
 	issuer := h.cfg.HTTP.IssuerURLFromBase(h.cfg.Auth.IssuerBase, org.Slug)
 
+	// Resolve and validate the requested audience (default: issuer itself).
+	audience := issuer
+	var audienceClaim *string
+	if req.Audience != nil && *req.Audience != "" {
+		if !audiencePermitted(*req.Audience, issuer, org.AgentTokenAllowedAudiences) {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid_target: requested audience is not permitted for this org")
+		}
+		audience = *req.Audience
+		audienceClaim = req.Audience
+	}
+
 	jti := uuid.NewString()
 
 	// Build and sign the JWT.
 	builder := jwtlib.NewBuilder().
 		Issuer(issuer).
 		Subject(userID.String()).
-		Audience([]string{issuer}).
+		Audience([]string{audience}).
 		IssuedAt(time.Now()).
 		Expiration(expiresAt).
 		JwtID(jti).
@@ -194,7 +233,7 @@ func (h *AgentTokenHandler) Issue(c echo.Context) error {
 
 	// Persist metadata.
 	record, err := h.repo.Create(ctx, orgID, userID, req.AgentID, req.AgentName, req.Scope, jti, expiresAt, createdBy,
-		req.MCPServerID, req.MCPResourceURL)
+		req.MCPServerID, req.MCPResourceURL, audienceClaim)
 	if err != nil {
 		return echo.ErrInternalServerError
 	}

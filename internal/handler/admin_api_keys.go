@@ -22,9 +22,11 @@ func NewAdminAPIKeyHandler(pool *pgxpool.Pool) *AdminAPIKeyHandler {
 }
 
 type createAPIKeyRequest struct {
-	Name      string  `json:"name"       validate:"required,min=1,max=120"`
-	Scope     string  `json:"scope"      validate:"omitempty,oneof=read-only read-write provision-only"`
-	ExpiresAt *string `json:"expires_at"` // optional ISO-8601 timestamp
+	Name        string   `json:"name"       validate:"required,min=1,max=120"`
+	Scope       string   `json:"scope"      validate:"omitempty,oneof=read-only read-write provision-only"`
+	OrgID       *string  `json:"org_id,omitempty"`      // optional; scopes the key to a single org (UUID)
+	Permissions []string `json:"permissions,omitempty"` // optional fine-grained restriction, e.g. "clients:write"
+	ExpiresAt   *string  `json:"expires_at"`            // optional ISO-8601 timestamp
 }
 
 type createAPIKeyResponse struct {
@@ -42,6 +44,15 @@ func (h *AdminAPIKeyHandler) Create(c echo.Context) error {
 		req.Scope = "read-write"
 	}
 
+	var orgID *uuid.UUID
+	if req.OrgID != nil && *req.OrgID != "" {
+		id, err := uuid.Parse(*req.OrgID)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid org_id")
+		}
+		orgID = &id
+	}
+
 	// Best-effort: record who created the key.
 	var createdBy *uuid.UUID
 	if claims := middleware.GetClaims(c); claims != nil {
@@ -50,7 +61,7 @@ func (h *AdminAPIKeyHandler) Create(c echo.Context) error {
 		}
 	}
 
-	k, rawKey, err := h.repo.Create(c.Request().Context(), req.Name, req.Scope, createdBy, req.ExpiresAt)
+	k, rawKey, err := h.repo.Create(c.Request().Context(), req.Name, req.Scope, orgID, req.Permissions, createdBy, req.ExpiresAt)
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
@@ -58,8 +69,18 @@ func (h *AdminAPIKeyHandler) Create(c echo.Context) error {
 }
 
 // GET /api/v1/superadmin/api-keys
+// Optional ?org_id= filters to keys scoped to that org; omitted returns all
+// keys (superadmin- and org-scoped alike).
 func (h *AdminAPIKeyHandler) List(c echo.Context) error {
-	keys, err := h.repo.List(c.Request().Context())
+	var orgID *uuid.UUID
+	if raw := c.QueryParam("org_id"); raw != "" {
+		id, err := uuid.Parse(raw)
+		if err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, "invalid org_id")
+		}
+		orgID = &id
+	}
+	keys, err := h.repo.List(c.Request().Context(), orgID)
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
