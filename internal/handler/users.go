@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/breach"
 	"github.com/clavex-eu/clavex/internal/mailer"
 	"github.com/clavex-eu/clavex/internal/middleware"
@@ -78,6 +79,7 @@ type UserHandler struct {
 	shieldClient *shield.Client
 	feedClient   *shield.FeedClient
 	asyncActions AsyncActionRunner
+	auditor      *audit.Emitter
 }
 
 // AsyncActionRunner is the minimal interface for firing async action hooks on
@@ -103,6 +105,13 @@ func NewUserHandler(pool *pgxpool.Pool, rdb redis.UniversalClient, dispatcher *w
 }
 
 // WithSSFDispatcher attaches an SSF dispatcher so the handler can fire security events.
+// WithAuditor attaches the audit emitter so role mutations reach the audit log
+// and the live event stream (consumed by the Kubernetes operator).
+func (h *UserHandler) WithAuditor(a *audit.Emitter) *UserHandler {
+	h.auditor = a
+	return h
+}
+
 func (h *UserHandler) WithSSFDispatcher(d *ssf.Dispatcher) *UserHandler {
 	h.ssfDisp = d
 	return h
@@ -575,6 +584,7 @@ func (h *UserHandler) CreateRole(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusConflict, "role already exists")
 	}
+	emitEntityAudit(c, h.auditor, orgID, "role.created", auditResourceRole, req.Name, nil)
 	return c.JSON(http.StatusCreated, role)
 }
 
@@ -605,6 +615,7 @@ func (h *UserHandler) DeleteRole(c echo.Context) error {
 	if err := h.repo.DeleteRole(c.Request().Context(), roleID); err != nil {
 		return echo.ErrNotFound
 	}
+	emitEntityAudit(c, h.auditor, orgID, "role.deleted", auditResourceRole, roleID.String(), nil)
 	return c.NoContent(http.StatusNoContent)
 }
 

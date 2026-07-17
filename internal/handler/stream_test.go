@@ -228,3 +228,79 @@ func TestParseAdminJWT_ExpiredToken(t *testing.T) {
 		t.Error("expected error for expired token")
 	}
 }
+
+// ── extractAPIKey ────────────────────────────────────────────────────────────
+
+func TestExtractAPIKey_Header(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req.Header.Set("X-API-Key", "clv_headerkey")
+	c := e.NewContext(req, httptest.NewRecorder())
+
+	if got := extractAPIKey(c); got != "clv_headerkey" {
+		t.Errorf("got %q, want clv_headerkey", got)
+	}
+}
+
+func TestExtractAPIKey_QueryParam(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/?api_key=clv_querykey", nil)
+	c := e.NewContext(req, httptest.NewRecorder())
+
+	if got := extractAPIKey(c); got != "clv_querykey" {
+		t.Errorf("got %q, want clv_querykey", got)
+	}
+}
+
+func TestExtractAPIKey_HeaderTakesPrecedence(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/?api_key=clv_qkey", nil)
+	req.Header.Set("X-API-Key", "clv_hkey")
+	c := e.NewContext(req, httptest.NewRecorder())
+
+	if got := extractAPIKey(c); got != "clv_hkey" {
+		t.Errorf("header should take precedence; got %q", got)
+	}
+}
+
+func TestExtractAPIKey_Empty(t *testing.T) {
+	e := echo.New()
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	c := e.NewContext(req, httptest.NewRecorder())
+
+	if got := extractAPIKey(c); got != "" {
+		t.Errorf("expected empty, got %q", got)
+	}
+}
+
+// ── orgScopeAllowed ──────────────────────────────────────────────────────────
+// This is the shared gate both the JWT and org-scoped API-key paths pass
+// through: an org-scoped key reaching its own org is accepted; a key for a
+// different org is rejected exactly as a mismatched JWT would be (the caller
+// maps that to HTTP 403).
+
+func TestOrgScopeAllowed(t *testing.T) {
+	const orgA = "11111111-1111-1111-1111-111111111111"
+	const orgB = "22222222-2222-2222-2222-222222222222"
+
+	cases := []struct {
+		name           string
+		principalOrgID string
+		superAdmin     bool
+		requestedOrgID string
+		want           bool
+	}{
+		{"org-scoped key on its own org", orgA, false, orgA, true},
+		{"org-scoped key on another org", orgA, false, orgB, false},
+		{"super-admin on any org", "", true, orgB, true},
+		{"unscoped non-admin rejected", "", false, orgA, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := orgScopeAllowed(tc.principalOrgID, tc.superAdmin, tc.requestedOrgID); got != tc.want {
+				t.Errorf("orgScopeAllowed(%q,%v,%q)=%v, want %v",
+					tc.principalOrgID, tc.superAdmin, tc.requestedOrgID, got, tc.want)
+			}
+		})
+	}
+}

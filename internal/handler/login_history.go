@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"time"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/google/uuid"
@@ -20,11 +21,20 @@ import (
 //	GET  /api/v1/organizations/:org_id/rate-limits
 //	PUT  /api/v1/organizations/:org_id/rate-limits
 type LoginHistoryHandler struct {
-	repo *repository.LoginHistoryRepository
+	repo    *repository.LoginHistoryRepository
+	auditor *audit.Emitter
 }
 
 func NewLoginHistoryHandler(pool *pgxpool.Pool) *LoginHistoryHandler {
 	return &LoginHistoryHandler{repo: repository.NewLoginHistoryRepository(pool)}
+}
+
+// WithAuditor attaches the audit emitter. Rate-limit changes are part of the org
+// settings the Kubernetes operator (ClavexOrg) reconciles, so they emit an "org"
+// event on the live stream.
+func (h *LoginHistoryHandler) WithAuditor(a *audit.Emitter) *LoginHistoryHandler {
+	h.auditor = a
+	return h
 }
 
 // ListOrgLoginHistory handles GET /api/v1/organizations/:org_id/login-history
@@ -126,6 +136,8 @@ func (h *LoginHistoryHandler) UpdateRateLimits(c echo.Context) error {
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
+	emitEntityAudit(c, h.auditor, orgID, "org.updated", auditResourceOrg, orgID.String(),
+		map[string]interface{}{"setting": "rate_limits"})
 	return c.JSON(http.StatusOK, rl)
 }
 

@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"unicode"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/google/uuid"
@@ -13,11 +14,20 @@ import (
 
 // PasswordPolicyHandler manages per-org password policies.
 type PasswordPolicyHandler struct {
-	repo *repository.PasswordPolicyRepository
+	repo    *repository.PasswordPolicyRepository
+	auditor *audit.Emitter
 }
 
 func NewPasswordPolicyHandler(pool *pgxpool.Pool) *PasswordPolicyHandler {
 	return &PasswordPolicyHandler{repo: repository.NewPasswordPolicyRepository(pool)}
+}
+
+// WithAuditor attaches the audit emitter. Password-policy changes are part of
+// the org settings the Kubernetes operator (ClavexOrg) reconciles, so they emit
+// an "org" event on the live stream.
+func (h *PasswordPolicyHandler) WithAuditor(a *audit.Emitter) *PasswordPolicyHandler {
+	h.auditor = a
+	return h
 }
 
 // Get returns the current password policy for an org.
@@ -74,6 +84,8 @@ func (h *PasswordPolicyHandler) Put(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	emitEntityAudit(c, h.auditor, orgID, "org.updated", auditResourceOrg, orgID.String(),
+		map[string]interface{}{"setting": "password_policy"})
 	return c.JSON(http.StatusOK, out)
 }
 

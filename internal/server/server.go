@@ -187,6 +187,13 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	}
 	walletBaseURL := handler.StaticBaseURL(baseURL)
 
+	// entityAuditor records mutations of the admin entities managed
+	// declaratively by the Kubernetes operator (OIDC clients, roles, groups,
+	// auth policies, org settings, webhooks, identity providers). Emit both
+	// persists to the audit log (stream replay) and fans out to the live event
+	// stream the operator subscribes to for near-instant drift detection.
+	entityAuditor := audit.NewEmitter(baseURL, repository.NewAuditRepository(pool))
+
 	// ── Handler instances ─────────────────────────────────────────────────────
 	health := handler.NewHealthHandler(pool)
 	oidcH := handler.NewOIDCHandler(cfg, pool, rdb, keys)
@@ -195,14 +202,15 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	}
 	saml := handler.NewSAMLHandler(cfg, pool, rdb)
 	auth := handler.NewAuthHandler(cfg, pool)
-	webhooks := handler.NewWebhookHandler(pool)
+	webhooks := handler.NewWebhookHandler(pool).WithAuditor(entityAuditor)
 	// actionsRunner is created once and shared by the flow engine (sync pre_login)
 	// and the user handler (async user.created/updated/deleted).
 	sharedActionsRunner := actionsrunner.New(repository.NewActionsRepository(pool))
 	users := handler.NewUserHandler(pool, rdb, webhooks.Dispatcher()).
-		WithAsyncActionRunner(sharedActionsRunner)
+		WithAsyncActionRunner(sharedActionsRunner).
+		WithAuditor(entityAuditor)
 	orgs := handler.NewOrgHandler(pool)
-	clients := handler.NewClientHandler(pool)
+	clients := handler.NewClientHandler(pool).WithAuditor(entityAuditor)
 	healthDash := handler.NewHealthDashboardHandler(pool)
 
 	// Encryption key: prefer dedicated key, fall back to admin_secret.
@@ -224,7 +232,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 
 	webhookRepo := repository.NewWebhookRepositoryWithEnc(pool, enc)
 	ldap := handler.NewLDAPHandlerWithEnc(pool, enc)
-	groups := handler.NewGroupHandler(pool)
+	groups := handler.NewGroupHandler(pool).WithAuditor(entityAuditor)
 	scimPush := handler.NewScimPushHandlerWithEnc(pool, enc)
 	merkleSealer := merkle.NewSealer(repository.NewAuditRepository(pool), merkle.SealOptions{
 		BatchSize: merkle.CheckpointSize,
@@ -253,10 +261,10 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		mfa.WebAuthn(),
 		rdb,
 	)
-	passwordPolicy := handler.NewPasswordPolicyHandler(pool)
+	passwordPolicy := handler.NewPasswordPolicyHandler(pool).WithAuditor(entityAuditor)
 	smtpH := handler.NewSMTPHandler(pool)
 	smsSettingsH := handler.NewSMSSettingsHandler(pool)
-	idpH := handler.NewIDPHandler(pool, store)
+	idpH := handler.NewIDPHandler(pool, store).WithAuditor(entityAuditor)
 	scimPusher := scimpush.New(repository.NewScimPushRepositoryWithEnc(pool, enc)).
 		WithDeliveryRepo(repository.NewScimPushDeliveryRepository(pool)).
 		WithUserRepo(repository.NewUserRepository(pool)).
@@ -291,7 +299,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	importH := handler.NewImportHandler(pool)
 	accountH := handler.NewAccountHandler(cfg, pool, rdb, store)
 	accountCenterH := handler.NewAccountCenterHandler(pool)
-	policyH := handler.NewPolicyHandler(pool, nil) // nil = no YAML-level default rules
+	policyH := handler.NewPolicyHandler(pool, nil).WithAuditor(entityAuditor) // nil = no YAML-level default rules
 	spidH := handler.NewSPIDHandler(pool, store, baseURL)
 	oidcH.WithSPIDRepository(repository.NewSPIDRepository(pool))
 	oidcH.WithEidasRepository(repository.NewEidasRepository(pool))
@@ -314,7 +322,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	walletH := handler.NewWalletHandler(repository.NewOID4WRepository(pool))
 	mdocProximityH := handler.NewMdocProximityHandler(pool, keys, walletBaseURL)
 	complianceH := handler.NewComplianceHandler(pool, keys)
-	loginHistoryH := handler.NewLoginHistoryHandler(pool)
+	loginHistoryH := handler.NewLoginHistoryHandler(pool).WithAuditor(entityAuditor)
 	deviceTrustH := handler.NewDeviceTrustHandler(pool)
 	clientBrandingH := handler.NewClientBrandingHandler(pool)
 	crossOrgTrustH := handler.NewCrossOrgTrustHandler(pool)

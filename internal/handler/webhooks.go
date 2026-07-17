@@ -6,6 +6,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/clavex-eu/clavex/internal/webhook"
@@ -19,6 +20,14 @@ type WebhookHandler struct {
 	repo       *repository.WebhookRepository
 	delivRepo  *repository.WebhookDeliveryRepository
 	dispatcher *webhook.Dispatcher
+	auditor    *audit.Emitter
+}
+
+// WithAuditor attaches the audit emitter so webhook mutations reach the audit
+// log and the live event stream (consumed by the Kubernetes operator).
+func (h *WebhookHandler) WithAuditor(a *audit.Emitter) *WebhookHandler {
+	h.auditor = a
+	return h
 }
 
 func NewWebhookHandler(pool *pgxpool.Pool) *WebhookHandler {
@@ -68,6 +77,7 @@ func (h *WebhookHandler) Create(c echo.Context) error {
 	if len(req.EventFilter) > 0 {
 		w, _ = h.repo.Update(c.Request().Context(), w.ID, orgID, nil, nil, nil, req.EventFilter)
 	}
+	emitEntityAudit(c, h.auditor, orgID, "webhook.created", auditResourceWebhook, w.URL, nil)
 	// Return the secret once — callers must store it immediately.
 	type createResponse struct {
 		ID       string   `json:"id"`
@@ -141,6 +151,7 @@ func (h *WebhookHandler) Update(c echo.Context) error {
 	if err != nil {
 		return echo.ErrNotFound
 	}
+	emitEntityAudit(c, h.auditor, orgID, "webhook.updated", auditResourceWebhook, w.URL, nil)
 	return c.JSON(http.StatusOK, w)
 }
 
@@ -157,6 +168,7 @@ func (h *WebhookHandler) Delete(c echo.Context) error {
 	if err := h.repo.Delete(c.Request().Context(), id, orgID); err != nil {
 		return echo.ErrNotFound
 	}
+	emitEntityAudit(c, h.auditor, orgID, "webhook.deleted", auditResourceWebhook, id.String(), nil)
 	return c.NoContent(http.StatusNoContent)
 }
 

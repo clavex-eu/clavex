@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,7 @@ import (
 type ClientHandler struct {
 	repo    *repository.ClientRepository
 	orgRepo *repository.OrgRepository
+	auditor *audit.Emitter
 }
 
 func NewClientHandler(pool *pgxpool.Pool) *ClientHandler {
@@ -25,6 +27,13 @@ func NewClientHandler(pool *pgxpool.Pool) *ClientHandler {
 		repo:    repository.NewClientRepository(pool),
 		orgRepo: repository.NewOrgRepository(pool),
 	}
+}
+
+// WithAuditor attaches the audit emitter so client mutations reach the audit
+// log and the live event stream (consumed by the Kubernetes operator).
+func (h *ClientHandler) WithAuditor(a *audit.Emitter) *ClientHandler {
+	h.auditor = a
+	return h
 }
 
 type createClientRequest struct {
@@ -50,6 +59,8 @@ func (h *ClientHandler) Create(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	emitEntityAudit(c, h.auditor, orgID, "oidc_client.created", auditResourceOIDCClient, client.ClientID,
+		map[string]interface{}{"name": client.Name})
 	// Return the plain-text secret only at creation time, never again.
 	resp := map[string]interface{}{
 		"client":        client,
@@ -145,6 +156,8 @@ func (h *ClientHandler) Update(c echo.Context) error {
 		}
 		client.EnabledLoginProviders = req.EnabledLoginProviders
 	}
+	emitEntityAudit(c, h.auditor, orgID, "oidc_client.updated", auditResourceOIDCClient, client.ClientID,
+		map[string]interface{}{"name": client.Name})
 	return c.JSON(http.StatusOK, client)
 }
 
@@ -157,6 +170,7 @@ func (h *ClientHandler) Delete(c echo.Context) error {
 	if err := h.repo.Delete(c.Request().Context(), id, orgID); err != nil {
 		return echo.ErrNotFound
 	}
+	emitEntityAudit(c, h.auditor, orgID, "oidc_client.deleted", auditResourceOIDCClient, id, nil)
 	return c.NoContent(http.StatusNoContent)
 }
 
