@@ -42,6 +42,8 @@ type createClientRequest struct {
 	RedirectURIs           []string `json:"redirect_uris"              validate:"required,min=1,dive,redirect_uri"`
 	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"  validate:"omitempty,dive,url"`
 	GrantTypes             []string `json:"grant_types"                validate:"omitempty"`
+	ResponseTypes          []string `json:"response_types"             validate:"omitempty"`
+	IsActive               *bool    `json:"is_active"`
 	IsPublic               bool     `json:"is_public"`
 	LogoURL                *string  `json:"logo_url"                   validate:"omitempty,url"`
 }
@@ -55,7 +57,8 @@ func (h *ClientHandler) Create(c echo.Context) error {
 	if err := bindAndValidate(c, &req); err != nil {
 		return err
 	}
-	client, secret, err := h.repo.Create(c.Request().Context(), orgID, req.ClientID, req.Name, req.RedirectURIs, req.IsPublic)
+	client, secret, err := h.repo.Create(c.Request().Context(), orgID, req.ClientID, req.Name, req.RedirectURIs,
+		req.PostLogoutRedirectURIs, req.GrantTypes, req.ResponseTypes, req.IsActive, req.IsPublic)
 	if err != nil {
 		return err
 	}
@@ -113,6 +116,8 @@ type updateClientRequest struct {
 	Name                   *string  `json:"name"                      validate:"omitempty,min=1,max=120"`
 	RedirectURIs           []string `json:"redirect_uris"             validate:"omitempty,dive,redirect_uri"`
 	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris" validate:"omitempty,dive,url"`
+	GrantTypes             []string `json:"grant_types"               validate:"omitempty"`
+	ResponseTypes          []string `json:"response_types"            validate:"omitempty"`
 	LogoURL                *string  `json:"logo_url"                  validate:"omitempty,url"`
 	IsActive               *bool    `json:"is_active"`
 	MFARequired            *bool    `json:"mfa_required"`
@@ -141,7 +146,7 @@ func (h *ClientHandler) Update(c echo.Context) error {
 	if err := bindAndValidate(c, &req); err != nil {
 		return err
 	}
-	client, err := h.repo.Update(c.Request().Context(), id, orgID, req.Name, req.RedirectURIs, req.IsActive, req.MFARequired, req.KeycloakCompat, req.AccessTokenTTL, req.RefreshTokenTTL)
+	client, err := h.repo.Update(c.Request().Context(), id, orgID, req.Name, req.RedirectURIs, req.IsActive, req.MFARequired, req.KeycloakCompat, req.AccessTokenTTL, req.RefreshTokenTTL, req.GrantTypes, req.ResponseTypes, req.PostLogoutRedirectURIs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return echo.ErrNotFound
@@ -224,7 +229,8 @@ func (h *ClientHandler) QuickRegister(c echo.Context) error {
 		base + "/auth/callback",
 	}
 
-	client, secret, err := h.repo.Create(c.Request().Context(), orgID, "", req.AppName, redirectURIs, false)
+	client, secret, err := h.repo.Create(c.Request().Context(), orgID, "", req.AppName, redirectURIs,
+		nil, nil, nil, nil, false)
 	if err != nil {
 		return err
 	}
