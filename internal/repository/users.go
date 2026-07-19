@@ -436,7 +436,7 @@ func (r *UserRepository) CreateRole(ctx context.Context, orgID uuid.UUID, name s
 
 func (r *UserRepository) ListRoles(ctx context.Context, orgID uuid.UUID) ([]*models.Role, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, org_id, name, description, is_system, created_at
+		SELECT id, org_id, name, description, is_system, created_at, managed_by, managed_ref
 		FROM roles WHERE org_id = $1 ORDER BY name
 	`, orgID)
 	if err != nil {
@@ -446,12 +446,18 @@ func (r *UserRepository) ListRoles(ctx context.Context, orgID uuid.UUID) ([]*mod
 	roles := make([]*models.Role, 0)
 	for rows.Next() {
 		role := &models.Role{}
-		if err := rows.Scan(&role.ID, &role.OrgID, &role.Name, &role.Description, &role.IsSystem, &role.CreatedAt); err != nil {
+		if err := rows.Scan(&role.ID, &role.OrgID, &role.Name, &role.Description, &role.IsSystem, &role.CreatedAt, &role.ManagedBy, &role.ManagedRef); err != nil {
 			return nil, err
 		}
 		roles = append(roles, role)
 	}
 	return roles, rows.Err()
+}
+
+// SetRoleManagedMarker adopts, refreshes, or releases the declarative-management
+// marker on a role (roles table). See ApplyManagedMarker.
+func (r *UserRepository) SetRoleManagedMarker(ctx context.Context, roleID, orgID uuid.UUID, m ManagedMarkerInput) error {
+	return ApplyManagedMarker(ctx, r.pool, "roles", "id", roleID, orgID, m)
 }
 
 func (r *UserRepository) DeleteRole(ctx context.Context, id uuid.UUID) error {

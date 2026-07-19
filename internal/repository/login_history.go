@@ -238,11 +238,11 @@ func (r *LoginHistoryRepository) GetOrgRateLimits(ctx context.Context, orgID uui
 	var endpointRaw []byte
 	err := r.pool.QueryRow(ctx, `
 		SELECT login_per_ip_per_min, token_per_client_per_min, global_per_ip_per_min,
-		       endpoint_limits, updated_at
+		       endpoint_limits, updated_at, managed_by, managed_ref
 		FROM org_rate_limits WHERE org_id = $1
 	`, orgID).Scan(
 		&rl.LoginPerIPPerMin, &rl.TokenPerClientPerMin, &rl.GlobalPerIPPerMin,
-		&endpointRaw, &rl.UpdatedAt,
+		&endpointRaw, &rl.UpdatedAt, &rl.ManagedBy, &rl.ManagedRef,
 	)
 	if err != nil {
 		// No row yet — return defaults.
@@ -277,10 +277,10 @@ func (r *LoginHistoryRepository) UpsertOrgRateLimits(
 		    endpoint_limits          = EXCLUDED.endpoint_limits,
 		    updated_at               = NOW()
 		RETURNING org_id, login_per_ip_per_min, token_per_client_per_min,
-		          global_per_ip_per_min, endpoint_limits, updated_at
+		          global_per_ip_per_min, endpoint_limits, updated_at, managed_by, managed_ref
 	`, orgID, loginPerIP, tokenPerClient, globalPerIP, endpointJSON).Scan(
 		&rl.OrgID, &rl.LoginPerIPPerMin, &rl.TokenPerClientPerMin,
-		&rl.GlobalPerIPPerMin, &endpointRaw, &rl.UpdatedAt,
+		&rl.GlobalPerIPPerMin, &endpointRaw, &rl.UpdatedAt, &rl.ManagedBy, &rl.ManagedRef,
 	)
 	if err != nil {
 		return nil, err
@@ -289,6 +289,13 @@ func (r *LoginHistoryRepository) UpsertOrgRateLimits(
 		_ = json.Unmarshal(endpointRaw, &rl.EndpointLimits)
 	}
 	return rl, nil
+}
+
+// SetOrgRateLimitsManagedMarker adopts, refreshes, or releases the
+// declarative-management marker on an org's rate-limit config (keyed by
+// org_id). See ApplyManagedMarker.
+func (r *LoginHistoryRepository) SetOrgRateLimitsManagedMarker(ctx context.Context, orgID uuid.UUID, m ManagedMarkerInput) error {
+	return ApplyManagedMarker(ctx, r.pool, "org_rate_limits", "org_id", orgID, orgID, m)
 }
 
 // pg returns a PostgreSQL positional parameter placeholder ($1, $2, …).

@@ -197,6 +197,12 @@ func (h *IDPHandler) Create(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusConflict, "provider name already exists for this organization")
 	}
+	if mk := managedMarkerFromRequest(c); mk.By != "" {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), created.ID, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&created.ManagedMarker, mk)
+	}
 	emitEntityAudit(c, h.auditor, orgID, "identity_provider.created", auditResourceIdentityProvider, req.Name, nil)
 	return c.JSON(http.StatusCreated, created)
 }
@@ -289,6 +295,12 @@ func (h *IDPHandler) Update(c echo.Context) error {
 	updated, err := h.repo.Update(c.Request().Context(), p)
 	if err != nil {
 		return echo.ErrNotFound
+	}
+	if mk := managedMarkerFromRequest(c); mk.Active() {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), updated.ID, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&updated.ManagedMarker, mk)
 	}
 	emitEntityAudit(c, h.auditor, orgID, "identity_provider.updated", auditResourceIdentityProvider, req.Name, nil)
 	return c.JSON(http.StatusOK, updated)

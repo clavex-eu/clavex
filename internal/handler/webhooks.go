@@ -77,6 +77,11 @@ func (h *WebhookHandler) Create(c echo.Context) error {
 	if len(req.EventFilter) > 0 {
 		w, _ = h.repo.Update(c.Request().Context(), w.ID, orgID, nil, nil, nil, req.EventFilter)
 	}
+	if mk := managedMarkerFromRequest(c); mk.By != "" {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), w.ID, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+	}
 	emitEntityAudit(c, h.auditor, orgID, "webhook.created", auditResourceWebhook, w.URL, nil)
 	// Return the secret once — callers must store it immediately.
 	type createResponse struct {
@@ -150,6 +155,12 @@ func (h *WebhookHandler) Update(c echo.Context) error {
 	w, err := h.repo.Update(c.Request().Context(), id, orgID, req.URL, req.Events, req.IsActive, ef)
 	if err != nil {
 		return echo.ErrNotFound
+	}
+	if mk := managedMarkerFromRequest(c); mk.Active() {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), id, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&w.ManagedMarker, mk)
 	}
 	emitEntityAudit(c, h.auditor, orgID, "webhook.updated", auditResourceWebhook, w.URL, nil)
 	return c.JSON(http.StatusOK, w)

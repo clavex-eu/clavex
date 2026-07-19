@@ -4,13 +4,15 @@ import { useAuthStore } from '@/stores/auth'
 import api from '@/lib/api'
 import toast from 'react-hot-toast'
 import { Gauge, Plus, Trash2 } from 'lucide-react'
-import { Button, Card, Input, PageHeader, Spinner } from '@/components/ui'
+import { Button, Card, Input, PageHeader, Spinner, ManagedBadge } from '@/components/ui'
 
 interface RateLimits {
   login_per_ip_per_min: number
   token_per_client_per_min: number
   global_per_ip_per_min: number
   endpoint_limits: Record<string, number> | null
+  managed_by?: string | null
+  managed_ref?: string | null
 }
 
 export default function RateLimitsPage() {
@@ -77,6 +79,7 @@ export default function RateLimitsPage() {
       <PageHeader
         title="Rate Limits"
         subtitle="Control request throttling for login, token, and custom endpoints."
+        action={<ManagedBadge managedBy={data?.managed_by} managedRef={data?.managed_ref} />}
       />
 
       <Card className="p-6 space-y-5">

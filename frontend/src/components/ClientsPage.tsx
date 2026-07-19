@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2, Copy, RefreshCw, Settings, KeyRound, GitMerge } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api, { toArr } from '@/lib/api'
-import { Badge, Button, Modal, Input, PageHeader, EmptyState, Spinner } from '@/components/ui'
+import { Badge, Button, Modal, Input, PageHeader, EmptyState, Spinner, ManagedBadge } from '@/components/ui'
 
 interface OIDCClient {
   client_id: string
@@ -17,6 +17,8 @@ interface OIDCClient {
   keycloak_compat: boolean
   enabled_login_providers: string[]
   created_at: string
+  managed_by?: string | null
+  managed_ref?: string | null
 }
 
 interface ProtocolMapper {
@@ -437,7 +439,10 @@ export default function ClientsPage({ orgId, breadcrumb }: Props) {
                   <KeyRound style={{ width: 14, height: 14, color: 'var(--clavex-700)' }} />
                 </div>
                 <div style={{ minWidth: 0 }}>
-                  <p style={{ fontWeight: 600, color: 'var(--clavex-ink)', fontSize: 13, lineHeight: 1.2 }}>{c.name}</p>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: 6 }}>
+                    <p style={{ fontWeight: 600, color: 'var(--clavex-ink)', fontSize: 13, lineHeight: 1.2 }}>{c.name}</p>
+                    <ManagedBadge managedBy={c.managed_by} managedRef={c.managed_ref} />
+                  </div>
                   <p style={{ fontSize: 10, color: 'var(--clavex-neutral)', fontFamily: 'monospace', marginTop: 1 }} className="truncate">{c.client_id}</p>
                 </div>
               </div>

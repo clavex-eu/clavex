@@ -46,12 +46,12 @@ func (r *WebhookRepository) decryptSecret(s string) string {
 
 // webhookCols is the fixed column list for all webhook SELECT statements.
 // Keep in sync with scanWebhook.
-const webhookCols = `id, org_id, url, events, event_filter, secret, is_active, created_at, updated_at`
+const webhookCols = `id, org_id, url, events, event_filter, secret, is_active, created_at, updated_at, managed_by, managed_ref`
 
 func (r *WebhookRepository) scanWebhook(w *models.Webhook, row interface {
 	Scan(dest ...any) error
 }) error {
-	if err := row.Scan(&w.ID, &w.OrgID, &w.URL, &w.Events, &w.EventFilter, &w.Secret, &w.IsActive, &w.CreatedAt, &w.UpdatedAt); err != nil {
+	if err := row.Scan(&w.ID, &w.OrgID, &w.URL, &w.Events, &w.EventFilter, &w.Secret, &w.IsActive, &w.CreatedAt, &w.UpdatedAt, &w.ManagedBy, &w.ManagedRef); err != nil {
 		return err
 	}
 	w.Secret = r.decryptSecret(w.Secret)
@@ -157,6 +157,12 @@ func (r *WebhookRepository) ListByOrgPage(ctx context.Context, orgID uuid.UUID, 
 		page.NextCursor = &last
 	}
 	return page, nil
+}
+
+// SetManagedMarker adopts, refreshes, or releases the declarative-management
+// marker on a webhook. See ApplyManagedMarker.
+func (r *WebhookRepository) SetManagedMarker(ctx context.Context, id, orgID uuid.UUID, m ManagedMarkerInput) error {
+	return ApplyManagedMarker(ctx, r.pool, "webhooks", "id", id, orgID, m)
 }
 
 func (r *WebhookRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Webhook, error) {

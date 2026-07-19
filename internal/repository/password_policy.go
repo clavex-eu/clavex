@@ -25,11 +25,13 @@ func (r *PasswordPolicyRepository) Get(ctx context.Context, orgID uuid.UUID) (*m
 	p := &models.PasswordPolicy{}
 	err := r.pool.QueryRow(ctx, `
 		SELECT org_id, min_length, require_uppercase, require_number, require_symbol,
-		       max_age_days, prevent_reuse_count, breached_password_action, updated_at
+		       max_age_days, prevent_reuse_count, breached_password_action, updated_at,
+		       managed_by, managed_ref
 		FROM org_password_policy WHERE org_id = $1
 	`, orgID).Scan(
 		&p.OrgID, &p.MinLength, &p.RequireUppercase, &p.RequireNumber, &p.RequireSymbol,
 		&p.MaxAgeDays, &p.PreventReuseCount, &p.BreachedPasswordAction, &p.UpdatedAt,
+		&p.ManagedBy, &p.ManagedRef,
 	)
 	if err != nil {
 		return &models.PasswordPolicy{
@@ -38,6 +40,12 @@ func (r *PasswordPolicyRepository) Get(ctx context.Context, orgID uuid.UUID) (*m
 		}, nil
 	}
 	return p, nil
+}
+
+// SetManagedMarker adopts, refreshes, or releases the declarative-management
+// marker on an org's password policy (keyed by org_id). See ApplyManagedMarker.
+func (r *PasswordPolicyRepository) SetManagedMarker(ctx context.Context, orgID uuid.UUID, m ManagedMarkerInput) error {
+	return ApplyManagedMarker(ctx, r.pool, "org_password_policy", "org_id", orgID, orgID, m)
 }
 
 // Upsert creates or replaces the password policy for an org.
@@ -65,12 +73,14 @@ func (r *PasswordPolicyRepository) Upsert(ctx context.Context, p *models.Passwor
 			breached_password_action = EXCLUDED.breached_password_action,
 			updated_at               = NOW()
 		RETURNING org_id, min_length, require_uppercase, require_number, require_symbol,
-		          max_age_days, prevent_reuse_count, breached_password_action, updated_at
+		          max_age_days, prevent_reuse_count, breached_password_action, updated_at,
+		          managed_by, managed_ref
 	`, p.OrgID, p.MinLength, p.RequireUppercase, p.RequireNumber, p.RequireSymbol,
 		p.MaxAgeDays, p.PreventReuseCount, p.BreachedPasswordAction,
 	).Scan(
 		&out.OrgID, &out.MinLength, &out.RequireUppercase, &out.RequireNumber, &out.RequireSymbol,
 		&out.MaxAgeDays, &out.PreventReuseCount, &out.BreachedPasswordAction, &out.UpdatedAt,
+		&out.ManagedBy, &out.ManagedRef,
 	); err != nil {
 		return nil, fmt.Errorf("upsert password policy: %w", err)
 	}

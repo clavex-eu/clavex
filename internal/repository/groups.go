@@ -25,6 +25,7 @@ func NewGroupRepository(pool *pgxpool.Pool) *GroupRepository {
 func (r *GroupRepository) ListByOrg(ctx context.Context, orgID uuid.UUID) ([]*models.Group, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT g.id, g.org_id, g.name, g.description, g.is_system, g.created_at, g.updated_at,
+		       g.managed_by, g.managed_ref,
 		       COUNT(gm.user_id) AS member_count
 		FROM groups g
 		LEFT JOIN group_members gm ON gm.group_id = g.id
@@ -41,7 +42,7 @@ func (r *GroupRepository) ListByOrg(ctx context.Context, orgID uuid.UUID) ([]*mo
 	for rows.Next() {
 		g := &models.Group{}
 		if err := rows.Scan(&g.ID, &g.OrgID, &g.Name, &g.Description, &g.IsSystem,
-			&g.CreatedAt, &g.UpdatedAt, &g.MemberCount); err != nil {
+			&g.CreatedAt, &g.UpdatedAt, &g.ManagedBy, &g.ManagedRef, &g.MemberCount); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -60,7 +61,7 @@ func (r *GroupRepository) ListByOrgPage(ctx context.Context, orgID uuid.UUID, p 
 	}
 	fetchLimit := limit + 1
 
-	const cols = `g.id, g.org_id, g.name, g.description, g.is_system, g.created_at, g.updated_at, COUNT(gm.user_id) AS member_count`
+	const cols = `g.id, g.org_id, g.name, g.description, g.is_system, g.created_at, g.updated_at, g.managed_by, g.managed_ref, COUNT(gm.user_id) AS member_count`
 	const from = `FROM groups g LEFT JOIN group_members gm ON gm.group_id = g.id`
 
 	var rows pgx.Rows
@@ -90,7 +91,7 @@ func (r *GroupRepository) ListByOrgPage(ctx context.Context, orgID uuid.UUID, p 
 	for rows.Next() {
 		g := &models.Group{}
 		if err := rows.Scan(&g.ID, &g.OrgID, &g.Name, &g.Description, &g.IsSystem,
-			&g.CreatedAt, &g.UpdatedAt, &g.MemberCount); err != nil {
+			&g.CreatedAt, &g.UpdatedAt, &g.ManagedBy, &g.ManagedRef, &g.MemberCount); err != nil {
 			return nil, err
 		}
 		groups = append(groups, g)
@@ -119,14 +120,21 @@ func (r *GroupRepository) GetByID(ctx context.Context, id uuid.UUID) (*models.Gr
 	g := &models.Group{}
 	err := r.pool.QueryRow(ctx, `
 		SELECT g.id, g.org_id, g.name, g.description, g.is_system, g.created_at, g.updated_at,
+		       g.managed_by, g.managed_ref,
 		       COUNT(gm.user_id) AS member_count
 		FROM groups g
 		LEFT JOIN group_members gm ON gm.group_id = g.id
 		WHERE g.id = $1
 		GROUP BY g.id
 	`, id).Scan(&g.ID, &g.OrgID, &g.Name, &g.Description, &g.IsSystem,
-		&g.CreatedAt, &g.UpdatedAt, &g.MemberCount)
+		&g.CreatedAt, &g.UpdatedAt, &g.ManagedBy, &g.ManagedRef, &g.MemberCount)
 	return g, err
+}
+
+// SetManagedMarker adopts, refreshes, or releases the declarative-management
+// marker on a group. See ApplyManagedMarker.
+func (r *GroupRepository) SetManagedMarker(ctx context.Context, id, orgID uuid.UUID, m ManagedMarkerInput) error {
+	return ApplyManagedMarker(ctx, r.pool, "groups", "id", id, orgID, m)
 }
 
 // GetForOrg loads a group only when it belongs to orgID, returning ErrNoRows on a

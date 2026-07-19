@@ -44,6 +44,24 @@ func (h *PasswordPolicyHandler) Get(c echo.Context) error {
 	return c.JSON(http.StatusOK, p)
 }
 
+// ReleaseManagedMarker clears the declarative-management marker on an org's
+// password policy without touching its configured values. The Kubernetes
+// operator calls this when it stops managing the password-policy section (the
+// section is removed from a ClavexOrg spec, or the CR is deleted) so the
+// console badge disappears while the live policy is preserved.
+//
+// DELETE /api/v1/organizations/:org_id/password-policy/managed-marker
+func (h *PasswordPolicyHandler) ReleaseManagedMarker(c echo.Context) error {
+	orgID, err := uuidParam(c, "org_id")
+	if err != nil {
+		return err
+	}
+	if err := h.repo.SetManagedMarker(c.Request().Context(), orgID, repository.ManagedMarkerInput{Release: true}); err != nil {
+		return echo.ErrInternalServerError
+	}
+	return c.NoContent(http.StatusNoContent)
+}
+
 type updatePolicyRequest struct {
 	MinLength              int    `json:"min_length"              validate:"min=1,max=128"`
 	RequireUppercase       bool   `json:"require_uppercase"`
@@ -83,6 +101,12 @@ func (h *PasswordPolicyHandler) Put(c echo.Context) error {
 	out, err := h.repo.Upsert(c.Request().Context(), p)
 	if err != nil {
 		return err
+	}
+	if mk := managedMarkerFromRequest(c); mk.Active() {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&out.ManagedMarker, mk)
 	}
 	emitEntityAudit(c, h.auditor, orgID, "org.updated", auditResourceOrg, orgID.String(),
 		map[string]interface{}{"setting": "password_policy"})

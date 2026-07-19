@@ -47,6 +47,25 @@ func (h *PolicyHandler) WithAuditor(a *audit.Emitter) *PolicyHandler {
 
 // List returns all policy rules for an org.
 // GET /api/v1/organizations/:org_id/auth-policies
+// reflectPolicyManagedMarker mirrors an applied marker onto a PolicyRow so the
+// JSON response matches the persisted state without a re-read. PolicyRow does
+// not embed models.ManagedMarker, so it gets its own tiny reflector.
+func reflectPolicyManagedMarker(row *policy.PolicyRow, m repository.ManagedMarkerInput) {
+	switch {
+	case m.Release:
+		row.ManagedBy = nil
+		row.ManagedRef = nil
+	case m.By != "":
+		by := m.By
+		row.ManagedBy = &by
+		if ref := m.Ref; ref != "" {
+			row.ManagedRef = &ref
+		} else {
+			row.ManagedRef = nil
+		}
+	}
+}
+
 func (h *PolicyHandler) List(c echo.Context) error {
 	orgID, err := uuid.Parse(c.Param("org_id"))
 	if err != nil {
@@ -90,6 +109,12 @@ func (h *PolicyHandler) Create(c echo.Context) error {
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
+	if mk := managedMarkerFromRequest(c); mk.By != "" {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), row.ID, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectPolicyManagedMarker(row, mk)
+	}
 	emitEntityAudit(c, h.auditor, orgID, "auth_policy.created", auditResourceAuthPolicy, req.Name, nil)
 	return c.JSON(http.StatusCreated, row)
 }
@@ -130,6 +155,12 @@ func (h *PolicyHandler) Update(c echo.Context) error {
 			return echo.ErrNotFound
 		}
 		return echo.ErrInternalServerError
+	}
+	if mk := managedMarkerFromRequest(c); mk.Active() {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), row.ID, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectPolicyManagedMarker(row, mk)
 	}
 	emitEntityAudit(c, h.auditor, orgID, "auth_policy.updated", auditResourceAuthPolicy, req.Name, nil)
 	return c.JSON(http.StatusOK, row)

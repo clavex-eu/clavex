@@ -584,6 +584,14 @@ func (h *UserHandler) CreateRole(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusConflict, "role already exists")
 	}
+	// Roles have no update route (create/delete only), so the operator stamps
+	// its marker here on create.
+	if mk := managedMarkerFromRequest(c); mk.By != "" {
+		if err := h.repo.SetRoleManagedMarker(c.Request().Context(), role.ID, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&role.ManagedMarker, mk)
+	}
 	emitEntityAudit(c, h.auditor, orgID, "role.created", auditResourceRole, req.Name, nil)
 	return c.JSON(http.StatusCreated, role)
 }

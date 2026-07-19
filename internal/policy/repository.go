@@ -22,6 +22,15 @@ type PolicyRow struct {
 	Conditions Conditions
 	CreatedAt  time.Time
 	UpdatedAt  time.Time
+	// Declarative-management marker (migration 000179). Nil when hand-managed.
+	ManagedBy  *string `json:"managed_by,omitempty"`
+	ManagedRef *string `json:"managed_ref,omitempty"`
+}
+
+// SetManagedMarker adopts, refreshes, or releases the declarative-management
+// marker on an auth-policy rule. See repository.ApplyManagedMarker.
+func (r *Repository) SetManagedMarker(ctx context.Context, id, orgID uuid.UUID, m repository.ManagedMarkerInput) error {
+	return repository.ApplyManagedMarker(ctx, r.pool, "org_auth_policies", "id", id, orgID, m)
 }
 
 // Repository loads and persists per-org policy rules.
@@ -63,7 +72,7 @@ func (r *Repository) LoadPolicy(ctx context.Context, orgID uuid.UUID, defaults [
 // List returns all policy rules for an org, ordered by priority.
 func (r *Repository) List(ctx context.Context, orgID uuid.UUID) ([]*PolicyRow, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, org_id, name, priority, enabled, action, conditions, created_at, updated_at
+		SELECT id, org_id, name, priority, enabled, action, conditions, created_at, updated_at, managed_by, managed_ref
 		FROM org_auth_policies
 		WHERE org_id = $1
 		ORDER BY priority ASC, created_at ASC
@@ -80,7 +89,7 @@ func (r *Repository) List(ctx context.Context, orgID uuid.UUID) ([]*PolicyRow, e
 		if err := rows.Scan(
 			&row.ID, &row.OrgID, &row.Name, &row.Priority,
 			&row.Enabled, &row.Action, &condJSON,
-			&row.CreatedAt, &row.UpdatedAt,
+			&row.CreatedAt, &row.UpdatedAt, &row.ManagedBy, &row.ManagedRef,
 		); err != nil {
 			return nil, err
 		}
@@ -110,11 +119,11 @@ func (r *Repository) Create(ctx context.Context, orgID uuid.UUID, name string, p
 	if err := tx.QueryRow(ctx, `
 		INSERT INTO org_auth_policies (org_id, name, priority, action, conditions)
 		VALUES ($1, $2, $3, $4, $5)
-		RETURNING id, org_id, name, priority, enabled, action, conditions, created_at, updated_at
+		RETURNING id, org_id, name, priority, enabled, action, conditions, created_at, updated_at, managed_by, managed_ref
 	`, orgID, name, priority, string(action), condJSON).Scan(
 		&row.ID, &row.OrgID, &row.Name, &row.Priority,
 		&row.Enabled, &row.Action, &condBytes,
-		&row.CreatedAt, &row.UpdatedAt,
+		&row.CreatedAt, &row.UpdatedAt, &row.ManagedBy, &row.ManagedRef,
 	); err != nil {
 		return nil, err
 	}
@@ -156,11 +165,11 @@ func (r *Repository) Update(ctx context.Context, id, orgID uuid.UUID, name strin
 		UPDATE org_auth_policies
 		SET name=$2, priority=$3, enabled=$4, action=$5, conditions=$6, updated_at=NOW()
 		WHERE id=$1 AND org_id=$7
-		RETURNING id, org_id, name, priority, enabled, action, conditions, created_at, updated_at
+		RETURNING id, org_id, name, priority, enabled, action, conditions, created_at, updated_at, managed_by, managed_ref
 	`, id, name, priority, enabled, string(action), condJSON, orgID).Scan(
 		&row.ID, &row.OrgID, &row.Name, &row.Priority,
 		&row.Enabled, &row.Action, &condBytes,
-		&row.CreatedAt, &row.UpdatedAt,
+		&row.CreatedAt, &row.UpdatedAt, &row.ManagedBy, &row.ManagedRef,
 	); err != nil {
 		return nil, err
 	}

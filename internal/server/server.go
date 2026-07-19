@@ -1231,6 +1231,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Per-org rate limit configuration
 		orgScoped.GET("/rate-limits", loginHistoryH.GetRateLimits, middleware.RequireResourcePermission("security"))
 		orgScoped.PUT("/rate-limits", loginHistoryH.UpdateRateLimits, middleware.RequireResourcePermission("security"))
+		// Operator disown path: clear the marker, keep the live limits.
+		orgScoped.DELETE("/rate-limits/managed-marker", loginHistoryH.ReleaseRateLimitsManagedMarker, middleware.RequireResourcePermission("security"))
 
 		// Clavex Guard — adaptive lockout configuration
 		// GET  returns current bands (or defaults if not customised)
@@ -1299,6 +1301,8 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Password policy
 		orgScoped.GET("/password-policy", passwordPolicy.Get, middleware.RequireResourcePermission("security"))
 		orgScoped.PUT("/password-policy", passwordPolicy.Put, middleware.RequireResourcePermission("security"))
+		// Operator disown path: clear the marker, keep the live policy.
+		orgScoped.DELETE("/password-policy/managed-marker", passwordPolicy.ReleaseManagedMarker, middleware.RequireResourcePermission("security"))
 
 		// SMTP settings
 		orgScoped.GET("/smtp", smtpH.Get, middleware.RequireResourcePermission("smtp"))

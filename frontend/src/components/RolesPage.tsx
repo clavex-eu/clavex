@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2, ChevronDown, ChevronRight, GitMerge } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api, { toArr } from '@/lib/api'
-import { Button, Card, Modal, Input, PageHeader, EmptyState, Spinner } from '@/components/ui'
+import { Button, Card, Modal, Input, PageHeader, EmptyState, Spinner, ManagedBadge } from '@/components/ui'
 
 interface Role {
   id: string
@@ -11,6 +11,8 @@ interface Role {
   description?: string
   is_system: boolean
   created_at: string
+  managed_by?: string | null
+  managed_ref?: string | null
 }
 
 interface Props {
@@ -181,7 +183,10 @@ export default function RolesPage({ orgId, breadcrumb }: Props) {
                         }
                       </button>
                       <div className="min-w-0">
-                        <p className="font-medium text-gray-900 text-sm">{role.name}</p>
+                        <div className="flex items-center gap-1.5">
+                          <p className="font-medium text-gray-900 text-sm">{role.name}</p>
+                          <ManagedBadge managedBy={role.managed_by} managedRef={role.managed_ref} />
+                        </div>
                         {role.description && (
                           <p className="text-xs text-gray-400 mt-0.5">{role.description}</p>
                         )}

@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Pencil, Trash2, Globe, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '@/lib/api'
-import { Button, Card, PageHeader, Spinner, Modal } from '@/components/ui'
+import { Button, Card, PageHeader, Spinner, Modal, ManagedBadge } from '@/components/ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -26,6 +26,8 @@ interface IDP {
   role_claim_mappings: Record<string, string>
   apple_team_id?: string | null
   apple_key_id?: string | null
+  managed_by?: string | null
+  managed_ref?: string | null
 }
 
 interface IDPForm {
@@ -550,7 +552,12 @@ export default function IdentityProvidersPage({ orgId }: Props) {
             <tbody>
               {providers.map((idp) => (
                 <tr key={idp.id} className="border-b border-gray-50 hover:bg-gray-50/50 transition-colors">
-                  <td className="px-4 py-3 font-medium text-gray-900">{idp.name}</td>
+                  <td className="px-4 py-3 font-medium text-gray-900">
+                    <div className="flex items-center gap-1.5">
+                      <span>{idp.name}</span>
+                      <ManagedBadge managedBy={idp.managed_by} managedRef={idp.managed_ref} />
+                    </div>
+                  </td>
                   <td className="px-4 py-3">
                     <span className="inline-flex items-center gap-1.5 px-2 py-0.5 rounded text-xs font-medium bg-blue-50 text-blue-700">
                       <ProviderIcon type={idp.provider_type} className="h-3 w-3" />
