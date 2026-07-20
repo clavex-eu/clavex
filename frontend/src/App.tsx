@@ -93,6 +93,7 @@ import IPRulesPage from '@/pages/tenant/IPRules'
 import BreachedPasswordsPage from '@/pages/tenant/BreachedPasswords'
 import ServiceAccountsPage from '@/pages/tenant/ServiceAccounts'
 import AgentTokensPage from '@/pages/tenant/AgentTokens'
+import APIKeysPage from '@/pages/tenant/APIKeys'
 import KeyRotationPage from '@/pages/tenant/KeyRotation'
 import ActionsV2Page from '@/pages/tenant/ActionsV2'
 import WsFedRPsPage from '@/pages/tenant/WsFedRPs'
@@ -243,6 +244,7 @@ export default function App() {
           <Route path="ip-rules" element={<IPRulesPage />} />
           <Route path="service-accounts" element={<ServiceAccountsPage />} />
           <Route path="agent-tokens" element={<AgentTokensPage />} />
+          <Route path="api-keys" element={<APIKeysPage />} />
           <Route path="key-rotation" element={<KeyRotationPage />} />
           <Route path="actions" element={<ActionsV2Page />} />
           <Route path="wsfed-rps" element={<WsFedRPsPage />} />

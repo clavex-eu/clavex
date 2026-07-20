@@ -3,6 +3,7 @@ package handler
 import (
 	"errors"
 	"net/http"
+	"strings"
 
 	"github.com/clavex-eu/clavex/internal/middleware"
 	"github.com/clavex-eu/clavex/internal/models"
@@ -46,11 +47,25 @@ func (h *AdminDelegationHandler) Create(c echo.Context) error {
 	if err := validatePermissions(req.Permissions); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
 	}
+	// Non-escalation: a role may only carry permissions the creator holds.
+	// Superadmins and legacy org admins (Permissions == nil) are unrestricted;
+	// delegated admins cannot grant beyond their own set (write implies read).
+	if missing := middleware.PermissionsNotHeld(middleware.GetClaims(c), req.Permissions); len(missing) > 0 {
+		return echo.NewHTTPError(http.StatusForbidden,
+			"cannot grant permissions you do not hold: "+strings.Join(missing, ", "))
+	}
 	var desc *string
 	if req.Description != "" {
 		desc = &req.Description
 	}
-	role, err := h.repo.Create(c.Request().Context(), orgID, req.Name, desc, req.Permissions)
+	// Record the authoring admin (best-effort; nil if the subject isn't a UUID).
+	var createdBy *uuid.UUID
+	if claims := middleware.GetClaims(c); claims != nil {
+		if id, perr := uuid.Parse(claims.Subject); perr == nil {
+			createdBy = &id
+		}
+	}
+	role, err := h.repo.Create(c.Request().Context(), orgID, req.Name, desc, req.Permissions, createdBy)
 	if err != nil {
 		return echo.NewHTTPError(http.StatusConflict, "an admin role with this name already exists")
 	}
@@ -116,6 +131,12 @@ func (h *AdminDelegationHandler) Update(c echo.Context) error {
 	}
 	if err := validatePermissions(req.Permissions); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+	}
+	// Non-escalation: the updated permission set must be a subset of the
+	// caller's own permissions (same rule as Create and the API-key route).
+	if missing := middleware.PermissionsNotHeld(middleware.GetClaims(c), req.Permissions); len(missing) > 0 {
+		return echo.NewHTTPError(http.StatusForbidden,
+			"cannot grant permissions you do not hold: "+strings.Join(missing, ", "))
 	}
 	var desc *string
 	if req.Description != "" {
@@ -243,6 +264,18 @@ func (h *AdminDelegationHandler) UnassignUserRole(c echo.Context) error {
 // GET /api/v1/admin-roles/permissions
 func (h *AdminDelegationHandler) ListPermissions(c echo.Context) error {
 	return c.JSON(http.StatusOK, middleware.AllPermissions)
+}
+
+// MyPermissions returns the permission tokens the calling admin effectively
+// holds (legacy/superadmins get the full catalogue). The org-scoped API-key UI
+// uses this to only offer permissions the caller is allowed to grant.
+// GET /api/v1/organizations/:org_id/my-admin-permissions
+func (h *AdminDelegationHandler) MyPermissions(c echo.Context) error {
+	perms := middleware.EffectivePermissions(middleware.GetClaims(c))
+	if perms == nil {
+		perms = []string{}
+	}
+	return c.JSON(http.StatusOK, perms)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -974,6 +974,21 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Permission catalogue — list all valid permission tokens (no org scope needed).
 		admin.GET("/admin-roles/permissions", delegationH.ListPermissions)
 
+		// Org-scoped admin API keys — self-service minting for org admins.
+		// Gated by the security permission (org-level sensitive credential ops,
+		// same bucket as cross-org trusts / auth policies / rate limits). The
+		// handler additionally enforces non-escalation (a key may only carry
+		// permissions the caller holds) and forbids unrestricted/cross-org keys —
+		// those remain a superadmin-only operation via /superadmin/api-keys.
+		orgAPIKeys := orgScoped.Group("/api-keys", middleware.RequireResourcePermission("security"))
+		orgAPIKeys.POST("", apiKeys.CreateOrgScoped)
+		orgAPIKeys.GET("", apiKeys.ListOrgScoped)
+		orgAPIKeys.DELETE("/:id", apiKeys.RevokeOrgScoped)
+
+		// The permissions the caller effectively holds — drives the API-key UI's
+		// permission checkboxes. No extra gate: an admin may always read their own.
+		orgScoped.GET("/my-admin-permissions", delegationH.MyPermissions)
+
 		// Delegated admin roles (CRUD) — protected by delegated_admins permission.
 		adminDelegation := orgScoped.Group("/admin-roles", middleware.RequireResourcePermission("delegated_admins"))
 		adminDelegation.POST("", delegationH.Create)

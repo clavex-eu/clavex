@@ -24,6 +24,8 @@
 //	delegated_admins   → delegated_admins:read, delegated_admins:write
 package middleware
 
+import "strings"
+
 const (
 	PermUsersRead     = "users:read"
 	PermUsersWrite    = "users:write"
@@ -94,4 +96,57 @@ type PermissionInfo struct {
 	Resource    string `json:"resource"`
 	Action      string `json:"action"`
 	Description string `json:"description"`
+}
+
+// EffectivePermissions returns the permission tokens a caller effectively holds.
+//
+// Superadmins and legacy org admins (Permissions == nil) hold *everything*, so
+// the full canonical token list is returned for them. Delegated admins hold
+// exactly their assigned tokens. Used to drive UIs that must only offer the
+// permissions the caller is allowed to grant, and as the basis for the
+// non-escalation check in PermissionsNotHeld.
+func EffectivePermissions(claims *Claims) []string {
+	if claims == nil {
+		return nil
+	}
+	if claims.IsSuperAdmin || claims.Permissions == nil {
+		out := make([]string, len(AllPermissions))
+		for i, p := range AllPermissions {
+			out[i] = p.Token
+		}
+		return out
+	}
+	return claims.Permissions
+}
+
+// PermissionsNotHeld returns the subset of requested tokens the caller does NOT
+// hold — i.e. the permissions that would constitute a privilege escalation if
+// granted. It returns nil when every requested token is held (the caller may
+// grant them all).
+//
+// Superadmins and legacy org admins (Permissions == nil) hold everything, so
+// nil is always returned for them. A held "<resource>:write" token implicitly
+// satisfies the matching "<resource>:read" request, mirroring the read/write
+// rule enforced by RequireResourcePermission.
+func PermissionsNotHeld(claims *Claims, requested []string) []string {
+	if claims == nil {
+		return append([]string(nil), requested...)
+	}
+	if claims.IsSuperAdmin || claims.Permissions == nil {
+		return nil
+	}
+	held := make(map[string]struct{}, len(claims.Permissions)*2)
+	for _, p := range claims.Permissions {
+		held[p] = struct{}{}
+		if strings.HasSuffix(p, ":write") {
+			held[strings.TrimSuffix(p, ":write")+":read"] = struct{}{}
+		}
+	}
+	var missing []string
+	for _, p := range requested {
+		if _, ok := held[p]; !ok {
+			missing = append(missing, p)
+		}
+	}
+	return missing
 }
