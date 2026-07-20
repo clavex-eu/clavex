@@ -9598,6 +9598,19 @@
         ]
       }
     },
+    "/my-admin-permissions": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "My permissions",
+        "tags": [
+          "Delegation"
+        ]
+      }
+    },
     "/nis2": {
       "get": {
         "responses": {
