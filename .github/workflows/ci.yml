@@ -102,11 +102,17 @@ jobs:
             -server internal/server/server.go \
             -update
           if ! git diff --quiet internal/handler/spec/openapi.json; then
-            # On branch pushes, self-heal by committing the scaffolded stubs back.
-            # On tag builds GITHUB_REF_NAME is the tag, so a push here targets a
-            # tag ref and fails (git exit 128); skip it — the spec was already
-            # validated on the branch push that produced this commit.
-            if [ "${GITHUB_REF_TYPE}" = "tag" ]; then
+            # Self-heal only makes sense on a push to a real branch: GITHUB_REF_NAME
+            # is a pushable ref there. On pull_request events GITHUB_REF_NAME is the
+            # synthetic "<pr>/merge" ref (detached HEAD, not a branch on origin), so
+            # `git pull --rebase origin "<pr>/merge"` fails with "couldn't find
+            # remote ref" — fail loudly instead and ask the author to commit the
+            # stub. On tag builds, the spec was already validated on the branch
+            # push that produced this commit, so just skip.
+            if [ "${GITHUB_EVENT_NAME}" != "push" ]; then
+              echo "::error::openapi spec drift detected. Run 'go run ./tools/speccheck -spec internal/handler/spec/openapi.json -server internal/server/server.go -update' locally and commit internal/handler/spec/openapi.json."
+              exit 1
+            elif [ "${GITHUB_REF_TYPE}" = "tag" ]; then
               echo "openapi spec drift on a tag build; not pushing (validated on branch)."
             else
               git config user.name  "github-actions[bot]"
