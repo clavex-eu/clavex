@@ -62,6 +62,13 @@ func (h *ClientHandler) Create(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	if mk := managedMarkerFromRequest(c); mk.By != "" {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), client.ClientID, orgID, mk); err != nil {
+			log.Error().Err(err).Str("client_id", client.ClientID).Msg("clients: SetManagedMarker failed")
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&client.ManagedMarker, mk)
+	}
 	emitEntityAudit(c, h.auditor, orgID, "oidc_client.created", auditResourceOIDCClient, client.ClientID,
 		map[string]interface{}{"name": client.Name})
 	// Return the plain-text secret only at creation time, never again.
@@ -160,6 +167,13 @@ func (h *ClientHandler) Update(c echo.Context) error {
 			return echo.ErrInternalServerError
 		}
 		client.EnabledLoginProviders = req.EnabledLoginProviders
+	}
+	if mk := managedMarkerFromRequest(c); mk.Active() {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), client.ClientID, orgID, mk); err != nil {
+			log.Error().Err(err).Str("client_id", client.ClientID).Msg("clients: SetManagedMarker failed")
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&client.ManagedMarker, mk)
 	}
 	emitEntityAudit(c, h.auditor, orgID, "oidc_client.updated", auditResourceOIDCClient, client.ClientID,
 		map[string]interface{}{"name": client.Name})

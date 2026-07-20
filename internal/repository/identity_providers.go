@@ -24,7 +24,7 @@ const idpColumns = `id, org_id, name, provider_type, client_id, authorization_ur
 	allow_jit, roles_claim, role_claim_mappings,
 	apple_team_id, apple_key_id, apple_private_key,
 	is_promoted,
-	created_at, updated_at`
+	created_at, updated_at, managed_by, managed_ref`
 
 func scanIDP(row interface{ Scan(...any) error }) (*models.IdentityProvider, error) {
 	p := &models.IdentityProvider{}
@@ -35,8 +35,14 @@ func scanIDP(row interface{ Scan(...any) error }) (*models.IdentityProvider, err
 		&p.IsActive, &p.AllowJIT, &p.RolesClaim, &p.RoleClaimMappings,
 		&p.AppleTeamID, &p.AppleKeyID, &p.ApplePrivateKey,
 		&p.IsPromoted,
-		&p.CreatedAt, &p.UpdatedAt,
+		&p.CreatedAt, &p.UpdatedAt, &p.ManagedBy, &p.ManagedRef,
 	)
+}
+
+// SetManagedMarker adopts, refreshes, or releases the declarative-management
+// marker on an identity provider. See ApplyManagedMarker.
+func (r *IDPRepository) SetManagedMarker(ctx context.Context, id, orgID uuid.UUID, m ManagedMarkerInput) error {
+	return ApplyManagedMarker(ctx, r.pool, "identity_providers", "id", id, orgID, m)
 }
 
 func (r *IDPRepository) Create(ctx context.Context, p *models.IdentityProvider, clientSecret string) (*models.IdentityProvider, error) {

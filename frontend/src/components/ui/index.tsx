@@ -19,6 +19,29 @@ export function Badge({ variant = 'gray', children, className }: BadgeProps) {
   )
 }
 
+// ── ManagedBadge ────────────────────────────────────────────────────────────────
+// Shown next to a resource that is owned by an external declarative system
+// (today: the Kubernetes operator, managed_by="k8s-operator"). Renders nothing
+// when the resource is hand-managed. The native title tooltip warns that
+// out-of-band edits here will be reverted at the next reconcile.
+interface ManagedBadgeProps { managedBy?: string | null; managedRef?: string | null; className?: string }
+export function ManagedBadge({ managedBy, managedRef, className }: ManagedBadgeProps) {
+  if (!managedBy) return null
+  const label = managedBy === 'k8s-operator'
+    ? 'Managed by Kubernetes Operator'
+    : `Managed by ${managedBy}`
+  const via = managedRef ? ` via ${managedRef}` : ''
+  const tooltip = `This resource is managed declaratively${via}. Changes made here will be reverted automatically. Edit the Kubernetes resource instead.`
+  return (
+    <span title={tooltip} className={cn('cursor-help', className)}>
+      <Badge variant="blue" className="gap-1">
+        <span aria-hidden="true">⚙</span>
+        {label}
+      </Badge>
+    </span>
+  )
+}
+
 // ── Button ────────────────────────────────────────────────────────────────────
 interface ButtonProps extends React.ButtonHTMLAttributes<HTMLButtonElement> {
   variant?: 'primary' | 'secondary' | 'danger' | 'ghost'

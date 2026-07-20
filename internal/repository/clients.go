@@ -113,10 +113,17 @@ func (r *ClientRepository) Create(ctx context.Context, orgID uuid.UUID, customCl
 	return client, plainSecret, nil
 }
 
+// SetManagedMarker adopts, refreshes, or releases the declarative-management
+// marker for a client (managed_by/managed_ref). See ApplyManagedMarker: an
+// inactive marker is a no-op, so this is safe to call after every mutation.
+func (r *ClientRepository) SetManagedMarker(ctx context.Context, clientID string, orgID uuid.UUID, m ManagedMarkerInput) error {
+	return ApplyManagedMarker(ctx, r.pool, "oidc_clients", "client_id", clientID, orgID, m)
+}
+
 func (r *ClientRepository) GetByClientID(ctx context.Context, clientID string) (*models.OIDCClient, error) {
 	c := &models.OIDCClient{}
 	err := r.pool.QueryRow(ctx, `
-		SELECT client_id, org_id, client_secret_hash, name, redirect_uris, post_logout_redirect_uris, grant_types, response_types, scopes, allowed_audiences, token_endpoint_auth_method, logo_url, is_active, mfa_required, keycloak_compat, metadata, jwks_uri, request_object_signing_alg, id_token_signed_response_alg, userinfo_signed_response_alg, jwks, tls_client_auth_subject_dn, tls_client_auth_san_dns, dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens, require_pkce, require_par, access_token_ttl, refresh_token_ttl, created_at, updated_at
+		SELECT client_id, org_id, client_secret_hash, name, redirect_uris, post_logout_redirect_uris, grant_types, response_types, scopes, allowed_audiences, token_endpoint_auth_method, logo_url, is_active, mfa_required, keycloak_compat, metadata, jwks_uri, request_object_signing_alg, id_token_signed_response_alg, userinfo_signed_response_alg, jwks, tls_client_auth_subject_dn, tls_client_auth_san_dns, dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens, require_pkce, require_par, access_token_ttl, refresh_token_ttl, created_at, updated_at, managed_by, managed_ref
 		FROM oidc_clients WHERE client_id = $1
 	`, clientID).Scan(
 		&c.ClientID, &c.OrgID, &c.ClientSecretHash, &c.Name,
@@ -128,6 +135,7 @@ func (r *ClientRepository) GetByClientID(ctx context.Context, clientID string) (
 		&c.TLSClientAuthSubjectDN, &c.TLSClientAuthSANDNS, &c.DpopBoundAccessTokens, &c.TLSClientCertBoundAccessTokens, &c.RequirePKCE, &c.RequirePAR,
 		&c.AccessTokenTTL, &c.RefreshTokenTTL,
 		&c.CreatedAt, &c.UpdatedAt,
+		&c.ManagedBy, &c.ManagedRef,
 	)
 	return c, err
 }
@@ -399,7 +407,7 @@ func (r *ClientRepository) ListByOrgPage(ctx context.Context, orgID uuid.UUID, l
 		limit = models.MaxPageSize
 	}
 
-	const cols = `client_id, org_id, name, redirect_uris, post_logout_redirect_uris, grant_types, response_types, scopes, token_endpoint_auth_method, logo_url, is_active, mfa_required, keycloak_compat, metadata, jwks_uri, request_object_signing_alg, jwks, access_token_ttl, refresh_token_ttl, enabled_login_providers, created_at, updated_at`
+	const cols = `client_id, org_id, name, redirect_uris, post_logout_redirect_uris, grant_types, response_types, scopes, token_endpoint_auth_method, logo_url, is_active, mfa_required, keycloak_compat, metadata, jwks_uri, request_object_signing_alg, jwks, access_token_ttl, refresh_token_ttl, enabled_login_providers, created_at, updated_at, managed_by, managed_ref`
 
 	var total int64
 	if err := r.pool.QueryRow(ctx, `SELECT COUNT(*) FROM oidc_clients WHERE org_id = $1`, orgID).Scan(&total); err != nil {
@@ -425,6 +433,7 @@ func (r *ClientRepository) ListByOrgPage(ctx context.Context, orgID uuid.UUID, l
 			&c.AccessTokenTTL, &c.RefreshTokenTTL,
 			&c.EnabledLoginProviders,
 			&c.CreatedAt, &c.UpdatedAt,
+			&c.ManagedBy, &c.ManagedRef,
 		); err != nil {
 			return nil, err
 		}

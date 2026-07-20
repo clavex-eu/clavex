@@ -101,6 +101,14 @@ func (h *GroupHandler) Create(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	// Groups have no update route (create/delete + membership only), so the
+	// operator stamps its marker here on create.
+	if mk := managedMarkerFromRequest(c); mk.By != "" {
+		if err := h.repo.SetManagedMarker(c.Request().Context(), g.ID, orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&g.ManagedMarker, mk)
+	}
 	emitEntityAudit(c, h.auditor, orgID, "group.created", auditResourceGroup, req.Name, nil)
 	return c.JSON(http.StatusCreated, g)
 }

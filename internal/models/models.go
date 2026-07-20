@@ -105,6 +105,17 @@ func (u *User) GetLastName() string {
 	return ""
 }
 
+// ManagedMarker records whether a resource is owned by an external declarative
+// system (today: the Kubernetes operator, managed_by="k8s-operator"). Embedded
+// into the resource models the operator reconciles so the console and API can
+// warn that out-of-band edits will be reverted. Both fields are nil for
+// hand-managed resources. ManagedRef points at the owning object
+// (e.g. "ClavexClient/clavex-operator-system/testclient"). See migration 000179.
+type ManagedMarker struct {
+	ManagedBy  *string `db:"managed_by"  json:"managed_by,omitempty"`
+	ManagedRef *string `db:"managed_ref" json:"managed_ref,omitempty"`
+}
+
 // Role represents a role within an organization.
 type Role struct {
 	ID          uuid.UUID `db:"id"          json:"id"`
@@ -113,6 +124,7 @@ type Role struct {
 	Description *string   `db:"description" json:"description,omitempty"`
 	IsSystem    bool      `db:"is_system"   json:"is_system"`
 	CreatedAt   time.Time `db:"created_at"  json:"created_at"`
+	ManagedMarker
 }
 
 // Group represents a named collection of users within an organization.
@@ -125,6 +137,7 @@ type Group struct {
 	MemberCount int       `db:"-"           json:"member_count"`
 	CreatedAt   time.Time `db:"created_at"  json:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"  json:"updated_at"`
+	ManagedMarker
 }
 
 // OrgBranding holds per-tenant login page customization.
@@ -223,6 +236,7 @@ type OIDCClient struct {
 	LastUsedAt *time.Time `db:"last_used_at"                json:"last_used_at,omitempty"`
 	CreatedAt  time.Time  `db:"created_at"                   json:"created_at"`
 	UpdatedAt  time.Time  `db:"updated_at"                   json:"updated_at"`
+	ManagedMarker
 }
 
 // CaptchaSettings holds per-org CAPTCHA provider configuration.
@@ -299,6 +313,7 @@ type Webhook struct {
 	IsActive    bool      `db:"is_active"    json:"is_active"`
 	CreatedAt   time.Time `db:"created_at"   json:"created_at"`
 	UpdatedAt   time.Time `db:"updated_at"   json:"updated_at"`
+	ManagedMarker
 }
 
 // AgentToken is a machine identity for an AI agent acting on behalf of a human
@@ -426,6 +441,7 @@ type PasswordPolicy struct {
 	// Values: "" or "off" (disabled), "warn" (log only), "block" (reject the password).
 	BreachedPasswordAction string    `db:"breached_password_action" json:"breached_password_action"`
 	UpdatedAt              time.Time `db:"updated_at"            json:"updated_at"`
+	ManagedMarker
 }
 
 // AdminRole defines a named set of admin-console permissions that can be
@@ -505,6 +521,7 @@ type IdentityProvider struct {
 	ApplePrivateKey *string   `db:"apple_private_key" json:"-"` // never serialised; sensitive
 	CreatedAt       time.Time `db:"created_at"          json:"created_at"`
 	UpdatedAt       time.Time `db:"updated_at"          json:"updated_at"`
+	ManagedMarker
 }
 
 // ClientScope is a reusable, org-level scope definition assignable to OIDC clients.
@@ -929,6 +946,7 @@ type OrgRateLimits struct {
 	// A missing key means no per-endpoint limit is enforced (global limit applies).
 	EndpointLimits map[string]int `db:"endpoint_limits"          json:"endpoint_limits"`
 	UpdatedAt      time.Time      `db:"updated_at"               json:"updated_at"`
+	ManagedMarker
 }
 
 // ── Pagination ────────────────────────────────────────────────────────────────

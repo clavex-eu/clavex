@@ -2,7 +2,7 @@ import { useState, useEffect } from 'react'
 import { useQuery, useMutation } from '@tanstack/react-query'
 import toast from 'react-hot-toast'
 import api from '@/lib/api'
-import { Button, Input, Card, PageHeader, Spinner } from '@/components/ui'
+import { Button, Input, Card, PageHeader, Spinner, ManagedBadge } from '@/components/ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────────
 
@@ -15,6 +15,8 @@ interface PasswordPolicy {
   max_age_days: number | null
   prevent_reuse_count: number
   breached_password_action: string
+  managed_by?: string | null
+  managed_ref?: string | null
 }
 
 interface SMTPSettings {
@@ -63,6 +65,11 @@ function PasswordPolicyTab({ orgId }: { orgId: string }) {
 
   return (
     <Card className="p-6 space-y-6">
+      {data?.managed_by && (
+        <div className="flex items-center">
+          <ManagedBadge managedBy={data.managed_by} managedRef={data.managed_ref} />
+        </div>
+      )}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <div>
           <label className="block text-sm font-medium text-gray-700 mb-1">

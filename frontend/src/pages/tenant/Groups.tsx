@@ -3,7 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import { Plus, Trash2, Users, Shield, UserPlus, X } from 'lucide-react'
 import toast from 'react-hot-toast'
 import { useAuthStore } from '@/stores/auth'
-import { Button, Card, Modal, Input, PageHeader, Badge, Spinner } from '@/components/ui'
+import { Button, Card, Modal, Input, PageHeader, Badge, Spinner, ManagedBadge } from '@/components/ui'
 import { cn } from '@/lib/cn'
 import api, { toArr } from '@/lib/api'
 
@@ -14,6 +14,8 @@ interface Group {
   is_system: boolean
   member_count: number
   created_at: string
+  managed_by?: string | null
+  managed_ref?: string | null
 }
 
 interface User {
@@ -189,7 +191,10 @@ export default function GroupsPage() {
                     <span className="text-xs font-bold text-gray-500">{g.name[0].toUpperCase()}</span>
                   </div>
                   <div className="flex-1 min-w-0">
-                    <p className="text-sm font-medium text-gray-900 truncate">{g.name}</p>
+                    <div className="flex items-center gap-1.5">
+                      <p className="text-sm font-medium text-gray-900 truncate">{g.name}</p>
+                      <ManagedBadge managedBy={g.managed_by} managedRef={g.managed_ref} />
+                    </div>
                     <p className="text-xs text-gray-400">{g.member_count} member{g.member_count !== 1 ? 's' : ''}</p>
                   </div>
                   {g.is_system && (

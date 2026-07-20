@@ -1,6 +1,7 @@
 import { useEffect, useState, useCallback, useRef } from 'react'
 import { useAuthStore } from '@/stores/auth'
 import api, { toArr } from '@/lib/api'
+import { ManagedBadge } from '@/components/ui'
 import toast from 'react-hot-toast'
 import {
   Plus, Trash2, Play, CheckCircle, XCircle, AlertCircle,
@@ -26,6 +27,8 @@ interface PolicyRule {
   enabled: boolean
   action: Action
   conditions: Record<string, unknown>
+  managed_by?: string | null
+  managed_ref?: string | null
   _localConditions?: Condition[] // builder state, not sent to API
 }
 
@@ -414,6 +417,7 @@ function RuleCard({ rule, onUpdate, onDelete, onSimulate }: {
           onChange={(e) => onUpdate({ ...rule, name: e.target.value })}
           placeholder="Rule name…"
         />
+        <ManagedBadge managedBy={rule.managed_by} managedRef={rule.managed_ref} />
         <span className="text-xs px-2 py-0.5 rounded-full font-semibold" style={{ background: `${actionDef?.color}22`, color: actionDef?.color }}>
           {actionDef?.label ?? rule.action}
         </span>

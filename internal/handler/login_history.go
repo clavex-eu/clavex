@@ -136,9 +136,33 @@ func (h *LoginHistoryHandler) UpdateRateLimits(c echo.Context) error {
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
+	if mk := managedMarkerFromRequest(c); mk.Active() {
+		if err := h.repo.SetOrgRateLimitsManagedMarker(c.Request().Context(), orgID, mk); err != nil {
+			return echo.ErrInternalServerError
+		}
+		reflectManagedMarker(&rl.ManagedMarker, mk)
+	}
 	emitEntityAudit(c, h.auditor, orgID, "org.updated", auditResourceOrg, orgID.String(),
 		map[string]interface{}{"setting": "rate_limits"})
 	return c.JSON(http.StatusOK, rl)
+}
+
+// ReleaseRateLimitsManagedMarker clears the declarative-management marker on an
+// org's rate-limit config without touching its configured values. The
+// Kubernetes operator calls this when it stops managing the rate-limits section
+// (removed from a ClavexOrg spec, or CR deleted) so the console badge
+// disappears while the live limits are preserved.
+//
+// DELETE /api/v1/organizations/:org_id/rate-limits/managed-marker
+func (h *LoginHistoryHandler) ReleaseRateLimitsManagedMarker(c echo.Context) error {
+	orgID, err := uuidParam(c, "org_id")
+	if err != nil {
+		return err
+	}
+	if err := h.repo.SetOrgRateLimitsManagedMarker(c.Request().Context(), orgID, repository.ManagedMarkerInput{Release: true}); err != nil {
+		return echo.ErrInternalServerError
+	}
+	return c.NoContent(http.StatusNoContent)
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────

@@ -3,6 +3,7 @@ import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
 import api, { toArr } from '@/lib/api'
 import toast from 'react-hot-toast'
 import { Plus, Trash2, Pencil, Webhook, Copy, Check, History, RefreshCw, X } from 'lucide-react'
+import { ManagedBadge } from '@/components/ui'
 
 interface WebhookEntry {
   id: string
@@ -10,6 +11,8 @@ interface WebhookEntry {
   events: string[]
   is_active: boolean
   created_at: string
+  managed_by?: string | null
+  managed_ref?: string | null
 }
 
 interface CreatedWebhook extends WebhookEntry {
@@ -317,7 +320,10 @@ export default function WebhooksPage({ orgId }: Props) {
           {webhooks.map(wh => (
             <div key={wh.id} className="flex items-center gap-4 bg-white rounded-xl border border-gray-200 px-5 py-4">
               <div className="flex-1 min-w-0">
-                <p className="text-sm font-medium text-gray-900 truncate">{wh.url}</p>
+                <div className="flex items-center gap-1.5">
+                  <p className="text-sm font-medium text-gray-900 truncate">{wh.url}</p>
+                  <ManagedBadge managedBy={wh.managed_by} managedRef={wh.managed_ref} />
+                </div>
                 <div className="flex flex-wrap gap-1.5 mt-1.5">
                   {wh.events.map(ev => (
                     <span key={ev} className="text-xs rounded-full px-2 py-0.5 bg-indigo-50 text-indigo-700 font-mono">{ev}</span>
