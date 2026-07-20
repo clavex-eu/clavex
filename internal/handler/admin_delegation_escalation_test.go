@@ -13,6 +13,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	"github.com/stretchr/testify/assert"
@@ -118,6 +119,13 @@ func roleTestPool(t *testing.T) *pgxpool.Pool {
 	}
 	cfg, err := pgxpool.ParseConfig(dsn)
 	require.NoError(t, err)
+	// Mirror the app pool: migration 000017 moves tables into the identity /
+	// sessions / audit schemas, so without this search_path queries against a
+	// raw DSN see only `public` and fail with "relation does not exist".
+	cfg.AfterConnect = func(ctx context.Context, conn *pgx.Conn) error {
+		_, err := conn.Exec(ctx, `SET search_path = identity, sessions, audit, public`)
+		return err
+	}
 	pool, err := pgxpool.NewWithConfig(context.Background(), cfg)
 	require.NoError(t, err)
 	t.Cleanup(pool.Close)

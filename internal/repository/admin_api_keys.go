@@ -45,6 +45,12 @@ func generateKey() (string, error) {
 	return keyPrefix + base64.RawURLEncoding.EncodeToString(b), nil
 }
 
+// hashKey stores a lookup hash of rawKey. SHA-256 is appropriate here — unlike
+// a password, rawKey is a 256-bit value from crypto/rand (see generateKey), so
+// it carries no exploitable entropy for an offline brute-force/rainbow-table
+// attack; a computationally-expensive password hash (bcrypt/argon2/PBKDF2)
+// would add cost with no security benefit for a token this size.
+// lgtm[go/weak-sensitive-data-hashing]
 func hashKey(rawKey string) string {
 	h := sha256.Sum256([]byte(rawKey))
 	return hex.EncodeToString(h[:])
