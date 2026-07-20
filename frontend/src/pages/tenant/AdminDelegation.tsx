@@ -153,11 +153,13 @@ function PermissionsPicker({
 
 function RoleForm({
   allPerms,
+  heldTokens,
   initial,
   onSave,
   onCancel,
 }: {
   allPerms: PermissionInfo[]
+  heldTokens: string[]
   initial?: AdminRole
   onSave: (name: string, desc: string, perms: string[]) => Promise<void>
   onCancel: () => void
@@ -166,6 +168,15 @@ function RoleForm({
   const [desc, setDesc]   = useState(initial?.description ?? '')
   const [perms, setPerms] = useState<string[]>(initial?.permissions ?? [])
   const [saving, setSaving] = useState(false)
+
+  // Non-escalation: the server only accepts permissions the caller holds, so
+  // offer only those. When editing a role that already carries permissions the
+  // caller lacks (e.g. a legacy over-broad role), keep them visible so they can
+  // be un-checked to narrow the role — but they cannot be re-added once removed.
+  const held = new Set(heldTokens)
+  const alreadyOn = new Set(initial?.permissions ?? [])
+  const visiblePerms = allPerms.filter(p => held.has(p.token) || alreadyOn.has(p.token))
+  const hasUnheldSelected = perms.some(t => !held.has(t))
 
   const handle = async () => {
     if (!name.trim()) { toast.error('Name is required'); return }
@@ -204,12 +215,17 @@ function RoleForm({
 
       <div>
         <label style={{ ...lbl, marginBottom: 8 }}>Permissions</label>
-        <PermissionsPicker all={allPerms} selected={perms} onChange={setPerms} />
+        <PermissionsPicker all={visiblePerms} selected={perms} onChange={setPerms} />
+        {hasUnheldSelected && (
+          <p style={{ fontSize: 11, color: '#f59e0b', marginTop: 6 }}>
+            This role includes permissions you don't hold. Remove them to save — you cannot grant permissions beyond your own.
+          </p>
+        )}
       </div>
 
       <div style={{ display: 'flex', gap: 8, justifyContent: 'flex-end' }}>
         <button style={btn('ghost')} onClick={onCancel}>Cancel</button>
-        <button style={btn('primary')} onClick={handle} disabled={saving}>
+        <button style={btn('primary')} onClick={handle} disabled={saving || hasUnheldSelected}>
           {saving ? <Loader2 size={14} className="animate-spin" /> : <CheckCircle size={14} />}
           {initial ? 'Save Changes' : 'Create Role'}
         </button>
@@ -359,10 +375,12 @@ function AssignmentsPanel({ orgId, role }: { orgId: string; role: AdminRole }) {
 function RoleCard({
   role,
   allPerms,
+  heldTokens,
   orgId,
 }: {
   role: AdminRole
   allPerms: PermissionInfo[]
+  heldTokens: string[]
   orgId: string
 }) {
   const qc = useQueryClient()
@@ -395,6 +413,7 @@ function RoleCard({
     return (
       <RoleForm
         allPerms={allPerms}
+        heldTokens={heldTokens}
         initial={role}
         onSave={async (name, desc, perms) => { await update.mutateAsync({ name, desc, perms }) }}
         onCancel={() => setEditing(false)}
@@ -480,6 +499,16 @@ export default function AdminDelegationPage() {
     queryFn: () => api.get('/admin-roles/permissions').then(r => r.data),
   })
 
+  // Permission tokens the current admin holds — the only ones the server lets
+  // them grant. Legacy/superadmins get the full catalogue back, so no filtering
+  // is lost for them.
+  const { data: heldTokens = [] } = useQuery<string[]>({
+    queryKey: ['my-admin-permissions', orgId],
+    queryFn: () => api.get(`/organizations/${orgId}/my-admin-permissions`).then(r => toArr<string>(r.data)),
+    enabled: !!orgId,
+    staleTime: Infinity,
+  })
+
   const createRole = useMutation({
     mutationFn: ({ name, desc, perms }: { name: string; desc: string; perms: string[] }) =>
       api.post(`/organizations/${orgId}/admin-roles`, { name, description: desc, permissions: perms }),
@@ -544,6 +573,7 @@ export default function AdminDelegationPage() {
         <div style={{ marginBottom: 20 }}>
           <RoleForm
             allPerms={allPerms}
+            heldTokens={heldTokens}
             onSave={async (name, desc, perms) => { await createRole.mutateAsync({ name, desc, perms }) }}
             onCancel={() => setCreating(false)}
           />
@@ -575,7 +605,7 @@ export default function AdminDelegationPage() {
         <div style={{ marginBottom: 24 }} className="space-y-3">
           <div style={{ ...lbl, marginBottom: 10 }}>System Roles</div>
           {systemRoles.map(r => (
-            <RoleCard key={r.id} role={r} allPerms={allPerms} orgId={orgId} />
+            <RoleCard key={r.id} role={r} allPerms={allPerms} heldTokens={heldTokens} orgId={orgId} />
           ))}
         </div>
       )}
@@ -584,7 +614,7 @@ export default function AdminDelegationPage() {
         <div className="space-y-3">
           <div style={{ ...lbl, marginBottom: 10 }}>Custom Roles</div>
           {customRoles.map(r => (
-            <RoleCard key={r.id} role={r} allPerms={allPerms} orgId={orgId} />
+            <RoleCard key={r.id} role={r} allPerms={allPerms} heldTokens={heldTokens} orgId={orgId} />
           ))}
         </div>
       )}

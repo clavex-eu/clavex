@@ -25,7 +25,7 @@ func NewAdminRoleRepository(pool *pgxpool.Pool) *AdminRoleRepository {
 
 // Create inserts a new admin role and returns the created record.
 // An entity event (admin.role_created) is written atomically in the same transaction.
-func (r *AdminRoleRepository) Create(ctx context.Context, orgID uuid.UUID, name string, description *string, permissions []string) (*models.AdminRole, error) {
+func (r *AdminRoleRepository) Create(ctx context.Context, orgID uuid.UUID, name string, description *string, permissions []string, createdBy *uuid.UUID) (*models.AdminRole, error) {
 	if permissions == nil {
 		permissions = []string{}
 	}
@@ -37,12 +37,12 @@ func (r *AdminRoleRepository) Create(ctx context.Context, orgID uuid.UUID, name 
 
 	role := &models.AdminRole{}
 	if err = tx.QueryRow(ctx, `
-		INSERT INTO admin_roles (org_id, name, description, permissions)
-		VALUES ($1, $2, $3, $4)
-		RETURNING id, org_id, name, description, permissions, is_system, created_at, updated_at
-	`, orgID, name, description, permissions).Scan(
+		INSERT INTO admin_roles (org_id, name, description, permissions, created_by)
+		VALUES ($1, $2, $3, $4, $5)
+		RETURNING id, org_id, name, description, permissions, is_system, created_by, created_at, updated_at
+	`, orgID, name, description, permissions, createdBy).Scan(
 		&role.ID, &role.OrgID, &role.Name, &role.Description,
-		&role.Permissions, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt,
+		&role.Permissions, &role.IsSystem, &role.CreatedBy, &role.CreatedAt, &role.UpdatedAt,
 	); err != nil {
 		return nil, err
 	}
@@ -68,7 +68,7 @@ func (r *AdminRoleRepository) Create(ctx context.Context, orgID uuid.UUID, name 
 // List returns all admin roles for an org.
 func (r *AdminRoleRepository) List(ctx context.Context, orgID uuid.UUID) ([]*models.AdminRole, error) {
 	rows, err := r.pool.Query(ctx, `
-		SELECT id, org_id, name, description, permissions, is_system, created_at, updated_at
+		SELECT id, org_id, name, description, permissions, is_system, created_by, created_at, updated_at
 		FROM admin_roles
 		WHERE org_id = $1
 		ORDER BY name
@@ -83,7 +83,7 @@ func (r *AdminRoleRepository) List(ctx context.Context, orgID uuid.UUID) ([]*mod
 		role := &models.AdminRole{}
 		if err := rows.Scan(
 			&role.ID, &role.OrgID, &role.Name, &role.Description,
-			&role.Permissions, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt,
+			&role.Permissions, &role.IsSystem, &role.CreatedBy, &role.CreatedAt, &role.UpdatedAt,
 		); err != nil {
 			return nil, err
 		}
@@ -96,12 +96,12 @@ func (r *AdminRoleRepository) List(ctx context.Context, orgID uuid.UUID) ([]*mod
 func (r *AdminRoleRepository) GetByID(ctx context.Context, orgID, roleID uuid.UUID) (*models.AdminRole, error) {
 	role := &models.AdminRole{}
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, org_id, name, description, permissions, is_system, created_at, updated_at
+		SELECT id, org_id, name, description, permissions, is_system, created_by, created_at, updated_at
 		FROM admin_roles
 		WHERE id = $1 AND org_id = $2
 	`, roleID, orgID).Scan(
 		&role.ID, &role.OrgID, &role.Name, &role.Description,
-		&role.Permissions, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt,
+		&role.Permissions, &role.IsSystem, &role.CreatedBy, &role.CreatedAt, &role.UpdatedAt,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -133,10 +133,10 @@ func (r *AdminRoleRepository) Update(ctx context.Context, orgID, roleID uuid.UUI
 		    permissions = $5,
 		    updated_at  = NOW()
 		WHERE id = $1 AND org_id = $2
-		RETURNING id, org_id, name, description, permissions, is_system, created_at, updated_at
+		RETURNING id, org_id, name, description, permissions, is_system, created_by, created_at, updated_at
 	`, roleID, orgID, name, description, permissions).Scan(
 		&role.ID, &role.OrgID, &role.Name, &role.Description,
-		&role.Permissions, &role.IsSystem, &role.CreatedAt, &role.UpdatedAt,
+		&role.Permissions, &role.IsSystem, &role.CreatedBy, &role.CreatedAt, &role.UpdatedAt,
 	); err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return nil, nil

@@ -134,6 +134,22 @@ func (r *AdminAPIKeyRepository) Revoke(ctx context.Context, id uuid.UUID) error 
 	return nil
 }
 
+// RevokeForOrg marks an API key inactive only when it belongs to orgID. Used by
+// the org-admin self-service route so an admin can never revoke another org's
+// key (or a superadmin cross-org key, whose org_id is NULL and never matches).
+// Returns pgx.ErrNoRows when no active key with that id exists in the org.
+func (r *AdminAPIKeyRepository) RevokeForOrg(ctx context.Context, id, orgID uuid.UUID) error {
+	tag, err := r.pool.Exec(ctx,
+		`UPDATE admin_api_keys SET is_active = FALSE WHERE id = $1 AND org_id = $2`, id, orgID)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return pgx.ErrNoRows
+	}
+	return nil
+}
+
 // VerifyKey validates a raw API key and returns its identity, or (nil, nil) if
 // the key does not match our prefix (so the caller can fall back to JWT auth).
 // Returns an error if the key has our prefix but is invalid/revoked/expired.

@@ -33,6 +33,7 @@ export default function TenantLayout() {
         { to: `${base}/client-scopes`,    icon: Layers,   label: 'Client Scopes'      },
         { to: `${base}/service-accounts`, icon: Bot,      label: 'Service Accounts'   },
         { to: `${base}/agent-tokens`,     icon: Cpu,      label: 'Agent Tokens (MCP)' },
+        { to: `${base}/api-keys`,         icon: KeyRound, label: 'API Keys'           },
         { to: `${base}/wsfed-rps`,        icon: Globe,    label: 'WS-Federation'      },
         { to: `${base}/app-families`,     icon: Layers,   label: 'App Families'       },
         { to: `${base}/ldap`,             icon: Network,  label: 'Sync (LDAP)'        },

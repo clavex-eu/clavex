@@ -440,9 +440,12 @@ type AdminRole struct {
 	// See internal/middleware/permissions.go for the canonical list.
 	Permissions []string `db:"permissions" json:"permissions"`
 	// IsSystem marks roles created by Clavex itself; they cannot be deleted.
-	IsSystem  bool      `db:"is_system"   json:"is_system"`
-	CreatedAt time.Time `db:"created_at"  json:"created_at"`
-	UpdatedAt time.Time `db:"updated_at"  json:"updated_at"`
+	IsSystem bool `db:"is_system"   json:"is_system"`
+	// CreatedBy is the user who authored the role. NULL for system roles and
+	// for roles created before the created_by column existed.
+	CreatedBy *uuid.UUID `db:"created_by"  json:"created_by,omitempty"`
+	CreatedAt time.Time  `db:"created_at"  json:"created_at"`
+	UpdatedAt time.Time  `db:"updated_at"  json:"updated_at"`
 }
 
 // AdminRoleAssignment records that a user has been granted an admin role.
