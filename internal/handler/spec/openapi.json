@@ -10361,6 +10361,19 @@
         ]
       }
     },
+    "/password-policy/managed-marker": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Release managed marker",
+        "tags": [
+          "Password Policy"
+        ]
+      }
+    },
     "/pending": {
       "get": {
         "responses": {
@@ -10909,6 +10922,19 @@
           }
         },
         "summary": "Update rate limits",
+        "tags": [
+          "Login History"
+        ]
+      }
+    },
+    "/rate-limits/managed-marker": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Release rate limits managed marker",
         "tags": [
           "Login History"
         ]
