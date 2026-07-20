@@ -27,7 +27,23 @@ func NewClientRepository(pool *pgxpool.Pool) *ClientRepository {
 // Create registers a new OIDC client. Returns the client and the plain-text
 // secret (shown only once). For public clients the secret is empty.
 // An entity event (client.created) is written atomically in the same transaction.
-func (r *ClientRepository) Create(ctx context.Context, orgID uuid.UUID, customClientID, name string, redirectURIs []string, isPublic bool) (*models.OIDCClient, string, error) {
+// emptyToNil returns nil for an empty slice so a SQL COALESCE / CASE falls back
+// to the column default (or leaves the column unchanged on update) instead of
+// persisting an empty array.
+func emptyToNil(s []string) []string {
+	if len(s) == 0 {
+		return nil
+	}
+	return s
+}
+
+// Create inserts a new OIDC client. grantTypes, responseTypes, postLogout and
+// isActive are honoured when provided (non-empty / non-nil); pass empty/nil to
+// fall back to the column defaults ('{authorization_code}', '{code}', '{}',
+// TRUE). Persisting them matters for declarative clients (the Kubernetes
+// operator): otherwise a CR that sets grant_types would never converge, since
+// the live client keeps the default and every reconcile re-detects "drift".
+func (r *ClientRepository) Create(ctx context.Context, orgID uuid.UUID, customClientID, name string, redirectURIs, postLogout, grantTypes, responseTypes []string, isActive *bool, isPublic bool) (*models.OIDCClient, string, error) {
 	clientID := customClientID
 	if clientID == "" {
 		clientID = generateID(24)
@@ -57,10 +73,17 @@ func (r *ClientRepository) Create(ctx context.Context, orgID uuid.UUID, customCl
 
 	client := &models.OIDCClient{}
 	if err = tx.QueryRow(ctx, `
-		INSERT INTO oidc_clients (client_id, org_id, name, redirect_uris, client_secret_hash, token_endpoint_auth_method)
-		VALUES ($1, $2, $3, $4, $5, $6)
+		INSERT INTO oidc_clients (
+			client_id, org_id, name, redirect_uris, client_secret_hash, token_endpoint_auth_method,
+			post_logout_redirect_uris, grant_types, response_types, is_active)
+		VALUES ($1, $2, $3, $4, $5, $6,
+			COALESCE($7::text[], '{}'),
+			COALESCE($8::text[], '{authorization_code}'),
+			COALESCE($9::text[], '{code}'),
+			COALESCE($10::bool, TRUE))
 		RETURNING client_id, org_id, name, redirect_uris, post_logout_redirect_uris, grant_types, response_types, scopes, token_endpoint_auth_method, logo_url, is_active, mfa_required, keycloak_compat, metadata, jwks_uri, request_object_signing_alg, jwks, created_at, updated_at
-	`, clientID, orgID, name, redirectURIs, secretHash, authMethod).Scan(
+	`, clientID, orgID, name, redirectURIs, secretHash, authMethod,
+		emptyToNil(postLogout), emptyToNil(grantTypes), emptyToNil(responseTypes), isActive).Scan(
 		&client.ClientID, &client.OrgID, &client.Name,
 		&client.RedirectURIs, &client.PostLogoutRedirectURIs,
 		&client.GrantTypes, &client.ResponseTypes, &client.Scopes,
@@ -155,7 +178,7 @@ func (r *ClientRepository) ListByOrg(ctx context.Context, orgID uuid.UUID) ([]*m
 // Update mutates a client. orgID scopes the write to the owning organization so
 // an admin of another tenant cannot modify a client by its (globally unique)
 // client_id; a mismatch returns pgx.ErrNoRows.
-func (r *ClientRepository) Update(ctx context.Context, clientID string, orgID uuid.UUID, name *string, redirectURIs []string, isActive *bool, mfaRequired *bool, keycloakCompat *bool, accessTokenTTL *int, refreshTokenTTL *int) (*models.OIDCClient, error) {
+func (r *ClientRepository) Update(ctx context.Context, clientID string, orgID uuid.UUID, name *string, redirectURIs []string, isActive *bool, mfaRequired *bool, keycloakCompat *bool, accessTokenTTL *int, refreshTokenTTL *int, grantTypes, responseTypes, postLogout []string) (*models.OIDCClient, error) {
 	c := &models.OIDCClient{}
 	err := r.pool.QueryRow(ctx, `
 		UPDATE oidc_clients SET
@@ -166,10 +189,14 @@ func (r *ClientRepository) Update(ctx context.Context, clientID string, orgID uu
 			keycloak_compat  = COALESCE($6, keycloak_compat),
 			access_token_ttl  = CASE WHEN $7::int IS NULL THEN access_token_ttl WHEN $7::int = 0 THEN NULL ELSE $7::int END,
 			refresh_token_ttl = CASE WHEN $8::int IS NULL THEN refresh_token_ttl WHEN $8::int = 0 THEN NULL ELSE $8::int END,
+			grant_types      = CASE WHEN $10::text[] IS NOT NULL THEN $10 ELSE grant_types END,
+			response_types   = CASE WHEN $11::text[] IS NOT NULL THEN $11 ELSE response_types END,
+			post_logout_redirect_uris = CASE WHEN $12::text[] IS NOT NULL THEN $12 ELSE post_logout_redirect_uris END,
 			updated_at       = NOW()
 		WHERE client_id = $1 AND org_id = $9
 		RETURNING client_id, org_id, name, redirect_uris, post_logout_redirect_uris, grant_types, response_types, scopes, token_endpoint_auth_method, logo_url, is_active, mfa_required, keycloak_compat, metadata, jwks_uri, request_object_signing_alg, jwks, access_token_ttl, refresh_token_ttl, created_at, updated_at
-	`, clientID, name, redirectURIs, isActive, mfaRequired, keycloakCompat, accessTokenTTL, refreshTokenTTL, orgID).Scan(
+	`, clientID, name, redirectURIs, isActive, mfaRequired, keycloakCompat, accessTokenTTL, refreshTokenTTL, orgID,
+		emptyToNil(grantTypes), emptyToNil(responseTypes), emptyToNil(postLogout)).Scan(
 		&c.ClientID, &c.OrgID, &c.Name,
 		&c.RedirectURIs, &c.PostLogoutRedirectURIs,
 		&c.GrantTypes, &c.ResponseTypes, &c.Scopes,

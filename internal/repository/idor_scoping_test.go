@@ -61,7 +61,7 @@ func TestIDOR_Clients_CrossOrgRejected(t *testing.T) {
 	orgA, orgB := twoOrgs(t, ctx, pool)
 	repo := NewClientRepository(pool)
 
-	cl, _, err := repo.Create(ctx, orgA, "idor-client-"+uuid.NewString(), "c", []string{"https://app/cb"}, false)
+	cl, _, err := repo.Create(ctx, orgA, "idor-client-"+uuid.NewString(), "c", []string{"https://app/cb"}, nil, nil, nil, nil, false)
 	require.NoError(t, err)
 
 	// Same org: succeeds.
@@ -73,7 +73,7 @@ func TestIDOR_Clients_CrossOrgRejected(t *testing.T) {
 	_, err = repo.GetForOrg(ctx, cl.ClientID, orgB)
 	require.ErrorIs(t, err, pgx.ErrNoRows)
 
-	_, err = repo.Update(ctx, cl.ClientID, orgB, ptr("hacked"), nil, nil, nil, nil, nil, nil)
+	_, err = repo.Update(ctx, cl.ClientID, orgB, ptr("hacked"), nil, nil, nil, nil, nil, nil, nil, nil, nil)
 	require.ErrorIs(t, err, pgx.ErrNoRows)
 
 	_, err = repo.RotateSecret(ctx, cl.ClientID, orgB)
@@ -145,7 +145,7 @@ func TestIDOR_ClientScopes_CrossOrgRejected(t *testing.T) {
 
 	sc, err := scopes.Create(ctx, orgA, "scope-"+uuid.NewString(), nil, "openid-connect", false)
 	require.NoError(t, err)
-	clA, _, err := clients.Create(ctx, orgA, "idor-client-"+uuid.NewString(), "c", []string{"https://app/cb"}, false)
+	clA, _, err := clients.Create(ctx, orgA, "idor-client-"+uuid.NewString(), "c", []string{"https://app/cb"}, nil, nil, nil, nil, false)
 	require.NoError(t, err)
 
 	_, err = scopes.GetForOrg(ctx, sc.ID, orgB)

@@ -153,7 +153,7 @@ func main() {
 			"http://localhost:5173/callback",
 			"http://localhost:8080/callback",
 		}
-		client, _, err := clientRepo.Create(ctx, org.ID, "", "Demo SPA (public)", redirectURIs, true)
+		client, _, err := clientRepo.Create(ctx, org.ID, "", "Demo SPA (public)", redirectURIs, nil, nil, nil, nil, true)
 		if err != nil {
 			log.Fatal().Err(err).Msg("create demo public client failed")
 		}
@@ -163,7 +163,7 @@ func main() {
 	}
 
 	if *confidential && !hasConfidential {
-		cc, secret, err := clientRepo.Create(ctx, org.ID, "", "Demo M2M (confidential)", []string{}, false)
+		cc, secret, err := clientRepo.Create(ctx, org.ID, "", "Demo M2M (confidential)", []string{}, nil, nil, nil, nil, false)
 		if err != nil {
 			log.Fatal().Err(err).Msg("create demo confidential client failed")
 		}

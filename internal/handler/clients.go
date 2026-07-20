@@ -7,6 +7,7 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -18,6 +19,7 @@ import (
 type ClientHandler struct {
 	repo    *repository.ClientRepository
 	orgRepo *repository.OrgRepository
+	auditor *audit.Emitter
 }
 
 func NewClientHandler(pool *pgxpool.Pool) *ClientHandler {
@@ -27,12 +29,21 @@ func NewClientHandler(pool *pgxpool.Pool) *ClientHandler {
 	}
 }
 
+// WithAuditor attaches the audit emitter so client mutations reach the audit
+// log and the live event stream (consumed by the Kubernetes operator).
+func (h *ClientHandler) WithAuditor(a *audit.Emitter) *ClientHandler {
+	h.auditor = a
+	return h
+}
+
 type createClientRequest struct {
 	ClientID               string   `json:"client_id"                  validate:"omitempty,min=1,max=120,alphanumunicode"`
 	Name                   string   `json:"name"                       validate:"required,min=1,max=120"`
 	RedirectURIs           []string `json:"redirect_uris"              validate:"required,min=1,dive,redirect_uri"`
 	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris"  validate:"omitempty,dive,url"`
 	GrantTypes             []string `json:"grant_types"                validate:"omitempty"`
+	ResponseTypes          []string `json:"response_types"             validate:"omitempty"`
+	IsActive               *bool    `json:"is_active"`
 	IsPublic               bool     `json:"is_public"`
 	LogoURL                *string  `json:"logo_url"                   validate:"omitempty,url"`
 }
@@ -46,10 +57,13 @@ func (h *ClientHandler) Create(c echo.Context) error {
 	if err := bindAndValidate(c, &req); err != nil {
 		return err
 	}
-	client, secret, err := h.repo.Create(c.Request().Context(), orgID, req.ClientID, req.Name, req.RedirectURIs, req.IsPublic)
+	client, secret, err := h.repo.Create(c.Request().Context(), orgID, req.ClientID, req.Name, req.RedirectURIs,
+		req.PostLogoutRedirectURIs, req.GrantTypes, req.ResponseTypes, req.IsActive, req.IsPublic)
 	if err != nil {
 		return err
 	}
+	emitEntityAudit(c, h.auditor, orgID, "oidc_client.created", auditResourceOIDCClient, client.ClientID,
+		map[string]interface{}{"name": client.Name})
 	// Return the plain-text secret only at creation time, never again.
 	resp := map[string]interface{}{
 		"client":        client,
@@ -102,6 +116,8 @@ type updateClientRequest struct {
 	Name                   *string  `json:"name"                      validate:"omitempty,min=1,max=120"`
 	RedirectURIs           []string `json:"redirect_uris"             validate:"omitempty,dive,redirect_uri"`
 	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris" validate:"omitempty,dive,url"`
+	GrantTypes             []string `json:"grant_types"               validate:"omitempty"`
+	ResponseTypes          []string `json:"response_types"            validate:"omitempty"`
 	LogoURL                *string  `json:"logo_url"                  validate:"omitempty,url"`
 	IsActive               *bool    `json:"is_active"`
 	MFARequired            *bool    `json:"mfa_required"`
@@ -130,7 +146,7 @@ func (h *ClientHandler) Update(c echo.Context) error {
 	if err := bindAndValidate(c, &req); err != nil {
 		return err
 	}
-	client, err := h.repo.Update(c.Request().Context(), id, orgID, req.Name, req.RedirectURIs, req.IsActive, req.MFARequired, req.KeycloakCompat, req.AccessTokenTTL, req.RefreshTokenTTL)
+	client, err := h.repo.Update(c.Request().Context(), id, orgID, req.Name, req.RedirectURIs, req.IsActive, req.MFARequired, req.KeycloakCompat, req.AccessTokenTTL, req.RefreshTokenTTL, req.GrantTypes, req.ResponseTypes, req.PostLogoutRedirectURIs)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return echo.ErrNotFound
@@ -145,6 +161,8 @@ func (h *ClientHandler) Update(c echo.Context) error {
 		}
 		client.EnabledLoginProviders = req.EnabledLoginProviders
 	}
+	emitEntityAudit(c, h.auditor, orgID, "oidc_client.updated", auditResourceOIDCClient, client.ClientID,
+		map[string]interface{}{"name": client.Name})
 	return c.JSON(http.StatusOK, client)
 }
 
@@ -157,6 +175,7 @@ func (h *ClientHandler) Delete(c echo.Context) error {
 	if err := h.repo.Delete(c.Request().Context(), id, orgID); err != nil {
 		return echo.ErrNotFound
 	}
+	emitEntityAudit(c, h.auditor, orgID, "oidc_client.deleted", auditResourceOIDCClient, id, nil)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -210,7 +229,8 @@ func (h *ClientHandler) QuickRegister(c echo.Context) error {
 		base + "/auth/callback",
 	}
 
-	client, secret, err := h.repo.Create(c.Request().Context(), orgID, "", req.AppName, redirectURIs, false)
+	client, secret, err := h.repo.Create(c.Request().Context(), orgID, "", req.AppName, redirectURIs,
+		nil, nil, nil, nil, false)
 	if err != nil {
 		return err
 	}

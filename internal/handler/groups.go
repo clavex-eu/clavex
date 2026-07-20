@@ -4,6 +4,7 @@ import (
 	"net/http"
 	"strconv"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/google/uuid"
@@ -13,11 +14,19 @@ import (
 
 // GroupHandler manages groups and their memberships/roles.
 type GroupHandler struct {
-	repo *repository.GroupRepository
+	repo    *repository.GroupRepository
+	auditor *audit.Emitter
 }
 
 func NewGroupHandler(pool *pgxpool.Pool) *GroupHandler {
 	return &GroupHandler{repo: repository.NewGroupRepository(pool)}
+}
+
+// WithAuditor attaches the audit emitter so group mutations (including role
+// membership changes) reach the audit log and the live event stream.
+func (h *GroupHandler) WithAuditor(a *audit.Emitter) *GroupHandler {
+	h.auditor = a
+	return h
 }
 
 // List returns all groups for an org.
@@ -92,6 +101,7 @@ func (h *GroupHandler) Create(c echo.Context) error {
 	if err != nil {
 		return err
 	}
+	emitEntityAudit(c, h.auditor, orgID, "group.created", auditResourceGroup, req.Name, nil)
 	return c.JSON(http.StatusCreated, g)
 }
 
@@ -111,6 +121,7 @@ func (h *GroupHandler) Delete(c echo.Context) error {
 	if err := h.repo.Delete(c.Request().Context(), id); err != nil {
 		return echo.ErrNotFound
 	}
+	emitEntityAudit(c, h.auditor, orgID, "group.deleted", auditResourceGroup, id.String(), nil)
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -246,6 +257,8 @@ func (h *GroupHandler) AssignRole(c echo.Context) error {
 	if err := h.repo.AssignRole(c.Request().Context(), groupID, roleID); err != nil {
 		return err
 	}
+	emitEntityAudit(c, h.auditor, orgID, "group.updated", auditResourceGroup, groupID.String(),
+		map[string]interface{}{"role_assigned": roleID.String()})
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -269,5 +282,7 @@ func (h *GroupHandler) RemoveRole(c echo.Context) error {
 	if err := h.repo.RemoveRole(c.Request().Context(), groupID, roleID); err != nil {
 		return err
 	}
+	emitEntityAudit(c, h.auditor, orgID, "group.updated", auditResourceGroup, groupID.String(),
+		map[string]interface{}{"role_removed": roleID.String()})
 	return c.NoContent(http.StatusNoContent)
 }

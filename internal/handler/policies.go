@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/middleware"
 	"github.com/clavex-eu/clavex/internal/policy"
 	"github.com/clavex-eu/clavex/internal/repository"
@@ -22,6 +23,7 @@ type PolicyHandler struct {
 	users        *repository.UserRepository
 	mfa          *repository.MFARepository
 	defaultRules []policy.Rule // loaded from config YAML
+	auditor      *audit.Emitter
 }
 
 func NewPolicyHandler(pool *pgxpool.Pool, defaults []policy.Rule) *PolicyHandler {
@@ -32,6 +34,13 @@ func NewPolicyHandler(pool *pgxpool.Pool, defaults []policy.Rule) *PolicyHandler
 		mfa:          repository.NewMFARepository(pool),
 		defaultRules: defaults,
 	}
+}
+
+// WithAuditor attaches the audit emitter so auth-policy mutations reach the
+// audit log and the live event stream (consumed by the Kubernetes operator).
+func (h *PolicyHandler) WithAuditor(a *audit.Emitter) *PolicyHandler {
+	h.auditor = a
+	return h
 }
 
 // ── CRUD ──────────────────────────────────────────────────────────────────────
@@ -81,6 +90,7 @@ func (h *PolicyHandler) Create(c echo.Context) error {
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
+	emitEntityAudit(c, h.auditor, orgID, "auth_policy.created", auditResourceAuthPolicy, req.Name, nil)
 	return c.JSON(http.StatusCreated, row)
 }
 
@@ -121,6 +131,7 @@ func (h *PolicyHandler) Update(c echo.Context) error {
 		}
 		return echo.ErrInternalServerError
 	}
+	emitEntityAudit(c, h.auditor, orgID, "auth_policy.updated", auditResourceAuthPolicy, req.Name, nil)
 	return c.JSON(http.StatusOK, row)
 }
 
@@ -141,6 +152,7 @@ func (h *PolicyHandler) Delete(c echo.Context) error {
 		}
 		return echo.ErrInternalServerError
 	}
+	emitEntityAudit(c, h.auditor, orgID, "auth_policy.deleted", auditResourceAuthPolicy, ruleID.String(), nil)
 	return c.NoContent(http.StatusNoContent)
 }
 

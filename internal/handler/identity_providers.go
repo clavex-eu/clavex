@@ -15,6 +15,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/connectorregistry"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
@@ -29,10 +30,11 @@ import (
 
 // IDPHandler manages identity provider CRUD and handles the OAuth2 SSO flow.
 type IDPHandler struct {
-	repo  *repository.IDPRepository
-	users *repository.UserRepository
-	orgs  *repository.OrgRepository
-	store *session.Store
+	repo    *repository.IDPRepository
+	users   *repository.UserRepository
+	orgs    *repository.OrgRepository
+	store   *session.Store
+	auditor *audit.Emitter
 }
 
 func NewIDPHandler(pool *pgxpool.Pool, store *session.Store) *IDPHandler {
@@ -42,6 +44,13 @@ func NewIDPHandler(pool *pgxpool.Pool, store *session.Store) *IDPHandler {
 		orgs:  repository.NewOrgRepository(pool),
 		store: store,
 	}
+}
+
+// WithAuditor attaches the audit emitter so identity-provider mutations reach
+// the audit log and the live event stream (consumed by the Kubernetes operator).
+func (h *IDPHandler) WithAuditor(a *audit.Emitter) *IDPHandler {
+	h.auditor = a
+	return h
 }
 
 // ── Social provider presets ───────────────────────────────────────────────────
@@ -188,6 +197,7 @@ func (h *IDPHandler) Create(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusConflict, "provider name already exists for this organization")
 	}
+	emitEntityAudit(c, h.auditor, orgID, "identity_provider.created", auditResourceIdentityProvider, req.Name, nil)
 	return c.JSON(http.StatusCreated, created)
 }
 
@@ -280,6 +290,7 @@ func (h *IDPHandler) Update(c echo.Context) error {
 	if err != nil {
 		return echo.ErrNotFound
 	}
+	emitEntityAudit(c, h.auditor, orgID, "identity_provider.updated", auditResourceIdentityProvider, req.Name, nil)
 	return c.JSON(http.StatusOK, updated)
 }
 
@@ -301,6 +312,7 @@ func (h *IDPHandler) Delete(c echo.Context) error {
 	if err := h.repo.Delete(c.Request().Context(), id); err != nil {
 		return err
 	}
+	emitEntityAudit(c, h.auditor, orgID, "identity_provider.deleted", auditResourceIdentityProvider, id.String(), nil)
 	return c.NoContent(http.StatusNoContent)
 }
 

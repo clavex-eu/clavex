@@ -53,14 +53,16 @@ type StreamHandler struct {
 	dispatcher *internaudit.Dispatcher
 	orgs       *repository.OrgRepository
 	audit      *repository.AuditRepository
+	apiKeys    *repository.AdminAPIKeyRepository
 	cfg        *config.Config
 }
 
 // NewStreamHandler creates a StreamHandler. Call WithDispatcher before use.
 func NewStreamHandler(pool *pgxpool.Pool, cfg *config.Config) *StreamHandler {
 	return &StreamHandler{
-		orgs: repository.NewOrgRepository(pool),
-		cfg:  cfg,
+		orgs:    repository.NewOrgRepository(pool),
+		apiKeys: repository.NewAdminAPIKeyRepository(pool),
+		cfg:     cfg,
 	}
 }
 
@@ -83,15 +85,36 @@ func (h *StreamHandler) Connect(c echo.Context) error {
 	}
 
 	// ── Auth ────────────────────────────────────────────────────────────────
-	rawToken := extractBearerOrQuery(c)
-	if rawToken == "" {
-		return echo.ErrUnauthorized
-	}
-	claims, err := h.parseAdminJWT(rawToken)
-	if err != nil {
-		return echo.ErrUnauthorized
-	}
+	// Two accepted credentials, resolved to a common principal:
+	//   1. an admin JWT (server-side SDK, admin console, ?token=)
+	//   2. an org-scoped Admin API key (X-API-Key / ?api_key=) — the same key
+	//      the Kubernetes operator already uses for its Admin API v2 calls.
+	// Both collapse to (org UUID, super-admin?) and go through the identical
+	// org-scope check below, so API-key callers get exactly the JWT behaviour.
+	var principalOrgID string
+	var principalSuperAdmin bool
 
+	if rawToken := extractBearerOrQuery(c); rawToken != "" {
+		if claims, err := h.parseAdminJWT(rawToken); err == nil {
+			principalOrgID = claims.OrgID
+			principalSuperAdmin = claims.IsSuperAdmin
+			goto authed
+		}
+	}
+	// JWT absent or invalid — fall back to an org-scoped API key.
+	if apiKey := extractAPIKey(c); apiKey != "" && h.apiKeys != nil {
+		auth, err := h.apiKeys.VerifyKey(c.Request().Context(), apiKey)
+		if err == nil && auth != nil {
+			principalSuperAdmin = auth.OrgID == nil // nil org_id = superadmin key
+			if auth.OrgID != nil {
+				principalOrgID = auth.OrgID.String()
+			}
+			goto authed
+		}
+	}
+	return echo.ErrUnauthorized
+
+authed:
 	// ── Resolve org slug → UUID ──────────────────────────────────────────────
 	slug := c.Param("org_slug")
 	org, err := h.orgs.GetBySlug(c.Request().Context(), slug)
@@ -100,8 +123,8 @@ func (h *StreamHandler) Connect(c echo.Context) error {
 	}
 	orgIDStr := org.ID.String()
 
-	// ── Scope check: JWT must belong to this org (or be super-admin) ─────────
-	if !claims.IsSuperAdmin && claims.OrgID != orgIDStr {
+	// ── Scope check: principal must belong to this org (or be super-admin) ────
+	if !orgScopeAllowed(principalOrgID, principalSuperAdmin, orgIDStr) {
 		return echo.NewHTTPError(http.StatusForbidden, "org mismatch")
 	}
 
@@ -226,6 +249,26 @@ func extractBearerOrQuery(c echo.Context) string {
 		return ck.Value
 	}
 	return c.QueryParam("token")
+}
+
+// orgScopeAllowed reports whether a principal scoped to principalOrgID (empty
+// string = not scoped to any org) may access requestedOrgID. Super-admin
+// principals (JWT is_super_admin, or an API key with a NULL org_id) may access
+// any org; every other principal is confined to its own org. This is the single
+// scope gate shared by the JWT and API-key auth paths.
+func orgScopeAllowed(principalOrgID string, superAdmin bool, requestedOrgID string) bool {
+	return superAdmin || principalOrgID == requestedOrgID
+}
+
+// extractAPIKey returns the raw org-scoped Admin API key from the X-API-Key
+// header (server-side clients, including the Kubernetes operator) or the
+// ?api_key= query param (browser clients that cannot set headers on the
+// WebSocket handshake).
+func extractAPIKey(c echo.Context) string {
+	if k := c.Request().Header.Get("X-API-Key"); k != "" {
+		return k
+	}
+	return c.QueryParam("api_key")
 }
 
 // parseAdminJWT validates a signed admin JWT and returns the claims.
