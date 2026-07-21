@@ -214,6 +214,18 @@ keys/                — RSA signing keys (gitignored)
 
 ---
 
+## Ecosystem
+
+Companion projects that build on the core server:
+
+- **[clavex-operator](https://github.com/clavex-eu/clavex-operator)** — Kubernetes Operator for declarative, GitOps-managed IAM configuration (7 CRDs, continuous reconciliation).
+- **[terraform-provider-clavex](https://registry.terraform.io/providers/clavex-eu/clavex/latest)** — Official Terraform provider ([source](https://github.com/clavex-eu/terraform-provider-clavex)).
+- **[clavex-sdk-go](https://github.com/clavex-eu/clavex-sdk-go)** — Go SDK.
+- **[clavex-sdk](https://github.com/clavex-eu/clavex-sdk)** — JS/TS SDK.
+- **[clavex-examples](https://github.com/clavex-eu/clavex-examples)** — Starter kits and example integrations.
+
+---
+
 ## Configuration
 
 All config lives in `config.dev.yaml` (see `config.example.yaml`). Every key can be overridden via `CLAVEX_*` env var.
