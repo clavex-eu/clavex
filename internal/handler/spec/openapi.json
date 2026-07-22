@@ -15914,6 +15914,19 @@
         ]
       }
     },
+    "/{issuer_id}": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Revoke",
+        "tags": [
+          "JWT Bearer Issuer"
+        ]
+      }
+    },
     "/{kind}": {
       "put": {
         "responses": {
