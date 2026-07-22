@@ -1074,6 +1074,30 @@ type CrossOrgTrust struct {
 	CreatedBy  string    `json:"created_by"`
 }
 
+// JWTBearerTrustedIssuer configures an external issuer trusted to present
+// RFC 7523 JWT Bearer authorization grants (grant_type=urn:ietf:params:oauth:
+// grant-type:jwt-bearer) at this org's token endpoint. This is the generic
+// RFC 7523 profile, not the ID-JAG draft — see docs/ID-JAG-ROADMAP.md.
+type JWTBearerTrustedIssuer struct {
+	ID     uuid.UUID `json:"id"`
+	OrgID  uuid.UUID `json:"org_id"`
+	Issuer string    `json:"issuer"`
+	// JWKS is the inline JSON Web Key Set used to verify assertion signatures.
+	// Takes precedence over JWKSURI when both are set.
+	JWKS    *json.RawMessage `json:"jwks,omitempty"`
+	JWKSURI *string          `json:"jwks_uri,omitempty"`
+	// ClaimMappings maps assertion claim names to Clavex access-token claim
+	// names. The "sub" claim is never remapped — it always becomes the
+	// issued token's subject.
+	ClaimMappings map[string]string `json:"claim_mappings"`
+	// AllowedScopes, if non-nil, restricts which scopes assertions from this
+	// issuer may request.
+	AllowedScopes []string  `json:"allowed_scopes"`
+	IsActive      bool      `json:"is_active"`
+	CreatedAt     time.Time `json:"created_at"`
+	CreatedBy     string    `json:"created_by"`
+}
+
 // MdocProximitySession tracks an in-flight ISO 18013-5 / eIDAS 2.0 proximity
 // verification session. One session = one QR code shown at a physical counter.
 //

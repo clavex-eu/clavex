@@ -326,6 +326,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	deviceTrustH := handler.NewDeviceTrustHandler(pool)
 	clientBrandingH := handler.NewClientBrandingHandler(pool)
 	crossOrgTrustH := handler.NewCrossOrgTrustHandler(pool)
+	jwtBearerIssuerH := handler.NewJWTBearerTrustedIssuerHandler(pool)
 	usageH := handler.NewUsageHandler(pool)
 	ssfH := handler.NewSSFHandler(pool, keys, func(c echo.Context, slug string) string {
 		return oidcH.IssuerFromRequest(c, slug)
@@ -1267,6 +1268,12 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		crossOrgG.GET("/inbound", crossOrgTrustH.ListInbound)
 		crossOrgG.POST("", crossOrgTrustH.Create)
 		crossOrgG.DELETE("/:trust_id", crossOrgTrustH.Revoke)
+
+		// RFC 7523 JWT Bearer authorization grant — per-org trusted issuers
+		jwtBearerG := orgScoped.Group("/jwt-bearer-trusted-issuers", middleware.RequireResourcePermission("security"))
+		jwtBearerG.GET("", jwtBearerIssuerH.List)
+		jwtBearerG.POST("", jwtBearerIssuerH.Create)
+		jwtBearerG.DELETE("/:issuer_id", jwtBearerIssuerH.Revoke)
 		orgScoped.GET("/auth-policies", policyH.List, middleware.RequireResourcePermission("security"))
 		orgScoped.POST("/auth-policies", policyH.Create, middleware.RequireResourcePermission("security"))
 		orgScoped.PUT("/auth-policies/:rule_id", policyH.Update, middleware.RequireResourcePermission("security"))

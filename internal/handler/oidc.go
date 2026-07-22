@@ -177,56 +177,57 @@ var formPostTmpl = template.Must(template.New("form_post").Parse(`<!DOCTYPE html
 
 // OIDCHandler handles OIDC / OAuth2 protocol endpoints.
 type OIDCHandler struct {
-	cfg             *config.Config
-	pool            *pgxpool.Pool
-	tc              *oidc.TokenConfig
-	store           *session.Store
-	rdb             redis.UniversalClient
-	orgs            *repository.OrgRepository
-	clients         *repository.ClientRepository
-	users           *repository.UserRepository
-	codes           *repository.AuthCodeRepository
-	tokens          *repository.RefreshTokenRepository
-	groups          *repository.GroupRepository
-	mfa             *repository.MFARepository
-	mappers         *repository.MapperRepository
-	audit           *repository.AuditRepository
-	smtp            *repository.SMTPRepository
-	pwPolicy        *repository.PasswordPolicyRepository
-	breach          *breach.Checker
-	deviceCodes     *repository.DeviceCodeRepository
-	cibaRequests    *repository.CIBARepository
-	cibaNotifyCfg   *repository.CIBANotificationRepository
-	cibaPushTokens  *repository.CIBAPushTokenRepository
-	vpSessions      *repository.OID4WRepository
-	smsSettings     *repository.SMSSettingsRepository
-	captchaRepo     *repository.CaptchaRepository
-	loginHistory    *repository.LoginHistoryRepository
-	geo             *geoip.DB
-	policies        *policy.Repository
-	riskScorer      *risk.Scorer
-	shieldClient    *shield.Client     // nil when AbuseIPDB/Tor intel disabled
-	feedClient      *shield.FeedClient // nil when distributed threat feed disabled
-	trustedDev      *repository.TrustedDeviceRepository
-	grantRepo       *repository.RARGrantRepository
-	crossOrgTrusts  *repository.CrossOrgTrustRepository
-	ssfDisp         *ssf.Dispatcher                  // nil when SSF is not configured
-	walletStepUp    *WalletStepUpHandler             // nil when wallet step-up is not configured
-	oid4vpH         *OID4VPHandler                   // nil when OID4VP challenge is not configured
-	flowEngine      *flowengine.Engine               // nil when no flow is configured
-	guard           *lockout.Guard                   // nil when adaptive lockout is disabled
-	ipRules         *repository.IPRulesRepository    // nil when IP rules are not configured
-	idpRepo         *repository.IDPRepository        // for rendering IDP buttons on login page
-	spidRepo        *repository.SPIDRepository       // for rendering SPID buttons on login page
-	eidasRepo       *repository.EidasRepository      // for rendering eIDAS button on login page
-	bundidSAMLRepo  *repository.BundIDSAMLRepository // for rendering BundID SAML button on login page
-	serviceAccounts *repository.ServiceAccountRepository
-	flags           *repository.FeatureFlagRepository // nil when feature flags disabled
-	orgSigners      *oidc.OrgSignerCache              // nil unless key_backend=db; when set, every org signs with its own auto-provisioned key
-	vciH            *OID4VCIHandler                   // nil when OID4VCI is not configured; delegates pre-authorized_code grant
-	pqcSigner       *oidc.PQCSigner                   // nil when pqc_enabled=false; global passive JWKS exposure only
-	orgPQCSigners   *oidc.OrgPQCSignerCache           // nil unless pqc_enabled+key_backend=db; per-org PQC key auto-provisioned on first use
-	encKeys         *oidc.EncKeySet                   // nil when request-object encryption is not enabled
+	cfg              *config.Config
+	pool             *pgxpool.Pool
+	tc               *oidc.TokenConfig
+	store            *session.Store
+	rdb              redis.UniversalClient
+	orgs             *repository.OrgRepository
+	clients          *repository.ClientRepository
+	users            *repository.UserRepository
+	codes            *repository.AuthCodeRepository
+	tokens           *repository.RefreshTokenRepository
+	groups           *repository.GroupRepository
+	mfa              *repository.MFARepository
+	mappers          *repository.MapperRepository
+	audit            *repository.AuditRepository
+	smtp             *repository.SMTPRepository
+	pwPolicy         *repository.PasswordPolicyRepository
+	breach           *breach.Checker
+	deviceCodes      *repository.DeviceCodeRepository
+	jwtBearerIssuers *repository.JWTBearerTrustedIssuerRepository
+	cibaRequests     *repository.CIBARepository
+	cibaNotifyCfg    *repository.CIBANotificationRepository
+	cibaPushTokens   *repository.CIBAPushTokenRepository
+	vpSessions       *repository.OID4WRepository
+	smsSettings      *repository.SMSSettingsRepository
+	captchaRepo      *repository.CaptchaRepository
+	loginHistory     *repository.LoginHistoryRepository
+	geo              *geoip.DB
+	policies         *policy.Repository
+	riskScorer       *risk.Scorer
+	shieldClient     *shield.Client     // nil when AbuseIPDB/Tor intel disabled
+	feedClient       *shield.FeedClient // nil when distributed threat feed disabled
+	trustedDev       *repository.TrustedDeviceRepository
+	grantRepo        *repository.RARGrantRepository
+	crossOrgTrusts   *repository.CrossOrgTrustRepository
+	ssfDisp          *ssf.Dispatcher                  // nil when SSF is not configured
+	walletStepUp     *WalletStepUpHandler             // nil when wallet step-up is not configured
+	oid4vpH          *OID4VPHandler                   // nil when OID4VP challenge is not configured
+	flowEngine       *flowengine.Engine               // nil when no flow is configured
+	guard            *lockout.Guard                   // nil when adaptive lockout is disabled
+	ipRules          *repository.IPRulesRepository    // nil when IP rules are not configured
+	idpRepo          *repository.IDPRepository        // for rendering IDP buttons on login page
+	spidRepo         *repository.SPIDRepository       // for rendering SPID buttons on login page
+	eidasRepo        *repository.EidasRepository      // for rendering eIDAS button on login page
+	bundidSAMLRepo   *repository.BundIDSAMLRepository // for rendering BundID SAML button on login page
+	serviceAccounts  *repository.ServiceAccountRepository
+	flags            *repository.FeatureFlagRepository // nil when feature flags disabled
+	orgSigners       *oidc.OrgSignerCache              // nil unless key_backend=db; when set, every org signs with its own auto-provisioned key
+	vciH             *OID4VCIHandler                   // nil when OID4VCI is not configured; delegates pre-authorized_code grant
+	pqcSigner        *oidc.PQCSigner                   // nil when pqc_enabled=false; global passive JWKS exposure only
+	orgPQCSigners    *oidc.OrgPQCSignerCache           // nil unless pqc_enabled+key_backend=db; per-org PQC key auto-provisioned on first use
+	encKeys          *oidc.EncKeySet                   // nil when request-object encryption is not enabled
 	// Agent-token UEBA step-up (opt-in). When agentUEBAEnabled is true, Introspect
 	// records agent-token usage and scores it for anomalous call-rate / scope
 	// drift, reusing the wallet step-up + SSF machinery for the delegating user.
@@ -421,34 +422,35 @@ func NewOIDCHandler(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalC
 		IDTokenTTL:      time.Duration(cfg.Auth.AccessTokenTTL) * time.Second,
 	}
 	h := &OIDCHandler{
-		cfg:            cfg,
-		pool:           pool,
-		tc:             tc,
-		store:          session.NewStore(rdb),
-		rdb:            rdb,
-		orgs:           repository.NewOrgRepository(pool),
-		clients:        repository.NewClientRepository(pool),
-		users:          repository.NewUserRepository(pool),
-		codes:          repository.NewAuthCodeRepository(pool),
-		tokens:         repository.NewRefreshTokenRepository(pool),
-		groups:         repository.NewGroupRepository(pool),
-		mfa:            repository.NewMFARepository(pool),
-		mappers:        repository.NewMapperRepository(pool),
-		audit:          repository.NewAuditRepository(pool),
-		smtp:           repository.NewSMTPRepository(pool),
-		pwPolicy:       repository.NewPasswordPolicyRepository(pool),
-		breach:         breach.New(),
-		deviceCodes:    repository.NewDeviceCodeRepository(pool),
-		cibaRequests:   repository.NewCIBARepository(pool),
-		cibaNotifyCfg:  repository.NewCIBANotificationRepository(pool),
-		cibaPushTokens: repository.NewCIBAPushTokenRepository(pool),
-		vpSessions:     repository.NewOID4WRepository(pool),
-		smsSettings:    repository.NewSMSSettingsRepository(pool),
-		captchaRepo:    repository.NewCaptchaRepository(pool),
-		loginHistory:   repository.NewLoginHistoryRepository(pool),
-		policies:       policy.NewRepository(pool),
-		grantRepo:      repository.NewRARGrantRepository(pool),
-		crossOrgTrusts: repository.NewCrossOrgTrustRepository(pool),
+		cfg:              cfg,
+		pool:             pool,
+		tc:               tc,
+		store:            session.NewStore(rdb),
+		rdb:              rdb,
+		orgs:             repository.NewOrgRepository(pool),
+		clients:          repository.NewClientRepository(pool),
+		users:            repository.NewUserRepository(pool),
+		codes:            repository.NewAuthCodeRepository(pool),
+		tokens:           repository.NewRefreshTokenRepository(pool),
+		groups:           repository.NewGroupRepository(pool),
+		mfa:              repository.NewMFARepository(pool),
+		mappers:          repository.NewMapperRepository(pool),
+		audit:            repository.NewAuditRepository(pool),
+		smtp:             repository.NewSMTPRepository(pool),
+		pwPolicy:         repository.NewPasswordPolicyRepository(pool),
+		breach:           breach.New(),
+		deviceCodes:      repository.NewDeviceCodeRepository(pool),
+		jwtBearerIssuers: repository.NewJWTBearerTrustedIssuerRepository(pool),
+		cibaRequests:     repository.NewCIBARepository(pool),
+		cibaNotifyCfg:    repository.NewCIBANotificationRepository(pool),
+		cibaPushTokens:   repository.NewCIBAPushTokenRepository(pool),
+		vpSessions:       repository.NewOID4WRepository(pool),
+		smsSettings:      repository.NewSMSSettingsRepository(pool),
+		captchaRepo:      repository.NewCaptchaRepository(pool),
+		loginHistory:     repository.NewLoginHistoryRepository(pool),
+		policies:         policy.NewRepository(pool),
+		grantRepo:        repository.NewRARGrantRepository(pool),
+		crossOrgTrusts:   repository.NewCrossOrgTrustRepository(pool),
 	}
 	h.riskScorer = risk.NewScorer(h.loginHistory, h.shieldClient, h.feedClient)
 	h.trustedDev = repository.NewTrustedDeviceRepository(pool)
@@ -608,7 +610,7 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 		// Supported values
 		"response_types_supported":              []string{"code", "id_token", "token", "code id_token", "code token", "token id_token", "code token id_token"},
 		"response_modes_supported":              []string{"query", "fragment", "form_post", "jwt", "query.jwt", "fragment.jwt"},
-		"grant_types_supported":                 []string{"authorization_code", "implicit", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange", "urn:ietf:params:oauth:grant-type:device_code", "urn:openid:params:grant-type:ciba", "urn:ietf:params:oauth:grant-type:pre-authorized_code"},
+		"grant_types_supported":                 []string{"authorization_code", "implicit", "refresh_token", "client_credentials", "urn:ietf:params:oauth:grant-type:token-exchange", "urn:ietf:params:oauth:grant-type:device_code", "urn:openid:params:grant-type:ciba", "urn:ietf:params:oauth:grant-type:pre-authorized_code", "urn:ietf:params:oauth:grant-type:jwt-bearer"},
 		"subject_types_supported":               []string{"public"},
 		"id_token_signing_alg_values_supported": []string{"PS256", "RS256"},
 		"userinfo_signing_alg_values_supported": []string{"none", "PS256", "RS256"},
@@ -2203,6 +2205,9 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 
 	case "urn:openid:params:grant-type:ciba": // CIBA Core 1.0 — poll mode
 		return h.cibaGrant(c)
+
+	case "urn:ietf:params:oauth:grant-type:jwt-bearer": // RFC 7523 §2.1/§4
+		return h.jwtBearerGrant(c)
 
 	case "urn:ietf:params:oauth:grant-type:pre-authorized_code": // OID4VCI §6.1
 		// Wallets resolve the token endpoint from the OAuth AS metadata (RFC 8414)
