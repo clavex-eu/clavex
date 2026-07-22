@@ -22,7 +22,7 @@ import (
 // This is distinct from client_assertion_type=urn:ietf:params:oauth:client-
 // assertion-type:jwt-bearer (RFC 7523 §2.2, handled by
 // authenticateClientByAssertion), which authenticates the CLIENT itself.
-// Here the assertion authorizes the token request on behalf of a subject
+// Here the assertion authorises the token request on behalf of a subject
 // asserted by a trusted external issuer — iss (the issuer) and sub (the
 // subject) are independent, unlike a client assertion.
 //
