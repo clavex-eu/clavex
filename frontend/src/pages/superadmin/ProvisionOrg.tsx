@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useMutation } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Zap, Check, Copy, ArrowLeft } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api from '@/lib/api'

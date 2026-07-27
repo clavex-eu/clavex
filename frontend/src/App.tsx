@@ -1,5 +1,5 @@
 import { Component, type ReactNode, type ErrorInfo } from 'react'
-import { BrowserRouter, Routes, Route, Navigate } from 'react-router-dom'
+import { BrowserRouter, Routes, Route, Navigate } from 'react-router'
 import { Toaster } from 'react-hot-toast'
 import { useAuthStore } from '@/stores/auth'
 

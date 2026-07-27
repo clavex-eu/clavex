@@ -6,7 +6,7 @@ import {
   GraduationCap, Award, Star, RefreshCw, Plus, Send, QrCode,
   Zap, ChevronDown, ChevronUp, CheckCircle, Copy, Webhook, Eye, EyeOff, Sparkles, BarChart2,
 } from 'lucide-react'
-import { useNavigate } from 'react-router-dom'
+import { useNavigate } from 'react-router'
 import { PageHeader, Button } from '@/components/ui'
 
 // ── Types ──────────────────────────────────────────────────────────────────────

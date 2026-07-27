@@ -1,4 +1,4 @@
-import { NavLink, Outlet } from 'react-router-dom'
+import { NavLink, Outlet } from 'react-router'
 import { useAuthStore } from '@/stores/auth'
 import { doLogout } from '@/lib/logout'
 import { Settings, Users, Globe, Shield, LogOut, Cpu } from 'lucide-react'

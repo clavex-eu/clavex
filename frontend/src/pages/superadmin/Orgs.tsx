@@ -1,6 +1,6 @@
 import { useState } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import { Link } from 'react-router-dom'
+import { Link } from 'react-router'
 import { Plus, Users, KeyRound, Palette, FileText, Building2, ChevronRight } from 'lucide-react'
 import toast from 'react-hot-toast'
 import api, { toArr } from '@/lib/api'

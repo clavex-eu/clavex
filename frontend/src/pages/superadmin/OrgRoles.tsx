@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import RolesPage from '@/components/RolesPage'
 
 function Breadcrumb({ orgId }: { orgId: string }) {

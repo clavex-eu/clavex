@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import CaptchaPage from '@/pages/admin/CaptchaPage'
 
 function Breadcrumb({ orgId }: { orgId: string }) {
