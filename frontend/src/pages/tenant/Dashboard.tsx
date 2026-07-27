@@ -1,4 +1,4 @@
-import { useParams, Link, useNavigate } from 'react-router-dom'
+import { useParams, Link, useNavigate } from 'react-router'
 import { useQuery } from '@tanstack/react-query'
 import { Users, Shield, KeyRound, Palette, FileText, ArrowRight, ShieldCheck, ShieldAlert, Rocket } from 'lucide-react'
 import { useAuthStore } from '@/stores/auth'

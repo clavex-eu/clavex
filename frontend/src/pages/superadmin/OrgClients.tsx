@@ -1,4 +1,4 @@
-import { useParams, Link } from 'react-router-dom'
+import { useParams, Link } from 'react-router'
 import ClientsPage from '@/components/ClientsPage'
 
 function Breadcrumb({ orgId }: { orgId: string }) {

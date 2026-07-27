@@ -1,4 +1,4 @@
-import { Outlet, NavLink, useNavigate } from 'react-router-dom'
+import { Outlet, NavLink, useNavigate } from 'react-router'
 import { useAuthStore } from '@/stores/auth'
 import { doLogout } from '@/lib/logout'
 import { ClavexLogo } from '@/components/logo/ClavexLogo'
