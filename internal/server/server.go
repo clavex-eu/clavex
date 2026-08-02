@@ -75,6 +75,7 @@ type Server struct {
 	pqcSigner      *oidc.PQCSigner         // nil unless PQC enabled; target of scheduled global PQC rotation
 	orgSigners     *oidc.OrgSignerCache    // nil unless key_backend=db; target of scheduled per-org OIDC rotation
 	orgPQCSigners  *oidc.OrgPQCSignerCache // nil unless PQC enabled+key_backend=db; target of scheduled per-org PQC rotation
+	deviceMTLSSrv  *http.Server            // nil unless HTTP.DeviceMTLSAddr is configured
 }
 
 // SSFDispatcher returns the SSF event dispatcher. Used by workers that need
@@ -1803,6 +1804,59 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		rotationGroup.POST("/:rotation_id/mark-ready", dualRotation(sshcaRotH.MarkReady))
 		rotationGroup.POST("/:rotation_id/complete", dualRotation(sshcaRotH.Complete))
 
+		// ── Device CA ("<deviceID>@<tenantID>" mTLS identity for IoT device
+		// fleets authenticating to an external MQTT broker) ───────────────────
+		// Separate Vault-backed CA from the PAM SSH CA above — same custody
+		// pattern, different key, different domain of trust (machine identity
+		// vs human SSH access). Admin-authenticated config/lifecycle endpoints
+		// live under orgScoped; enrollment (device-facing, authenticated by a
+		// one-time bootstrap secret, no admin session) is registered directly
+		// on `e` below, alongside the rotation mark-ready/complete dual-auth
+		// group, mirroring the SSH CA rotation split above.
+		deviceH := handler.NewDevicePKIHandler(pool, enc, webhooks.Dispatcher())
+		deviceG := orgScoped.Group("/devices", middleware.RequireResourcePermission("security"))
+		deviceG.GET("/ca", deviceH.GetDeviceCA)
+		deviceG.PUT("/ca", deviceH.UpsertDeviceCA)
+		deviceG.DELETE("/ca", deviceH.DeleteDeviceCA)
+		deviceG.POST("/:device_id/enrollment-secrets", deviceH.CreateEnrollmentSecret)
+		deviceG.POST("/enrollment-secrets/:secret_id/revoke", deviceH.RevokeEnrollmentSecret)
+		deviceG.POST("/:device_id/certificates/:serial/revoke", deviceH.RevokeCertificate)
+		deviceG.POST("/:device_id/revoke", deviceH.RevokeDevice)
+
+		deviceRotH := handler.NewDevicePKIRotationHandler(cfg, pool, enc, keys, webhooks.Dispatcher())
+		deviceG.POST("/ca/rotation/start", deviceRotH.Start)
+		deviceG.GET("/ca/rotation", deviceRotH.Status)
+		deviceG.POST("/ca/rotation/:rotation_id/abort", deviceRotH.Abort)
+
+		adminDeviceRotMW := []echo.MiddlewareFunc{
+			middleware.RequireAdminJWT(cfg),
+			middleware.CSRFProtect(cfg),
+			middleware.RequireOrgAccess(),
+			middleware.RequireResourcePermission("security"),
+		}
+		agentDeviceRotMW := deviceRotH.RequireAgentScope(handler.ScopeDeviceCARotationManage)
+		dualDeviceRotation := func(real echo.HandlerFunc) echo.HandlerFunc {
+			adminH := real
+			for i := len(adminDeviceRotMW) - 1; i >= 0; i-- {
+				adminH = adminDeviceRotMW[i](adminH)
+			}
+			agentH := agentDeviceRotMW(real)
+			return func(c echo.Context) error {
+				if hasBearerAuth(c.Request()) {
+					return agentH(c)
+				}
+				return adminH(c)
+			}
+		}
+		deviceRotationGroup := e.Group("/api/v1/organizations/:org_id/devices/ca/rotation")
+		deviceRotationGroup.POST("/:rotation_id/mark-ready", dualDeviceRotation(deviceRotH.MarkReady))
+		deviceRotationGroup.POST("/:rotation_id/complete", dualDeviceRotation(deviceRotH.Complete))
+
+		// Device-facing enrollment: authenticated entirely by the one-time
+		// bootstrap secret in the request body, never by an admin session.
+		deviceEnrollGroup := e.Group("/api/v1/organizations/:org_id/devices")
+		deviceEnrollGroup.POST("/enroll", deviceH.Enroll)
+
 		// ── Credential Marketplace — org-admin listing management ─────────────────
 		// GET    /api/v1/organizations/:org_id/marketplace/listings         — list org's listings
 		// POST   /api/v1/organizations/:org_id/marketplace/listings         — publish new listing
@@ -2054,6 +2108,10 @@ func (s *Server) Start() error {
 	}
 	go worker.RunEntityReviewWorker(ctx, s.pool, entityReviewBaseURL)
 	go worker.RunPAMRotationWorker(ctx, s.pool, s.enc, s.pamNotifier, s.webhookDisp)
+	go worker.RunDeviceCARotationWorker(ctx, s.pool, s.enc, s.webhookDisp)
+	if err := s.startDeviceMTLSListener(ctx); err != nil {
+		log.Error().Err(err).Msg("device-mtls: disabled — startup error")
+	}
 	go worker.RunKeyRotationWorker(ctx, s.pool, s.dbSigner, s.pqcSigner, s.orgSigners, s.orgPQCSigners)
 	go worker.RunEntityEventsProjectionWorker(ctx, s.pool)
 
@@ -2101,6 +2159,9 @@ func (s *Server) Shutdown(ctx context.Context) error {
 	s.retention.Stop()
 	s.gdprWorker.Stop()
 	s.dispatcher.Stop()
+	if s.deviceMTLSSrv != nil {
+		_ = s.deviceMTLSSrv.Shutdown(ctx)
+	}
 	return s.echo.Shutdown(ctx)
 }
 
