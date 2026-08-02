@@ -254,6 +254,15 @@ type HTTPConfig struct {
 	// permitting connections to private/loopback/link-local addresses. Default
 	// false (block). Enable only when these intentionally target internal hosts.
 	AllowPrivateOutboundTargets bool `mapstructure:"allow_private_outbound_targets"`
+	// DeviceMTLSAddr, when non-empty, starts a SEPARATE listener (its own
+	// *http.Server/port) serving only the Device CA certificate-renewal
+	// endpoint (POST /renew) with tls.ClientAuth=RequireAndVerifyClientCert.
+	// It cannot share the main listener because the main listener's TLS
+	// config (see MTLSClientCACertFile above) is either fully optional
+	// client-cert (RFC 8705) or a single static file-based CA — the renewal
+	// listener instead needs a dynamically-refreshed union of every org's
+	// Device CA certificate as ClientCAs. Empty disables the feature.
+	DeviceMTLSAddr string `mapstructure:"device_mtls_addr"`
 }
 
 // IssuerURL builds the per-tenant OIDC issuer URL.

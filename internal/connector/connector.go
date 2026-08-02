@@ -32,19 +32,26 @@ import (
 type Event = string
 
 const (
-	EventUserLogin               Event = "user.login"
-	EventUserLoginFailed         Event = "user.login.failed"
-	EventUserIdentifierLockout   Event = "user.identifier.lockout" // adaptive lockout applied to an identifier
-	EventUserLogout              Event = "user.logout"
-	EventTokenIssued             Event = "token.issued"
-	EventTokenRevoked            Event = "token.revoked"
-	EventMFASuccess              Event = "mfa.success"
-	EventMFAFailed               Event = "mfa.failed"
-	EventPasswordReset           Event = "password.reset"
-	EventEmailVerified           Event = "user.email.verified"
-	EventUserCreated             Event = "user.created"
-	EventUserUpdated             Event = "user.updated"
-	EventUserDeleted             Event = "user.deleted"
+	EventUserLogin             Event = "user.login"
+	EventUserLoginFailed       Event = "user.login.failed"
+	EventUserIdentifierLockout Event = "user.identifier.lockout" // adaptive lockout applied to an identifier
+	EventUserLogout            Event = "user.logout"
+	EventTokenIssued           Event = "token.issued"
+	EventTokenRevoked          Event = "token.revoked"
+	EventMFASuccess            Event = "mfa.success"
+	EventMFAFailed             Event = "mfa.failed"
+	EventPasswordReset         Event = "password.reset"
+	EventEmailVerified         Event = "user.email.verified"
+	EventUserCreated           Event = "user.created"
+	EventUserUpdated           Event = "user.updated"
+	EventUserDeleted           Event = "user.deleted"
+	EventDeviceEnrolled        Event = "device.enrolled"
+	// EventDeviceCertRevoked notifies external consumers (e.g. an MQTT broker
+	// maintaining a local deny-list) that a Device CA leaf certificate has been
+	// revoked. Payload always carries device_id/tenant_id/serial — deliberately
+	// not repeating the gap at internal/handler/oidc.go's token.revoked event,
+	// which historically shipped without sub/jti.
+	EventDeviceCertRevoked Event = "device.cert.revoked"
 )
 
 // Payload is the JSON envelope sent on every event.
