@@ -28,7 +28,7 @@ import (
 
 // Sentinel errors surfaced to callers (handlers map these to HTTP statuses).
 var (
-	ErrNotConfigured      = errors.New("Device CA not configured")
+	ErrNotConfigured      = errors.New("device CA not configured")
 	ErrInvalidCSR         = errors.New("invalid certificate signing request")
 	ErrCNMismatch         = errors.New("CSR common name does not match expected device identity")
 	ErrDeviceNotActive    = errors.New("device is not active")
@@ -260,7 +260,7 @@ func (s *Service) BuildClientCAPool(ctx context.Context) (*x509.CertPool, error)
 // VerifyPresentedCertForOrg re-verifies a presented client certificate's chain
 // against THAT SPECIFIC org's Device CA certificate — not just "chained to
 // some member of the listener's union CA pool". This is required
-// defense-in-depth: the dedicated renewal listener's tls.Config.ClientCAs is a
+// defence-in-depth: the dedicated renewal listener's tls.Config.ClientCAs is a
 // union across every org's Device CA (a single port serves every tenant), so
 // generic pool verification alone would accept a cert legitimately signed by
 // org A's CA whose CN merely *claims* to belong to org B.
@@ -376,7 +376,7 @@ func (s *Service) Renew(ctx context.Context, orgID uuid.UUID, presentedSerial, p
 }
 
 // RevokeCertificateBySerial revokes a single issued certificate: the real,
-// immediate defense for a compromised device (unlike SSH CA rotation, "wait
+// immediate defence for a compromised device (unlike SSH CA rotation, "wait
 // for expiry" is not acceptable here — this is field hardware with no TPM).
 func (s *Service) RevokeCertificateBySerial(ctx context.Context, orgID uuid.UUID, serial, reason, revokedBy string) error {
 	cert, err := s.repo.GetCertificateBySerial(ctx, orgID, serial)

@@ -14,7 +14,7 @@ package handler
 // Device CA" — it does NOT prove the cert's claimed tenant (from its CN) is
 // the same org that actually signed it. Renew re-verifies the presented
 // certificate's chain against the SPECIFIC org named in its own CN before
-// doing anything else. This is required defense-in-depth, not optional.
+// doing anything else. This is required defence-in-depth, not optional.
 
 import (
 	"encoding/base64"
