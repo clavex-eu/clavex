@@ -5225,6 +5225,80 @@
         ]
       }
     },
+    "/ca": {
+      "delete": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Delete device CA",
+        "tags": [
+          "Device"
+        ]
+      },
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Get device CA",
+        "tags": [
+          "Device"
+        ]
+      },
+      "put": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Upsert device CA",
+        "tags": [
+          "Device"
+        ]
+      }
+    },
+    "/ca/rotation": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Status",
+        "tags": [
+          "Device Rot"
+        ]
+      }
+    },
+    "/ca/rotation/start": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Start",
+        "tags": [
+          "Device Rot"
+        ]
+      }
+    },
+    "/ca/rotation/{rotation_id}/abort": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Abort",
+        "tags": [
+          "Device Rot"
+        ]
+      }
+    },
     "/captcha": {
       "delete": {
         "responses": {
@@ -6912,6 +6986,19 @@
         ]
       }
     },
+    "/enroll": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Enroll",
+        "tags": [
+          "Device"
+        ]
+      }
+    },
     "/enroll-passkey": {
       "get": {
         "description": "Renders the HTML page shown when a user has ENROLL_PASSKEY in required_actions. Requires a valid login_session_id query parameter.",
@@ -7008,6 +7095,19 @@
         "tags": [
           "Authentication",
           "Passkeys"
+        ]
+      }
+    },
+    "/enrollment-secrets/{secret_id}/revoke": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Revoke enrollment secret",
+        "tags": [
+          "Device"
         ]
       }
     },
@@ -14500,6 +14600,45 @@
         "summary": "Delete",
         "tags": [
           "MFA"
+        ]
+      }
+    },
+    "/{device_id}/certificates/{serial}/revoke": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Revoke certificate",
+        "tags": [
+          "Device"
+        ]
+      }
+    },
+    "/{device_id}/enrollment-secrets": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Create enrollment secret",
+        "tags": [
+          "Device"
+        ]
+      }
+    },
+    "/{device_id}/revoke": {
+      "post": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Revoke device",
+        "tags": [
+          "Device"
         ]
       }
     },
