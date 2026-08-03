@@ -118,6 +118,15 @@ Some EU eID integrations require prior registration or accreditation with the re
 | **Vault SSH CA** | HashiCorp Vault integration — ephemeral SSH certificates; no agent on endpoints |
 | **Session Recording** | Privileged session audit log |
 
+### 🔌 Device Identity (mTLS)
+| Feature | Notes |
+|---|---|
+| **Device CA** | Vault PKI-backed mTLS certificate authority for IoT/machine fleets — separate CA and Vault mount from the SSH CA above |
+| **Per-Device Bootstrap Secret** | One-time enrollment secret scoped to a single device, not a fleet-wide shared credential |
+| **Self-Service Renewal** | Devices renew their own certificate over a dedicated mTLS listener; no operator or bootstrap secret involved |
+| **Per-Certificate Revocation** | Revoke one compromised device's certificate instantly, independent of CA rotation |
+| **Staged CA Rotation** | Dual-CA grace period rotation, mirroring the SSH CA's rotation workflow |
+
 ### ⚖️ Authorization
 | Feature | Notes |
 |---|---|
