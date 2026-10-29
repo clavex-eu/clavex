@@ -14,15 +14,14 @@ import (
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // OID4WRepository handles persistence for OID4VCI and OID4VP flows.
 type OID4WRepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
-func NewOID4WRepository(pool *pgxpool.Pool) *OID4WRepository {
+func NewOID4WRepository(pool Querier) *OID4WRepository {
 	return &OID4WRepository{pool: pool}
 }
 
@@ -506,7 +505,12 @@ func (r *OID4WRepository) GetOfferByAccessToken(ctx context.Context, tokenHash s
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, org_id, user_id, vct, pre_auth_code, tx_code_hash, access_token_hash, status, payload, vp_session_id, expires_at, created_at, c_nonce, c_nonce_expires_at
 		FROM credential_offers
-		WHERE access_token_hash = $1
+		WHERE (wallet_grant_version=0 AND access_token_hash = $1 AND access_token_expires_at>clock_timestamp()
+          AND NOT EXISTS(SELECT 1 FROM identity.wallet_issuance_grants g WHERE g.offer_id=credential_offers.id))
+           OR id IN (SELECT g.offer_id FROM identity.wallet_issuance_tokens t
+             JOIN identity.wallet_issuance_grants g ON g.id=t.grant_id
+             WHERE t.token_hash=$1 AND t.kind='access' AND t.expires_at>clock_timestamp()
+               AND g.expires_at>clock_timestamp() AND g.revoked_at IS NULL)
 	`, tokenHash).Scan(
 		&o.ID, &o.OrgID, &o.UserID, &o.VCT, &o.PreAuthCode, &o.TxCodeHash,
 		&o.AccessTokenHash, &o.Status, &rawPayload, &o.VPSessionID, &o.ExpiresAt, &o.CreatedAt,
@@ -522,9 +526,11 @@ func (r *OID4WRepository) GetOfferByAccessToken(ctx context.Context, tokenHash s
 }
 
 func (r *OID4WRepository) SetOfferAccessToken(ctx context.Context, offerID uuid.UUID, tokenHash string) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE credential_offers SET access_token_hash = $1 WHERE id = $2
-	`, tokenHash, offerID)
+	tag, err := r.pool.Exec(ctx, `UPDATE credential_offers SET access_token_hash=$1, access_token_expires_at=NOW()+INTERVAL '5 minutes'
+	 WHERE id=$2 AND status='pending' AND access_token_hash IS NULL AND expires_at>NOW()`, tokenHash, offerID)
+	if err == nil && tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
 	return err
 }
 
@@ -553,9 +559,10 @@ func (r *OID4WRepository) GetOfferByCNonce(ctx context.Context, cNonce string) (
 }
 
 func (r *OID4WRepository) MarkOfferUsed(ctx context.Context, offerID uuid.UUID) error {
-	_, err := r.pool.Exec(ctx, `
-		UPDATE credential_offers SET status = 'used' WHERE id = $1
-	`, offerID)
+	tag, err := r.pool.Exec(ctx, `UPDATE credential_offers SET status='used' WHERE id=$1 AND status='pending'`, offerID)
+	if err == nil && tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
 	return err
 }
 
@@ -605,7 +612,7 @@ func (r *OID4WRepository) RecordIssuedCredential(
 func (r *OID4WRepository) ListMyCredentials(ctx context.Context, orgID, userID uuid.UUID) ([]models.IssuedCredential, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, org_id, user_id, vct, sd_jwt_hash, issued_at, expires_at,
-		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index
+		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index,is_suspended
 		FROM issued_credentials
 		WHERE org_id = $1 AND user_id = $2
 		ORDER BY issued_at DESC
@@ -623,7 +630,7 @@ func (r *OID4WRepository) ListMyCredentials(ctx context.Context, orgID, userID u
 			&ic.ID, &ic.OrgID, &ic.UserID, &ic.VCT, &ic.SDJWTHash,
 			&ic.IssuedAt, &ic.ExpiresAt,
 			&ic.IsRevoked, &ic.RevokedAt, &ic.RevocationReason,
-			&ic.StatusListID, &ic.StatusIndex,
+			&ic.StatusListID, &ic.StatusIndex, &ic.IsSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -635,7 +642,7 @@ func (r *OID4WRepository) ListMyCredentials(ctx context.Context, orgID, userID u
 func (r *OID4WRepository) ListIssuedCredentials(ctx context.Context, orgID uuid.UUID, limit int) ([]models.IssuedCredential, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, org_id, user_id, vct, sd_jwt_hash, issued_at, expires_at,
-		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index
+		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index,is_suspended
 		FROM issued_credentials
 		WHERE org_id = $1
 		ORDER BY issued_at DESC
@@ -653,7 +660,7 @@ func (r *OID4WRepository) ListIssuedCredentials(ctx context.Context, orgID uuid.
 			&ic.ID, &ic.OrgID, &ic.UserID, &ic.VCT, &ic.SDJWTHash,
 			&ic.IssuedAt, &ic.ExpiresAt,
 			&ic.IsRevoked, &ic.RevokedAt, &ic.RevocationReason,
-			&ic.StatusListID, &ic.StatusIndex,
+			&ic.StatusListID, &ic.StatusIndex, &ic.IsSuspended,
 		); err != nil {
 			return nil, err
 		}
@@ -746,11 +753,11 @@ func (r *OID4WRepository) CompletePresentationSession(ctx context.Context, reque
 	if err != nil {
 		return fmt.Errorf("marshal vp_claims: %w", err)
 	}
-	_, err = r.pool.Exec(ctx, `
-		UPDATE presentation_sessions
-		SET status = 'verified', vp_claims = $1
-		WHERE request_id = $2
-	`, claimsJSON, requestID)
+	tag, err := r.pool.Exec(ctx, `UPDATE presentation_sessions SET status='verified',vp_claims=$1
+	 WHERE request_id=$2 AND status='pending' AND expires_at>clock_timestamp()`, claimsJSON, requestID)
+	if err == nil && tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
 	return err
 }
 
@@ -1088,6 +1095,7 @@ type CredentialStatusList struct {
 	ListIndex int       `db:"list_index" json:"list_index"`
 	Encoded   string    `db:"encoded"    json:"encoded"` // zlib+base64url bitstring
 	NextSlot  int       `db:"next_slot"  json:"next_slot"`
+	Bits      int       `db:"bits" json:"bits"`
 }
 
 // GetOrCreateStatusList returns the active status list for an org (the one
@@ -1096,19 +1104,19 @@ type CredentialStatusList struct {
 func (r *OID4WRepository) GetOrCreateStatusList(ctx context.Context, orgID uuid.UUID) (*CredentialStatusList, error) {
 	sl := &CredentialStatusList{}
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, org_id, list_index, encoded, next_slot
+		SELECT id, org_id, list_index, encoded, next_slot, bits
 		FROM credential_status_lists
 		WHERE org_id = $1 AND next_slot < 65536
 		ORDER BY list_index DESC
 		LIMIT 1
-	`, orgID).Scan(&sl.ID, &sl.OrgID, &sl.ListIndex, &sl.Encoded, &sl.NextSlot)
+	`, orgID).Scan(&sl.ID, &sl.OrgID, &sl.ListIndex, &sl.Encoded, &sl.NextSlot, &sl.Bits)
 
 	if errors.Is(err, pgx.ErrNoRows) {
 		// Determine next list_index for this org.
 		var maxIdx *int
-		_ = r.pool.QueryRow(ctx, `
-			SELECT MAX(list_index) FROM credential_status_lists WHERE org_id = $1
-		`, orgID).Scan(&maxIdx)
+		if err := r.pool.QueryRow(ctx, `SELECT MAX(list_index) FROM credential_status_lists WHERE org_id=$1`, orgID).Scan(&maxIdx); err != nil {
+			return nil, err
+		}
 
 		nextIdx := 0
 		if maxIdx != nil {
@@ -1122,10 +1130,10 @@ func (r *OID4WRepository) GetOrCreateStatusList(ctx context.Context, orgID uuid.
 		}
 
 		err2 := r.pool.QueryRow(ctx, `
-			INSERT INTO credential_status_lists (org_id, list_index, encoded, next_slot)
-			VALUES ($1, $2, $3, 0)
-			RETURNING id, org_id, list_index, encoded, next_slot
-		`, orgID, nextIdx, emptyEncoded).Scan(&sl.ID, &sl.OrgID, &sl.ListIndex, &sl.Encoded, &sl.NextSlot)
+			INSERT INTO credential_status_lists (org_id, list_index, encoded, next_slot,bits)
+			VALUES ($1, $2, $3, 0,2)
+			RETURNING id, org_id, list_index, encoded, next_slot, bits
+		`, orgID, nextIdx, emptyEncoded).Scan(&sl.ID, &sl.OrgID, &sl.ListIndex, &sl.Encoded, &sl.NextSlot, &sl.Bits)
 		if err2 != nil {
 			return nil, fmt.Errorf("create status list row: %w", err2)
 		}
@@ -1154,9 +1162,9 @@ func (r *OID4WRepository) AllocateStatusIndex(ctx context.Context, listID uuid.U
 func (r *OID4WRepository) GetStatusList(ctx context.Context, id uuid.UUID) (*CredentialStatusList, error) {
 	sl := &CredentialStatusList{}
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, org_id, list_index, encoded, next_slot
+		SELECT id, org_id, list_index, encoded, next_slot, bits
 		FROM credential_status_lists WHERE id = $1
-	`, id).Scan(&sl.ID, &sl.OrgID, &sl.ListIndex, &sl.Encoded, &sl.NextSlot)
+	`, id).Scan(&sl.ID, &sl.OrgID, &sl.ListIndex, &sl.Encoded, &sl.NextSlot, &sl.Bits)
 	return sl, err
 }
 
@@ -1168,94 +1176,108 @@ func (r *OID4WRepository) UpdateStatusListEncoded(ctx context.Context, id uuid.U
 	return err
 }
 
-// RevokeIssuedCredential marks a credential as revoked and flips its bit in
-// the status list.  Both writes happen inside a single transaction.
-func (r *OID4WRepository) RevokeIssuedCredential(ctx context.Context, credID uuid.UUID, reason string) error {
+// SetIssuedCredentialState serializes the registry and signed-list state.
+// Revocation is terminal; only a suspended credential can be restored.
+func (r *OID4WRepository) setIssuedCredentialState(ctx context.Context, credID uuid.UUID, state byte, reason string) error {
+	if state > 2 {
+		return fmt.Errorf("invalid credential state")
+	}
 	tx, err := r.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	// Lock and read the credential + its status list pointer.
-	var statusListID *uuid.UUID
-	var statusIndex *int
-	if e := tx.QueryRow(ctx, `
-		SELECT status_list_id, status_index
-		FROM issued_credentials WHERE id = $1 AND NOT is_revoked
-		FOR UPDATE
-	`, credID).Scan(&statusListID, &statusIndex); e != nil {
-		return fmt.Errorf("revoke: credential not found or already revoked: %w", e)
+	defer tx.Rollback(ctx)
+	var list *uuid.UUID
+	var index *int
+	var revoked, suspended bool
+	if err := tx.QueryRow(ctx, `SELECT status_list_id,status_index,is_revoked,is_suspended FROM identity.issued_credentials WHERE id=$1 FOR UPDATE`, credID).Scan(&list, &index, &revoked, &suspended); err != nil {
+		return err
 	}
-
-	// Mark the DB row as revoked.
-	if _, e := tx.Exec(ctx, `
-		UPDATE issued_credentials
-		SET is_revoked = TRUE, revoked_at = NOW(), revocation_reason = $2
-		WHERE id = $1
-	`, credID, reason); e != nil {
-		return fmt.Errorf("revoke: update credential row: %w", e)
+	if revoked || state == 0 && !suspended || state == 2 && suspended {
+		return pgx.ErrNoRows
 	}
-
-	// Flip the bit in the status list, if one was assigned.
-	if statusListID != nil && statusIndex != nil {
+	// Historical untracked credentials can be revoked, but suspension must be
+	// observable to holders/verifiers through an actual signed status pointer.
+	if state == 2 && (list == nil || index == nil) {
+		return pgx.ErrNoRows
+	}
+	if _, err := tx.Exec(ctx, `UPDATE identity.issued_credentials SET is_revoked=$2,is_suspended=$3,parent_status_hold=false,
+  revoked_at=CASE WHEN $2 THEN clock_timestamp() ELSE NULL END,
+  revocation_reason=CASE WHEN $2 OR $3 THEN $4 ELSE NULL END WHERE id=$1`, credID, state == 1, state == 2, reason); err != nil {
+		return err
+	}
+	if list != nil && index != nil {
 		var encoded string
-		if e := tx.QueryRow(ctx, `
-			SELECT encoded FROM credential_status_lists WHERE id = $1 FOR UPDATE
-		`, *statusListID).Scan(&encoded); e != nil {
-			return fmt.Errorf("revoke: load status list: %w", e)
+		var width int
+		if err := tx.QueryRow(ctx, `SELECT encoded,bits FROM identity.credential_status_lists WHERE id=$1 FOR UPDATE`, *list).Scan(&encoded, &width); err != nil {
+			return err
 		}
-
-		sl, decErr := decodeStatusListRaw(encoded)
-		if decErr != nil {
-			return fmt.Errorf("revoke: decode status list: %w", decErr)
+		sl, err := decodeStatusListRawWithBits(encoded, width)
+		if err != nil {
+			return err
 		}
-		if e := sl.Set(*statusIndex, 1 /* StatusRevoked */); e != nil {
-			return fmt.Errorf("revoke: set status bit: %w", e)
+		if state == 2 && width == 1 {
+			sl = sl.widen()
+			width = 2
 		}
-		newEncoded, encErr := sl.Encode()
-		if encErr != nil {
-			return fmt.Errorf("revoke: encode status list: %w", encErr)
+		if err := sl.Set(*index, state); err != nil {
+			return err
 		}
-
-		if _, e := tx.Exec(ctx, `
-			UPDATE credential_status_lists SET encoded = $1, updated_at = NOW() WHERE id = $2
-		`, newEncoded, *statusListID); e != nil {
-			return fmt.Errorf("revoke: update status list: %w", e)
+		encoded, err = sl.Encode()
+		if err != nil {
+			return err
+		}
+		if _, err := tx.Exec(ctx, `UPDATE identity.credential_status_lists SET encoded=$2,bits=$3,updated_at=clock_timestamp() WHERE id=$1`, *list, encoded, width); err != nil {
+			return err
 		}
 	}
-
 	return tx.Commit(ctx)
 }
-
-// ── internal helpers ──────────────────────────────────────────────────────────
-
-// statusBitList is a minimal, local bitstring helper to avoid an import cycle
-// with the oid4w package (oid4w → oidc → repository).
-type statusBitList struct{ bits []byte }
-
-func newEmptyEncodedList() (string, error) {
-	sl := &statusBitList{bits: make([]byte, 65536/8)}
-	return encodeStatusBits(sl.bits)
+func (r *OID4WRepository) RevokeIssuedCredential(ctx context.Context, id uuid.UUID, reason string) error {
+	return r.setIssuedCredentialState(ctx, id, 1, reason)
+}
+func (r *OID4WRepository) SuspendIssuedCredential(ctx context.Context, id uuid.UUID, reason string) error {
+	return r.setIssuedCredentialState(ctx, id, 2, reason)
+}
+func (r *OID4WRepository) RestoreIssuedCredential(ctx context.Context, id uuid.UUID) error {
+	return r.setIssuedCredentialState(ctx, id, 0, "")
 }
 
+// Kept independent of oid4w to avoid oid4w -> oidc -> repository cycles.
+type statusBitList struct {
+	bits  []byte
+	width int
+}
+
+func newEmptyEncodedList() (string, error) { return encodeStatusBits(make([]byte, 65536*2/8)) }
 func decodeStatusListRaw(encoded string) (*statusBitList, error) {
+	return decodeStatusListRawWithBits(encoded, 1)
+}
+func decodeStatusListRawWithBits(encoded string, width int) (*statusBitList, error) {
+	if width != 1 && width != 2 && width != 4 && width != 8 {
+		return nil, fmt.Errorf("invalid status width")
+	}
+	if len(encoded) > 128*1024 {
+		return nil, fmt.Errorf("encoded status exceeds limit")
+	}
 	compressed, err := base64.RawURLEncoding.DecodeString(encoded)
-	if err != nil {
-		return nil, fmt.Errorf("status list: base64: %w", err)
-	}
-	r, err := zlib.NewReader(strings.NewReader(string(compressed)))
-	if err != nil {
-		return nil, fmt.Errorf("status list: zlib: %w", err)
-	}
-	defer r.Close()
-	bits, err := io.ReadAll(r)
 	if err != nil {
 		return nil, err
 	}
-	return &statusBitList{bits: bits}, nil
+	reader, err := zlib.NewReader(strings.NewReader(string(compressed)))
+	if err != nil {
+		return nil, err
+	}
+	defer reader.Close()
+	bits, err := io.ReadAll(io.LimitReader(reader, int64(65536*width/8+1)))
+	if err != nil {
+		return nil, err
+	}
+	if len(bits) != 65536*width/8 {
+		return nil, fmt.Errorf("invalid local status size")
+	}
+	return &statusBitList{bits: bits, width: width}, nil
 }
-
 func encodeStatusBits(bits []byte) (string, error) {
 	var buf strings.Builder
 	w := zlib.NewWriter(&buf)
@@ -1267,77 +1289,23 @@ func encodeStatusBits(bits []byte) (string, error) {
 	}
 	return base64.RawURLEncoding.EncodeToString([]byte(buf.String())), nil
 }
-
 func (sl *statusBitList) Set(index int, val byte) error {
-	if index < 0 || index >= len(sl.bits)*8 {
-		return fmt.Errorf("status list: index %d out of range", index)
+	if index < 0 || index >= 65536 || int(val) > ((1<<sl.width)-1) {
+		return fmt.Errorf("invalid status index/value")
 	}
-	bytePos := index / 8
-	bitPos := uint(index % 8)
-	if val == 1 {
-		sl.bits[bytePos] |= 1 << bitPos
-	} else {
-		sl.bits[bytePos] &^= 1 << bitPos
-	}
+	pos, shift := index*sl.width/8, uint(index*sl.width%8)
+	mask := byte((1 << sl.width) - 1)
+	sl.bits[pos] = (sl.bits[pos] & ^(mask << shift)) | (val << shift)
 	return nil
 }
-
-func (sl *statusBitList) Encode() (string, error) { return encodeStatusBits(sl.bits) }
-
-// RestoreIssuedCredential clears the revocation flag and restores the status bit to valid.
-func (r *OID4WRepository) RestoreIssuedCredential(ctx context.Context, credID uuid.UUID) error {
-	tx, err := r.pool.Begin(ctx)
-	if err != nil {
-		return err
+func (sl *statusBitList) widen() *statusBitList {
+	out := &statusBitList{bits: make([]byte, 65536*2/8), width: 2}
+	for i := 0; i < 65536; i++ {
+		out.Set(i, (sl.bits[i/8]>>uint(i%8))&1)
 	}
-	defer tx.Rollback(ctx) //nolint:errcheck
-
-	var statusListID *uuid.UUID
-	var statusIndex *int
-	if e := tx.QueryRow(ctx, `
-		SELECT status_list_id, status_index
-		FROM issued_credentials WHERE id = $1 AND is_revoked
-		FOR UPDATE
-	`, credID).Scan(&statusListID, &statusIndex); e != nil {
-		return fmt.Errorf("restore: credential not found or not revoked: %w", e)
-	}
-
-	if _, e := tx.Exec(ctx, `
-		UPDATE issued_credentials
-		SET is_revoked = FALSE, revoked_at = NULL, revocation_reason = NULL
-		WHERE id = $1
-	`, credID); e != nil {
-		return fmt.Errorf("restore: update credential row: %w", e)
-	}
-
-	if statusListID != nil && statusIndex != nil {
-		var encoded string
-		if e := tx.QueryRow(ctx, `
-			SELECT encoded FROM credential_status_lists WHERE id = $1 FOR UPDATE
-		`, *statusListID).Scan(&encoded); e != nil {
-			return fmt.Errorf("restore: load status list: %w", e)
-		}
-		sl, decErr := decodeStatusListRaw(encoded)
-		if decErr != nil {
-			return fmt.Errorf("restore: decode: %w", decErr)
-		}
-		if e := sl.Set(*statusIndex, 0 /* StatusValid */); e != nil {
-			return fmt.Errorf("restore: clear status bit: %w", e)
-		}
-		newEncoded, encErr := sl.Encode()
-		if encErr != nil {
-			return fmt.Errorf("restore: encode: %w", encErr)
-		}
-		if _, e := tx.Exec(ctx, `
-			UPDATE credential_status_lists SET encoded = $1, updated_at = NOW() WHERE id = $2
-		`, newEncoded, *statusListID); e != nil {
-			return fmt.Errorf("restore: update status list: %w", e)
-		}
-	}
-	return tx.Commit(ctx)
+	return out
 }
-
-// statusListBuf type stub removed — we use statusBitList directly.
+func (sl *statusBitList) Encode() (string, error) { return encodeStatusBits(sl.bits) }
 
 // ── Deferred Credentials (OID4VCI Final §11) ──────────────────────────────────
 
@@ -1348,26 +1316,31 @@ type CreateDeferredCredentialParams struct {
 	OfferID                   uuid.UUID
 	CredentialConfigurationID string
 	ProofKeyID                string
+	HolderJWK                 json.RawMessage
+	StatusParents             json.RawMessage
 	ClaimsPayload             map[string]interface{}
 	ExpiresAt                 time.Time
 }
 
 // CreateDeferredCredential inserts a pending deferred issuance record and returns it.
 func (r *OID4WRepository) CreateDeferredCredential(ctx context.Context, p CreateDeferredCredentialParams) (*models.DeferredCredential, error) {
+	if len(p.StatusParents) == 0 {
+		p.StatusParents = json.RawMessage(`[]`)
+	}
 	dc := &models.DeferredCredential{}
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO deferred_credentials
-			(org_id, transaction_id, offer_id, credential_configuration_id, proof_key_id, claims_payload, expires_at)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+			(org_id, transaction_id, offer_id, credential_configuration_id, proof_key_id, holder_jwk, status_parents, claims_payload, expires_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		RETURNING id, org_id, transaction_id, offer_id, credential_configuration_id,
-		          proof_key_id, claims_payload, status,
+		          proof_key_id, holder_jwk, status_parents, claims_payload, status,
 		          credential_jwt, error_code, error_description,
 		          created_at, expires_at, completed_at
 	`, p.OrgID, p.TransactionID, p.OfferID, p.CredentialConfigurationID,
-		p.ProofKeyID, p.ClaimsPayload, p.ExpiresAt,
+		p.ProofKeyID, p.HolderJWK, p.StatusParents, p.ClaimsPayload, p.ExpiresAt,
 	).Scan(
 		&dc.ID, &dc.OrgID, &dc.TransactionID, &dc.OfferID, &dc.CredentialConfigurationID,
-		&dc.ProofKeyID, &dc.ClaimsPayload, &dc.Status,
+		&dc.ProofKeyID, &dc.HolderJWK, &dc.StatusParents, &dc.ClaimsPayload, &dc.Status,
 		&dc.CredentialJWT, &dc.ErrorCode, &dc.ErrorDescription,
 		&dc.CreatedAt, &dc.ExpiresAt, &dc.CompletedAt,
 	)
@@ -1379,27 +1352,30 @@ func (r *OID4WRepository) GetDeferredCredential(ctx context.Context, transaction
 	dc := &models.DeferredCredential{}
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, org_id, transaction_id, offer_id, credential_configuration_id,
-		       proof_key_id, claims_payload, status,
+		       proof_key_id, holder_jwk, status_parents, claims_payload, status,
 		       credential_jwt, error_code, error_description,
-		       created_at, expires_at, completed_at
+		       created_at, expires_at, completed_at, delivered_at
 		FROM deferred_credentials
 		WHERE transaction_id = $1
 	`, transactionID).Scan(
 		&dc.ID, &dc.OrgID, &dc.TransactionID, &dc.OfferID, &dc.CredentialConfigurationID,
-		&dc.ProofKeyID, &dc.ClaimsPayload, &dc.Status,
+		&dc.ProofKeyID, &dc.HolderJWK, &dc.StatusParents, &dc.ClaimsPayload, &dc.Status,
 		&dc.CredentialJWT, &dc.ErrorCode, &dc.ErrorDescription,
-		&dc.CreatedAt, &dc.ExpiresAt, &dc.CompletedAt,
+		&dc.CreatedAt, &dc.ExpiresAt, &dc.CompletedAt, &dc.DeliveredAt,
 	)
 	return dc, err
 }
 
 // CompleteDeferredCredential stores the issued credential JWT and marks the record completed.
 func (r *OID4WRepository) CompleteDeferredCredential(ctx context.Context, transactionID, credentialJWT string) error {
-	_, err := r.pool.Exec(ctx, `
+	tag, err := r.pool.Exec(ctx, `
 		UPDATE deferred_credentials
 		SET status = 'completed', credential_jwt = $2, completed_at = NOW()
-		WHERE transaction_id = $1 AND status = 'pending'
+		WHERE transaction_id = $1 AND status = 'pending' AND expires_at>clock_timestamp()
 	`, transactionID, credentialJWT)
+	if err == nil && tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
 	return err
 }
 
@@ -1417,9 +1393,9 @@ func (r *OID4WRepository) FailDeferredCredential(ctx context.Context, transactio
 func (r *OID4WRepository) ListDeferredCredentials(ctx context.Context, orgID uuid.UUID) ([]*models.DeferredCredential, error) {
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, org_id, transaction_id, offer_id, credential_configuration_id,
-		       proof_key_id, claims_payload, status,
+		       proof_key_id, holder_jwk, status_parents, claims_payload, status,
 		       credential_jwt, error_code, error_description,
-		       created_at, expires_at, completed_at
+		       created_at, expires_at, completed_at, delivered_at
 		FROM deferred_credentials
 		WHERE org_id = $1
 		ORDER BY created_at DESC
@@ -1434,9 +1410,9 @@ func (r *OID4WRepository) ListDeferredCredentials(ctx context.Context, orgID uui
 		dc := &models.DeferredCredential{}
 		if err := rows.Scan(
 			&dc.ID, &dc.OrgID, &dc.TransactionID, &dc.OfferID, &dc.CredentialConfigurationID,
-			&dc.ProofKeyID, &dc.ClaimsPayload, &dc.Status,
+			&dc.ProofKeyID, &dc.HolderJWK, &dc.StatusParents, &dc.ClaimsPayload, &dc.Status,
 			&dc.CredentialJWT, &dc.ErrorCode, &dc.ErrorDescription,
-			&dc.CreatedAt, &dc.ExpiresAt, &dc.CompletedAt,
+			&dc.CreatedAt, &dc.ExpiresAt, &dc.CompletedAt, &dc.DeliveredAt,
 		); err != nil {
 			return nil, err
 		}
@@ -1476,14 +1452,14 @@ func (r *OID4WRepository) GetIssuedCredentialByID(ctx context.Context, credID uu
 	ic := &models.IssuedCredential{}
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, org_id, user_id, vct, sd_jwt_hash, issued_at, expires_at,
-		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index
+		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index,is_suspended
 		FROM issued_credentials
 		WHERE id = $1
 	`, credID).Scan(
 		&ic.ID, &ic.OrgID, &ic.UserID, &ic.VCT, &ic.SDJWTHash,
 		&ic.IssuedAt, &ic.ExpiresAt,
 		&ic.IsRevoked, &ic.RevokedAt, &ic.RevocationReason,
-		&ic.StatusListID, &ic.StatusIndex,
+		&ic.StatusListID, &ic.StatusIndex, &ic.IsSuspended,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil
@@ -1495,7 +1471,7 @@ func (r *OID4WRepository) GetIssuedCredentialByHash(ctx context.Context, orgID u
 	ic := &models.IssuedCredential{}
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, org_id, user_id, vct, sd_jwt_hash, issued_at, expires_at,
-		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index
+		       is_revoked, revoked_at, revocation_reason, status_list_id, status_index,is_suspended
 		FROM issued_credentials
 		WHERE org_id = $1 AND sd_jwt_hash = $2
 		LIMIT 1
@@ -1503,7 +1479,7 @@ func (r *OID4WRepository) GetIssuedCredentialByHash(ctx context.Context, orgID u
 		&ic.ID, &ic.OrgID, &ic.UserID, &ic.VCT, &ic.SDJWTHash,
 		&ic.IssuedAt, &ic.ExpiresAt,
 		&ic.IsRevoked, &ic.RevokedAt, &ic.RevocationReason,
-		&ic.StatusListID, &ic.StatusIndex,
+		&ic.StatusListID, &ic.StatusIndex, &ic.IsSuspended,
 	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return nil, nil

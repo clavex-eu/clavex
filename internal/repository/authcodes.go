@@ -7,7 +7,6 @@ import (
 	"time"
 
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // AuthCode is the DB representation of an authorization code.
@@ -74,10 +73,10 @@ type CreateAuthCodeParams struct {
 
 // AuthCodeRepository manages authorization code persistence.
 type AuthCodeRepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
-func NewAuthCodeRepository(pool *pgxpool.Pool) *AuthCodeRepository {
+func NewAuthCodeRepository(pool Querier) *AuthCodeRepository {
 	return &AuthCodeRepository{pool: pool}
 }
 

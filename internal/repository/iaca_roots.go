@@ -123,11 +123,14 @@ func (r *IACARepository) Delete(ctx context.Context, id, orgID uuid.UUID) error 
 // Returns nil, nil when no roots are configured (caller treats nil pool as
 // "skip chain validation" and falls back to best-effort verification).
 func (r *IACARepository) GetCertPool(ctx context.Context, orgID uuid.UUID) (*x509.CertPool, error) {
-	const q = `
-		SELECT pem FROM org_iaca_roots
-		WHERE org_id = $1 AND is_active = true`
+	return r.GetCertPoolForDocType(ctx, orgID, "")
+}
 
-	rows, err := r.pool.Query(ctx, q, orgID)
+// GetCertPoolForDocType respects the explicitly configured document-type policy.
+func (r *IACARepository) GetCertPoolForDocType(ctx context.Context, orgID uuid.UUID, docType string) (*x509.CertPool, error) {
+	const q = `SELECT pem FROM org_iaca_roots WHERE org_id=$1 AND is_active=true
+	 AND ($2='' OR cardinality(doc_types)=0 OR $2=ANY(doc_types))`
+	rows, err := r.pool.Query(ctx, q, orgID, docType)
 	if err != nil {
 		return nil, err
 	}
@@ -142,8 +145,7 @@ func (r *IACARepository) GetCertPool(ctx context.Context, orgID uuid.UUID) (*x50
 		}
 		cert, err := parseSingleCertPEM(certPEM)
 		if err != nil {
-			// Skip malformed stored certs rather than failing completely.
-			continue
+			return nil, fmt.Errorf("invalid configured IACA root: %w", err)
 		}
 		pool.AddCert(cert)
 		count++

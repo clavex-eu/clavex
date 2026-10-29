@@ -10,7 +10,6 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // CIBARequest is a row from the ciba_requests table.
@@ -37,11 +36,11 @@ type CIBARequest struct {
 
 // CIBARepository manages persistence for ciba_requests.
 type CIBARepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
 // NewCIBARepository creates a new CIBARepository.
-func NewCIBARepository(pool *pgxpool.Pool) *CIBARepository {
+func NewCIBARepository(pool Querier) *CIBARepository {
 	return &CIBARepository{pool: pool}
 }
 
@@ -61,8 +60,8 @@ type CIBACreateParams struct {
 	ClientID       string
 	UserID         *uuid.UUID // may be nil if hint is not yet resolved
 	Scope          string
-	BindingMessage string // required for FAPI2; may be empty for basic CIBA
-	LoginHint      string // email or sub sent by the client
+	BindingMessage string        // required for FAPI2; may be empty for basic CIBA
+	LoginHint      string        // email or sub sent by the client
 	ExpiresIn      time.Duration // typically 120 s; caller controls
 	Interval       int           // polling interval in seconds (default 5)
 }
@@ -156,7 +155,7 @@ func (r *CIBARepository) Approve(ctx context.Context, authReqID string) error {
 // ApproveWithVPClaims marks the CIBA request as approved and stores the
 // verified credential claims and ACR value from an OID4VP presentation.
 // Called automatically when the wallet completes the VP response in a
-// CIBA+OID4VP SCA flow (PSD2 Level 2 Strong Customer Authentication).
+// account-bound CIBA+OID4VP flow; the ACR marker is not a certification.
 func (r *CIBARepository) ApproveWithVPClaims(ctx context.Context, authReqID string, userID uuid.UUID, vpClaims map[string]interface{}, acr string) error {
 	claimsJSON, err := json.Marshal(vpClaims)
 	if err != nil {
@@ -164,9 +163,12 @@ func (r *CIBARepository) ApproveWithVPClaims(ctx context.Context, authReqID stri
 	}
 	const q = `
 		UPDATE ciba_requests
-		SET status = 'approved', user_id = $2, vp_claims = $3, acr = $4
-		WHERE auth_req_id = $1 AND status = 'pending'`
-	_, err = r.pool.Exec(ctx, q, authReqID, userID, claimsJSON, acr)
+		SET status = 'approved', vp_claims = $3, acr = $4
+		WHERE auth_req_id = $1 AND user_id=$2 AND status = 'pending' AND expires_at>clock_timestamp()`
+	tag, err := r.pool.Exec(ctx, q, authReqID, userID, claimsJSON, acr)
+	if err == nil && tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
 	return err
 }
 

@@ -11,16 +11,15 @@ import (
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
-	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 // MdocIssuerRepository manages per-org Document Signer (DS) key + cert pairs
 // used to issue ISO 18013-5 mdoc credentials via OID4VCI.
 type MdocIssuerRepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
-func NewMdocIssuerRepository(pool *pgxpool.Pool) *MdocIssuerRepository {
+func NewMdocIssuerRepository(pool Querier) *MdocIssuerRepository {
 	return &MdocIssuerRepository{pool: pool}
 }
 

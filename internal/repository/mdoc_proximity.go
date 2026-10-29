@@ -7,15 +7,15 @@ import (
 
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/google/uuid"
-	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/jackc/pgx/v5"
 )
 
 // MdocProximityRepository persists ISO 18013-5 proximity verification sessions.
 type MdocProximityRepository struct {
-	pool *pgxpool.Pool
+	pool Querier
 }
 
-func NewMdocProximityRepository(pool *pgxpool.Pool) *MdocProximityRepository {
+func NewMdocProximityRepository(pool Querier) *MdocProximityRepository {
 	return &MdocProximityRepository{pool: pool}
 }
 
@@ -127,15 +127,18 @@ func (r *MdocProximityRepository) Complete(
 	if err != nil {
 		return err
 	}
-	_, err = r.pool.Exec(ctx, `
+	tag, err := r.pool.Exec(ctx, `
 		UPDATE mdoc_proximity_sessions
 		SET status = 'completed',
 		    vp_claims = $2,
 		    issuer_country = $3,
 		    completed_at = NOW()
-		WHERE request_id = $1 AND status IN ('pending','scanned')`,
+		WHERE request_id = $1 AND status IN ('pending','scanned') AND expires_at>NOW()`,
 		requestID, claimsJSON, issuerCountry,
 	)
+	if err == nil && tag.RowsAffected() != 1 {
+		return pgx.ErrNoRows
+	}
 	return err
 }
 
