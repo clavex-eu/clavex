@@ -3,6 +3,7 @@ package oidc
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"strings"
 	"time"
 
@@ -10,6 +11,8 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
+
+var ErrClientReplayUnavailable = errors.New("client assertion replay store unavailable")
 
 // JTICache is an interface for JTI replay prevention with SetNX semantics.
 // CheckAndSet atomically marks a JTI as used. Returns (true, nil) if the JTI
@@ -98,12 +101,15 @@ outer:
 	// ── Step 4: JTI replay prevention (RFC 7523 §3 item 9) ───────────────────
 	if jtiCache != nil {
 		if jti := unverified.JwtID(); jti != "" {
-			ttl := time.Until(unverified.Expiration())
+			ttl := time.Until(unverified.Expiration().Add(30 * time.Second))
 			if ttl <= 0 {
 				ttl = 5 * time.Minute
 			}
 			used, cacheErr := jtiCache.CheckAndSet(ctx, "ca:jti:"+jti, ttl)
-			if cacheErr == nil && used {
+			if cacheErr != nil {
+				return "", ErrClientReplayUnavailable
+			}
+			if used {
 				return invalid("client_assertion jti already used")
 			}
 		}
@@ -133,7 +139,7 @@ outer:
 func ValidateAttestationAssertionJWT(
 	ctx context.Context,
 	clientAssertion string, // "<attest_jwt>~<pop_jwt>"
-	clientKeySet jwk.Set,   // client's registered JWKS (verifies attest_jwt)
+	clientKeySet jwk.Set, // client's registered JWKS (verifies attest_jwt)
 	tokenEndpoint string,
 	issuer string,
 	expectedClientID string,
@@ -289,12 +295,15 @@ outer:
 	// jti replay prevention.
 	if jtiCache != nil {
 		if jti := unverified.JwtID(); jti != "" {
-			ttl := time.Until(unverified.Expiration())
+			ttl := time.Until(unverified.Expiration().Add(30 * time.Second))
 			if ttl <= 0 {
 				ttl = 5 * time.Minute
 			}
 			used, cacheErr := jtiCache.CheckAndSet(ctx, "pop:jti:"+jti, ttl)
-			if cacheErr == nil && used {
+			if cacheErr != nil {
+				return ErrClientReplayUnavailable
+			}
+			if used {
 				return invalid("jti already used")
 			}
 		}

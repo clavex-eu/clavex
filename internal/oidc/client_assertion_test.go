@@ -248,7 +248,7 @@ func TestValidateClientAssertion_JWKSFetchFailed(t *testing.T) {
 	// (The real HTTP-level test lives in the handler; here we verify the
 	// downstream behaviour: an empty key set → signature cannot be verified.)
 	priv := generateRSAKey(t)
-	emptyKS := jwk.NewSet()          // no keys
+	emptyKS := jwk.NewSet()             // no keys
 	assertion := makeAssertion(t, priv) // signed with priv
 
 	_, err := oidc.ValidateClientAssertionJWT(context.Background(), assertion, emptyKS,
@@ -279,4 +279,15 @@ func TestValidateClientAssertion_JWKSUriBadResponse(t *testing.T) {
 	defer resp.Body.Close()
 	assert.Equal(t, http.StatusInternalServerError, resp.StatusCode)
 	// The handler would return echo.NewHTTPError(401, "cannot fetch client jwks_uri").
+}
+
+type unavailableClientJTICache struct{}
+
+func (unavailableClientJTICache) CheckAndSet(context.Context, string, time.Duration) (bool, error) {
+	return false, fmt.Errorf("synthetic unavailable replay store")
+}
+func TestValidateClientAssertion_UnavailableReplayStoreFailsClosed(t *testing.T) {
+	key := generateRSAKey(t)
+	_, err := oidc.ValidateClientAssertionJWT(context.Background(), makeAssertion(t, key), publicKeySet(t, key), caTokenEndpoint, caIssuer, unavailableClientJTICache{})
+	require.ErrorIs(t, err, oidc.ErrClientReplayUnavailable)
 }
