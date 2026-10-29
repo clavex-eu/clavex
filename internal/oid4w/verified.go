@@ -36,6 +36,7 @@ func IssueVerifiedCredential(
 	keys oidc.Signer,
 	baseURL string,
 	holderKey jwk.Key,
+	status ...StatusClaim,
 ) (string, []Disclosure, error) {
 	if len(payload) == 0 {
 		return "", nil, fmt.Errorf("IssueVerifiedCredential: payload must not be empty")
@@ -75,5 +76,8 @@ func IssueVerifiedCredential(
 		}
 	}
 
+	if err := withCredentialStatus(&params, status); err != nil {
+		return "", nil, err
+	}
 	return IssueSDJWT(params)
 }

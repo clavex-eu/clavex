@@ -315,6 +315,9 @@ func VerifyAndExtractClaims(issuerJWT string, disclosureRaws []string, pubKey cr
 		if err != nil {
 			return nil, fmt.Errorf("decode disclosure: %w", err)
 		}
+		if _, exists := claims[name]; exists || name == "_sd" || name == "_sd_alg" {
+			return nil, fmt.Errorf("disclosure duplicates an existing or reserved claim")
+		}
 		claims[name] = value
 	}
 
@@ -364,6 +367,9 @@ func extractSDJWTClaimsNoSigCheck(issuerJWT string, disclosureRaws []string) (ma
 		_, name, value, err := DecodeDisclosure(raw)
 		if err != nil {
 			return nil, fmt.Errorf("decode disclosure: %w", err)
+		}
+		if _, exists := claims[name]; exists || name == "_sd" || name == "_sd_alg" {
+			return nil, fmt.Errorf("disclosure duplicates an existing or reserved claim")
 		}
 		claims[name] = value
 	}

@@ -58,6 +58,8 @@ type IssuanceParams struct {
 	DevicePublicKey *ecdsa.PublicKey
 	// ValidityHours is the MSO validity window (default 720 = 30 days).
 	ValidityHours int
+	// StatusList is a signed MSO extension selected by the deployment profile.
+	StatusList cbor.RawMessage
 }
 
 // IssueMdoc builds and returns the CBOR-encoded IssuerSigned bytes for one mdoc.
@@ -136,13 +138,14 @@ func IssueMdoc(p IssuanceParams) ([]byte, error) {
 	// ── 4. Build and sign MSO ─────────────────────────────────────────────────
 	mso := MSO{
 		Version:         "1.0",
+		StatusList:      p.StatusList,
 		DigestAlgorithm: "SHA-256",
 		ValueDigests:    map[string]DigestMap{p.Namespace: digestMap},
 		DeviceKeyInfo:   deviceKeyInfo,
 		DocType:         p.DocType,
 		ValidityInfo: ValidityInfo{
-			Signed:    now,
-			ValidFrom: now,
+			Signed:     now,
+			ValidFrom:  now,
 			ValidUntil: validUntil,
 		},
 	}
@@ -209,12 +212,12 @@ func FillMdlMandatory(attrs map[string]interface{}) {
 	setIf("birth_date", fullDate(now.AddDate(-30, 0, 0).Format("2006-01-02")))
 	setIf("issue_date", fullDate(today))
 	setIf("expiry_date", fullDate(expiry))
-	setIf("issuing_country", "IT")             // ISO 3166-1 alpha-2
-	setIf("issuing_authority", "Clavex")       // tstr
-	setIf("document_number", "CLVX-000001")    // tstr
-	setIf("un_distinguishing_sign", "I")       // distinguishing sign (Italy)
+	setIf("issuing_country", "IT")                    // ISO 3166-1 alpha-2
+	setIf("issuing_authority", "Clavex")              // tstr
+	setIf("document_number", "CLVX-000001")           // tstr
+	setIf("un_distinguishing_sign", "I")              // distinguishing sign (Italy)
 	setIf("portrait", []byte{0xFF, 0xD8, 0xFF, 0xD9}) // bstr (minimal JPEG)
-	setIf("driving_privileges", []interface{}{ // array of driving-privilege maps
+	setIf("driving_privileges", []interface{}{        // array of driving-privilege maps
 		map[string]interface{}{
 			"vehicle_category_code": "B",
 			"issue_date":            fullDate(today),
@@ -326,7 +329,7 @@ func ecPublicKeyToCOSE(pub *ecdsa.PublicKey) (COSEKey, error) {
 	x := padLeft(raw[1:1+coordSize], coordSize)
 	y := padLeft(raw[1+coordSize:], coordSize)
 	return COSEKey{
-		KeyType: 2,    // EC2
+		KeyType: 2, // EC2
 		Curve:   crv,
 		X:       x,
 		Y:       y,
@@ -342,7 +345,6 @@ func padLeft(b []byte, size int) []byte {
 	copy(out[size-len(b):], b)
 	return out
 }
-
 
 // ECPublicKeyFromCOSE converts a COSEKey back to *ecdsa.PublicKey.
 // Exported for use by the OID4VCI holder-key extraction.

@@ -29,6 +29,7 @@ import (
 	"crypto/x509"
 	"encoding/asn1"
 	"encoding/binary"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"hash"
@@ -111,6 +112,8 @@ type MSO struct {
 	DeviceKeyInfo   DeviceKeyInfo        `cbor:"deviceKeyInfo"`
 	DocType         string               `cbor:"docType"`
 	ValidityInfo    ValidityInfo         `cbor:"validityInfo"`
+	Status          cbor.RawMessage      `cbor:"status,omitempty"`
+	StatusList      cbor.RawMessage      `cbor:"status_list,omitempty"`
 }
 
 // DigestMap maps digestID (uint) to the expected SHA digest of each IssuerSignedItem.
@@ -202,10 +205,14 @@ type VerificationOptions struct {
 	// (development/testing only).
 	TrustedRoots *x509.CertPool
 
-	// ExpectedNonce is the nonce from the OID4VP authorization request.
-	// It must appear in the DeviceSigned session transcript.
-	// If empty, nonce verification is skipped.
+	// Deprecated: a nonce alone cannot define device authentication. Non-empty
+	// ExpectedNonce is rejected; supply the exact request's SessionTranscript.
 	ExpectedNonce string
+
+	// SessionTranscript is the expected CBOR transcript built from the request.
+	SessionTranscript    []byte
+	RequireTrustedIssuer bool
+	RequireDeviceAuth    bool
 
 	// Now overrides time.Now() for validity window checks. Nil = real clock.
 	Now *time.Time
@@ -227,8 +234,11 @@ type VerifiedDocument struct {
 	// Use it to call VerifyDeviceSignature after building the session transcript.
 	DeviceKey *ecdsa.PublicKey
 	// ValidFrom / ValidUntil from the MSO ValidityInfo.
-	ValidFrom  time.Time
-	ValidUntil time.Time
+	ValidFrom      time.Time
+	ValidUntil     time.Time
+	VerifiedChains [][]*x509.Certificate
+	Status         json.RawMessage
+	IssuerAuthHash string
 }
 
 // ── Public API ────────────────────────────────────────────────────────────────
@@ -267,6 +277,18 @@ func VerifyDeviceResponse(dr *DeviceResponse, opts VerificationOptions) ([]*Veri
 		now = *opts.Now
 	}
 
+	if dr == nil || dr.Status != 0 || dr.Version != "1.0" || len(dr.Documents) == 0 || len(dr.DocumentErrors) > 0 {
+		return nil, []error{errors.New("mdoc: invalid or unsuccessful DeviceResponse")}
+	}
+	if opts.RequireTrustedIssuer && opts.TrustedRoots == nil {
+		return nil, []error{errors.New("mdoc: trusted issuer roots are required")}
+	}
+	if opts.ExpectedNonce != "" {
+		return nil, []error{errors.New("mdoc: use SessionTranscript instead of ExpectedNonce")}
+	}
+	if opts.RequireDeviceAuth && len(opts.SessionTranscript) == 0 {
+		return nil, []error{errors.New("mdoc: expected session transcript is required")}
+	}
 	var verified []*VerifiedDocument
 	var errs []error
 
@@ -303,6 +325,9 @@ func ExtractAttributes(vd *VerifiedDocument, namespace string) map[string]any {
 // ── internal verification helpers ────────────────────────────────────────────
 
 func verifyDocument(doc Document, now time.Time, opts VerificationOptions) (*VerifiedDocument, error) {
+	if len(doc.Errors) > 0 {
+		return nil, errors.New("mdoc: document contains errors")
+	}
 	// ── 1. Decode IssuerAuth (COSE_Sign1) ─────────────────────────────────
 	sig1, err := decodeCOSESign1(doc.IssuerSigned.IssuerAuth)
 	if err != nil {
@@ -310,18 +335,18 @@ func verifyDocument(doc Document, now time.Time, opts VerificationOptions) (*Ver
 	}
 
 	// ── 2. Decode protected header to get algorithm + x5chain ─────────────
-	var protectedHeader coseHeader
-	if err := cbor.Unmarshal(sig1.Protected, &protectedHeader); err != nil {
-		return nil, fmt.Errorf("protected header: %w", err)
+	algorithm, err := protectedAlgorithm(sig1.Protected)
+	if err != nil {
+		return nil, err
 	}
 
-	issuerCert, err := extractIssuerCert(sig1, opts.TrustedRoots)
+	issuerCert, verifiedChains, err := extractIssuerCert(sig1, opts.TrustedRoots, now)
 	if err != nil {
 		return nil, err
 	}
 
 	// ── 3. Verify COSE_Sign1 signature ────────────────────────────────────
-	if err := verifyCOSESign1(sig1, protectedHeader.Algorithm, issuerCert.PublicKey); err != nil {
+	if err := verifyCOSESign1(sig1, algorithm, issuerCert.PublicKey); err != nil {
 		return nil, fmt.Errorf("COSE_Sign1 signature: %w", err)
 	}
 
@@ -352,16 +377,37 @@ func verifyDocument(doc Document, now time.Time, opts VerificationOptions) (*Ver
 		return nil, err
 	}
 
-	// ── 8. Extract device public key from MSO ────────────────────────────
-	deviceKey, _ := coseKeyToECDSA(mso.DeviceKeyInfo.DeviceKey)
+	if mso.Version != "1.0" || mso.ValidityInfo.Signed.IsZero() || mso.ValidityInfo.ValidFrom.IsZero() ||
+		mso.ValidityInfo.ValidUntil.IsZero() || mso.ValidityInfo.ValidUntil.Before(mso.ValidityInfo.ValidFrom) ||
+		mso.ValidityInfo.Signed.After(now.Add(time.Minute)) || mso.ValidityInfo.Signed.After(mso.ValidityInfo.ValidUntil) {
+		return nil, errors.New("mdoc: invalid MSO validity information")
+	}
+	deviceKey, keyErr := coseKeyToECDSA(mso.DeviceKeyInfo.DeviceKey)
+	if opts.RequireDeviceAuth || len(opts.SessionTranscript) > 0 {
+		if keyErr != nil {
+			return nil, keyErr
+		}
+		if err := VerifyDeviceSignature(doc, opts.SessionTranscript, deviceKey); err != nil {
+			return nil, err
+		}
+	}
 
+	status, statusErr := msoStatusReference(mso)
+	if statusErr != nil {
+		return nil, statusErr
+	}
+	authHash, hashErr := IssuerAuthenticationHash(doc.IssuerSigned.IssuerAuth)
+	if hashErr != nil {
+		return nil, hashErr
+	}
 	return &VerifiedDocument{
-		DocType:    doc.DocType,
-		Attributes: attrs,
-		IssuerCert: issuerCert,
-		DeviceKey:  deviceKey,
-		ValidFrom:  mso.ValidityInfo.ValidFrom,
-		ValidUntil: mso.ValidityInfo.ValidUntil,
+		DocType:        doc.DocType,
+		Attributes:     attrs,
+		IssuerCert:     issuerCert,
+		DeviceKey:      deviceKey,
+		ValidFrom:      mso.ValidityInfo.ValidFrom,
+		ValidUntil:     mso.ValidityInfo.ValidUntil,
+		VerifiedChains: verifiedChains, Status: status, IssuerAuthHash: authHash,
 	}, nil
 }
 
@@ -388,68 +434,93 @@ func decodeCOSESign1(raw cbor.RawMessage) (*coseSig1, error) {
 	return &sig, nil
 }
 
-// extractIssuerCert parses the x5chain from unprotected or protected headers,
-// then optionally validates the chain against trustedRoots.
-func extractIssuerCert(sig1 *coseSig1, roots *x509.CertPool) (*x509.Certificate, error) {
-	// x5chain (header label 33) may hold a single bstr (one cert) or an array of bstr.
-	// We look in both protected and unprotected headers.
-	certDER, err := extractX5Chain(sig1.Protected)
-	if err != nil || certDER == nil {
-		// Try unprotected header.
-		certDER, err = extractX5Chain(sig1.Unprotected)
-		if err != nil {
-			return nil, fmt.Errorf("x5chain: %w", err)
-		}
-	}
-	if certDER == nil {
-		return nil, errors.New("issuer certificate (x5chain) not found in COSE header")
-	}
-
-	cert, err := x509.ParseCertificate(certDER)
+// extractIssuerCert validates the complete supplied certificate chain against
+// configured roots; supplied intermediates never become trust anchors.
+func extractIssuerCert(sig1 *coseSig1, roots *x509.CertPool, now time.Time) (*x509.Certificate, [][]*x509.Certificate, error) {
+	chain, err := extractX5ChainCerts(sig1.Protected)
 	if err != nil {
-		return nil, fmt.Errorf("issuer cert parse: %w", err)
+		return nil, nil, err
 	}
-
+	other, err := extractX5ChainCerts(sig1.Unprotected)
+	if err != nil {
+		return nil, nil, err
+	}
+	if len(chain) > 0 && len(other) > 0 {
+		return nil, nil, errors.New("mdoc: ambiguous x5chain")
+	}
+	if len(chain) == 0 {
+		chain = other
+	}
+	if len(chain) == 0 {
+		return nil, nil, errors.New("mdoc: issuer x5chain is required")
+	}
+	cert, err := x509.ParseCertificate(chain[0])
+	if err != nil {
+		return nil, nil, err
+	}
+	if now.Before(cert.NotBefore) || now.After(cert.NotAfter) || cert.IsCA || cert.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+		return nil, nil, errors.New("mdoc: invalid document signer certificate")
+	}
+	var verifiedChains [][]*x509.Certificate
 	if roots != nil {
-		opts := x509.VerifyOptions{
-			Roots:       roots,
-			CurrentTime: time.Now(),
-			KeyUsages:   []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		intermediates := x509.NewCertPool()
+		for _, der := range chain[1:] {
+			c, err := x509.ParseCertificate(der)
+			if err != nil {
+				return nil, nil, err
+			}
+			intermediates.AddCert(c)
 		}
-		if _, err := cert.Verify(opts); err != nil {
-			return nil, fmt.Errorf("issuer cert chain verification: %w", err)
+		chains, err := cert.Verify(x509.VerifyOptions{Roots: roots, Intermediates: intermediates, CurrentTime: now, KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageAny}})
+		if err != nil {
+			return nil, nil, fmt.Errorf("mdoc: issuer certificate trust: %w", err)
 		}
+		verifiedChains = chains
 	}
-	return cert, nil
+	return cert, verifiedChains, nil
 }
 
-// extractX5Chain reads the x5chain (COSE header label 33) from a raw CBOR header map.
-// Returns nil, nil if the key is absent.
-func extractX5Chain(rawHeader cbor.RawMessage) ([]byte, error) {
-	if len(rawHeader) == 0 {
+func extractX5ChainCerts(raw cbor.RawMessage) ([][]byte, error) {
+	if len(raw) == 0 {
 		return nil, nil
 	}
-	// Decode as a generic map to find key 33.
-	var hdrMap map[int]cbor.RawMessage
-	if err := cbor.Unmarshal(rawHeader, &hdrMap); err != nil {
-		return nil, nil // header may not be a map (e.g. empty bstr)
+	var headers map[int]cbor.RawMessage
+	if err := cbor.Unmarshal(raw, &headers); err != nil {
+		return nil, fmt.Errorf("mdoc: malformed COSE headers: %w", err)
 	}
-	raw, ok := hdrMap[33]
+	value, ok := headers[33]
 	if !ok {
 		return nil, nil
 	}
-	// x5chain can be a bstr (single cert) or array of bstr (chain).
-	// Try bstr first.
-	var certDER []byte
-	if err := cbor.Unmarshal(raw, &certDER); err == nil {
-		return certDER, nil
+	var single []byte
+	if err := cbor.Unmarshal(value, &single); err == nil && len(single) > 0 {
+		return [][]byte{single}, nil
 	}
-	// Try array — return the leaf (first) cert.
 	var chain [][]byte
-	if err := cbor.Unmarshal(raw, &chain); err == nil && len(chain) > 0 {
-		return chain[0], nil
+	if err := cbor.Unmarshal(value, &chain); err != nil || len(chain) == 0 || len(chain) > 10 {
+		return nil, errors.New("mdoc: invalid x5chain")
 	}
-	return nil, errors.New("x5chain: unrecognised format")
+	for _, der := range chain {
+		if len(der) == 0 {
+			return nil, errors.New("mdoc: empty x5chain certificate")
+		}
+	}
+	return chain, nil
+}
+
+func protectedAlgorithm(raw []byte) (int, error) {
+	var headers map[int]cbor.RawMessage
+	if err := cbor.Unmarshal(raw, &headers); err != nil {
+		return 0, err
+	}
+	if _, ok := headers[2]; ok {
+		return 0, errors.New("mdoc: unsupported critical COSE headers")
+	}
+	var algorithm int
+	if err := cbor.Unmarshal(headers[1], &algorithm); err != nil {
+		return 0, errors.New("mdoc: protected algorithm is required")
+	}
+	return algorithm, nil
 }
 
 // verifyCOSESign1 verifies the COSE_Sign1 signature.
@@ -472,21 +543,23 @@ func verifyCOSESign1(sig1 *coseSig1, alg int, pub crypto.PublicKey) error {
 	}
 
 	var h hash.Hash
-	var hashAlg crypto.Hash
+	var expectedCurve elliptic.Curve
 	switch alg {
 	case algES256:
 		h = sha256.New()
-		hashAlg = crypto.SHA256
+		expectedCurve = elliptic.P256()
 	case algES384:
 		h = sha512.New384()
-		hashAlg = crypto.SHA384
+		expectedCurve = elliptic.P384()
 	case algES512:
 		h = sha512.New()
-		hashAlg = crypto.SHA512
+		expectedCurve = elliptic.P521()
 	default:
 		return fmt.Errorf("unsupported COSE algorithm: %d", alg)
 	}
-	_ = hashAlg
+	if ecPub.Curve != expectedCurve || !ecPub.Curve.IsOnCurve(ecPub.X, ecPub.Y) || len(sig1.Signature) != 2*((expectedCurve.Params().BitSize+7)/8) {
+		return errors.New("mdoc: invalid ECDSA key, curve or signature length")
+	}
 
 	h.Write(sigStructure)
 	digest := h.Sum(nil)
@@ -556,12 +629,20 @@ func verifyAndExtractNameSpaces(
 			return nil, fmt.Errorf("namespace %q not found in MSO valueDigests", ns)
 		}
 		nsAttrs := make(map[string]any)
+		seenDigests := map[uint]bool{}
 		for _, rawItem := range items {
 			item, _, err := decodeIssuerSignedItem(rawItem)
 			if err != nil {
 				return nil, fmt.Errorf("namespace %q: %w", ns, err)
 			}
 
+			if seenDigests[item.DigestID] {
+				return nil, errors.New("mdoc: duplicate disclosed digest ID")
+			}
+			if _, exists := nsAttrs[item.ElementIdentifier]; exists {
+				return nil, errors.New("mdoc: duplicate disclosed element")
+			}
+			seenDigests[item.DigestID] = true
 			// Per ISO 18013-5 §9.1.2.4 the digest covers the entire
 			// #6.24(bstr .cbor IssuerSignedItem) bytes as received, not a
 			// re-encoding. Pass rawItem so we hash the original wire bytes.
@@ -704,73 +785,88 @@ func sanitizeCBORValue(v any) any {
 
 // ── DeviceSigned verification (session transcript / nonce binding) ────────────
 
-// SessionTranscript is the verifier-side session transcript for device auth.
-// In the OID4VP proximity flow this is constructed from the nonce and
-// the verifier's handover data per ISO 18013-7 §8.3.3.1.2.
-//
-// We use the "OpenID4VPHandover" structure:
-//   SessionTranscript = [null, null, OpenID4VPHandover]
-//   OpenID4VPHandover = [clientIdHash, responseUriHash, nonce]
-type SessionTranscript struct {
-	ClientIDHash    []byte
-	ResponseURIHash []byte
-	Nonce           string
-}
-
-// BuildSessionTranscript constructs the CBOR-encoded SessionTranscript bytes
-// used as the external AAD in device authentication.
-// clientID and responseURI are the values from the OID4VP authorization request.
+// BuildSessionTranscript builds the Final OID4VP redirect handover for an
+// unencrypted response. Encrypted profiles must use the key-bound variant.
 func BuildSessionTranscript(clientID, responseURI, nonce string) ([]byte, error) {
-	// Hash clientID and responseURI per ISO 18013-7.
-	cidHash := sha256.Sum256([]byte(clientID))
-	ruriHash := sha256.Sum256([]byte(responseURI))
-
-	handover := []any{cidHash[:], ruriHash[:], nonce}
-	transcript := []any{nil, nil, handover}
-
-	return cbor.Marshal(transcript)
+	return BuildRedirectSessionTranscript(clientID, responseURI, nonce, nil)
 }
 
-// VerifyDeviceSignature verifies the DeviceSigned COSE_Sign1 or MAC0.
-// It checks that the session transcript matches the nonce in opts.
-// deviceKey is the ECDSA public key from the MSO DeviceKeyInfo.
-func VerifyDeviceSignature(doc Document, transcript []byte, deviceKey *ecdsa.PublicKey) error {
-	rawAuth := doc.DeviceSigned.DeviceAuth.DeviceSignature
-	if len(rawAuth) == 0 {
-		// Device MAC is acceptable for some flows; for OID4VP proximity we require signature.
-		if len(doc.DeviceSigned.DeviceAuth.DeviceMac) > 0 {
-			return errors.New("DeviceMAC not supported in OID4VP proximity flow; DeviceSignature required")
+func BuildRedirectSessionTranscript(clientID, responseURI, nonce string, keyThumbprint []byte) ([]byte, error) {
+	if clientID == "" || responseURI == "" || nonce == "" {
+		return nil, errors.New("mdoc: incomplete session parameters")
+	}
+	var thumbprint any
+	if keyThumbprint != nil {
+		if len(keyThumbprint) != 32 {
+			return nil, errors.New("mdoc: invalid encryption key thumbprint")
 		}
-		return errors.New("no DeviceSignature or DeviceMAC in DeviceSigned")
+		thumbprint = keyThumbprint
 	}
-
-	sig1, err := decodeCOSESign1(rawAuth)
+	info, err := cbor.Marshal([]any{clientID, nonce, thumbprint, responseURI})
 	if err != nil {
-		return fmt.Errorf("DeviceSignature COSE_Sign1: %w", err)
+		return nil, err
 	}
+	digest := sha256.Sum256(info)
+	return cbor.Marshal([]any{nil, nil, []any{"OpenID4VPHandover", digest[:]}})
+}
 
-	var protectedHdr coseHeader
-	if err := cbor.Unmarshal(sig1.Protected, &protectedHdr); err != nil {
-		return fmt.Errorf("DeviceSignature protected header: %w", err)
+// DeviceAuthenticationBytes is tag 24 wrapping the expected device
+// authentication, used as detached COSE payload with EMPTY external AAD.
+func DeviceAuthenticationBytes(doc Document, transcript []byte) ([]byte, error) {
+	var session []cbor.RawMessage
+	if err := cbor.Unmarshal(transcript, &session); err != nil || len(session) != 3 {
+		return nil, errors.New("mdoc: invalid expected transcript")
 	}
+	var namespaces cbor.RawTag
+	if err := cbor.Unmarshal(doc.DeviceSigned.NameSpaces, &namespaces); err != nil || namespaces.Number != 24 {
+		return nil, errors.New("mdoc: DeviceNameSpacesBytes is required")
+	}
+	var nsBytes []byte
+	if err := cbor.Unmarshal(namespaces.Content, &nsBytes); err != nil {
+		return nil, err
+	}
+	var nsMap map[string]cbor.RawMessage
+	if err := cbor.Unmarshal(nsBytes, &nsMap); err != nil {
+		return nil, errors.New("mdoc: invalid device namespaces")
+	}
+	auth, err := cbor.Marshal([]any{"DeviceAuthentication", cbor.RawMessage(transcript), doc.DocType, doc.DeviceSigned.NameSpaces})
+	if err != nil {
+		return nil, err
+	}
+	return cbor.Marshal(cbor.Tag{Number: 24, Content: auth})
+}
 
-	// The Sig_Structure for DeviceAuthentication uses external_aad = transcript.
-	sigStructure, err := cbor.Marshal([]interface{}{
-		"Signature1",
-		sig1.Protected,
-		transcript,   // external AAD = session transcript
-		sig1.Payload, // DeviceAuthenticationBytes
-	})
+func VerifyDeviceSignature(doc Document, transcript []byte, deviceKey *ecdsa.PublicKey) error {
+	if deviceKey == nil {
+		return errors.New("mdoc: device key is required")
+	}
+	if len(doc.DeviceSigned.DeviceAuth.DeviceMac) > 0 {
+		return errors.New("mdoc: DeviceMAC is not supported for this profile")
+	}
+	if len(doc.DeviceSigned.DeviceAuth.DeviceSignature) == 0 {
+		return errors.New("mdoc: DeviceSignature is required")
+	}
+	sig, err := decodeCOSESign1(doc.DeviceSigned.DeviceAuth.DeviceSignature)
 	if err != nil {
 		return err
 	}
-
-	d := sha256.Sum256(sigStructure)
-	half := len(sig1.Signature) / 2
-	r := new(big.Int).SetBytes(sig1.Signature[:half])
-	s := new(big.Int).SetBytes(sig1.Signature[half:])
-	if !ecdsa.Verify(deviceKey, d[:], r, s) {
-		return errors.New("device signature verification failed")
+	if !bytes.Equal(sig.Payload, []byte{0xf6}) {
+		return errors.New("mdoc: device signature must use a detached payload")
+	}
+	algorithm, err := protectedAlgorithm(sig.Protected)
+	if err != nil {
+		return err
+	}
+	auth, err := DeviceAuthenticationBytes(doc, transcript)
+	if err != nil {
+		return err
+	}
+	sig.Payload, err = cbor.Marshal(auth)
+	if err != nil {
+		return err
+	}
+	if err := verifyCOSESign1(sig, algorithm, deviceKey); err != nil {
+		return fmt.Errorf("mdoc: device authentication: %w", err)
 	}
 	return nil
 }
@@ -807,6 +903,9 @@ func coseKeyToECDSA(k COSEKey) (*ecdsa.PublicKey, error) {
 		curve = elliptic.P521()
 	default:
 		return nil, fmt.Errorf("mdoc: unsupported COSE_Key curve %d", k.Curve)
+	}
+	if len(k.X) != (curve.Params().BitSize+7)/8 || len(k.Y) != (curve.Params().BitSize+7)/8 || !curve.IsOnCurve(new(big.Int).SetBytes(k.X), new(big.Int).SetBytes(k.Y)) {
+		return nil, errors.New("mdoc: invalid device public point")
 	}
 	return &ecdsa.PublicKey{
 		Curve: curve,
