@@ -1,5 +1,13 @@
 # Clavex — OIDF Conformance Results
 
+> **Build status — 29 October 2026:** The historical full-suite results below
+> predate the wallet security changes. Selected cases have now been rerun with
+> the official suite: **17 PASSED, 1 REVIEW, 2 FAILED**. See the
+> [current verification report](docs/reviews/WALLET_VERIFICATION_2026-10-29.md)
+> for exact scope, suite version and remaining gates. No formal OIDC certification
+> application has been submitted; suite execution and certification are distinct.
+
+
 [![OIDC Conformance](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fclavex-eu%2Fclavex%2Fmain%2Fconformance-badge.json)](https://www.certification.openid.net)
 
 > **Last run:** 2026-06-27 09:42 UTC |  **OP:** `https://id.clavex.eu`  |  **Suite:** [certification.openid.net](https://www.certification.openid.net)
