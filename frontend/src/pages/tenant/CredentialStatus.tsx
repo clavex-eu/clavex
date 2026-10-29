@@ -12,6 +12,7 @@ interface IssuedCredential {
   issued_at: string
   expires_at?: string
   is_revoked: boolean
+  is_suspended: boolean
   revoked_at?: string
   revocation_reason?: string
   status_list_id?: string
@@ -26,7 +27,8 @@ interface PresentationSession {
   vp_claims?: Record<string, unknown>
 }
 
-function StatusBadge({ revoked }: { revoked: boolean }) {
+function StatusBadge({ revoked, suspended }: { revoked: boolean; suspended: boolean }) {
+  if (suspended) return <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium" style={{ background: '#FEF3C7', color: '#92400E' }}><Clock size={10} /> Suspended</span>
   return revoked ? (
     <span className="inline-flex items-center gap-1 px-2 py-0.5 rounded text-xs font-medium"
       style={{ background: '#FCEBEB', color: '#A32D2D' }}>
@@ -71,7 +73,7 @@ function RevokeModal({
       <div className="rounded-xl p-6 w-full max-w-md" style={{ background: 'white', border: '0.5px solid var(--clavex-border)' }}>
         <h3 className="text-lg font-semibold mb-1" style={{ color: 'var(--clavex-ink)' }}>Revoke Credential</h3>
         <p className="text-sm mb-4" style={{ color: 'var(--clavex-ink-subtle)' }}>
-          Credential type: <span className="font-mono text-xs" style={{ color: 'var(--clavex-primary)' }}>{cred.vct}</span>
+          Revocation is permanent. Use suspension for a temporary restriction. Credential type: <span className="font-mono text-xs" style={{ color: 'var(--clavex-primary)' }}>{cred.vct}</span>
         </p>
         <div className="mb-4">
           <label className="block text-xs font-medium mb-1.5" style={{ color: 'var(--clavex-ink-muted)' }}>
@@ -154,7 +156,15 @@ export default function CredentialStatusPage() {
     }
   }
 
-  const validCount = creds.filter((c) => !c.is_revoked).length
+  const handleSuspend = async (cred: IssuedCredential) => {
+    try {
+      await api.post(`/organizations/${orgId}/oid4vci/issued/${cred.id}/suspend`, {})
+      toast.success('Credential suspended')
+      load()
+    } catch { toast.error('Suspension failed') }
+  }
+
+  const validCount = creds.filter((c) => !c.is_revoked && !c.is_suspended).length
   const revokedCount = creds.filter((c) => c.is_revoked).length
   const presentedCount = sessions.filter((s) => s.status === 'verified').length
 
@@ -170,7 +180,7 @@ export default function CredentialStatusPage() {
       <div>
         <h1 className="text-2xl font-bold" style={{ color: 'var(--clavex-ink)' }}>Credential Status</h1>
         <p className="text-sm mt-1" style={{ color: 'var(--clavex-ink-subtle)' }}>
-          W3C StatusList2021 — manage issued VCs, revoke with reason, track OID4VP presentations
+          JWT Token Status Lists — suspend or permanently revoke credentials and track presentations
         </p>
       </div>
 
@@ -217,7 +227,7 @@ export default function CredentialStatusPage() {
                   <div className="flex-1 min-w-0">
                     <div className="flex items-center gap-2 mb-0.5">
                       <span className="text-xs font-mono font-medium truncate" style={{ color: 'var(--clavex-ink)' }}>{c.vct}</span>
-                      <StatusBadge revoked={c.is_revoked} />
+                      <StatusBadge revoked={c.is_revoked} suspended={c.is_suspended} />
                     </div>
                     <div className="flex items-center gap-3 text-xs" style={{ color: 'var(--clavex-neutral)' }}>
                       <span className="flex items-center gap-1">
@@ -231,7 +241,7 @@ export default function CredentialStatusPage() {
                     </div>
                   </div>
                   <div className="flex gap-1.5 flex-shrink-0">
-                    {c.is_revoked ? (
+                    {c.is_suspended ? (
                       <button
                         onClick={(e) => { e.stopPropagation(); handleRestore(c) }}
                         className="px-2.5 py-1 rounded text-xs font-medium"
@@ -240,7 +250,11 @@ export default function CredentialStatusPage() {
                       >
                         Restore
                       </button>
-                    ) : (
+                    ) : null}
+                    {!c.is_revoked && !c.is_suspended && c.status_list_id && (
+                      <button onClick={(e) => { e.stopPropagation(); handleSuspend(c) }} className="px-2.5 py-1 rounded text-xs font-medium" style={{ background: '#FEF3C7', color: '#92400E' }}>Suspend</button>
+                    )}
+                    {!c.is_revoked && (
                       <button
                         onClick={(e) => { e.stopPropagation(); setRevokeTarget(c) }}
                         className="px-2.5 py-1 rounded text-xs font-medium"

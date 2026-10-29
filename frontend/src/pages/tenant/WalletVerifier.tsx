@@ -683,7 +683,7 @@ export default function WalletVerifier() {
       {mainTab === 'batch' && <BatchVerifyTab orgId={orgId ?? ''} />}
 
       {mainTab === 'session' && (
-      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 24, alignItems: 'flex-start' }}>
+      <div className="grid grid-cols-1 xl:grid-cols-[340px_minmax(0,1fr)] gap-6 items-start">
 
         {/* ── Left: Configure + QR ─────────────────────────────────────────── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -1147,7 +1147,7 @@ function VerifiedResult({ claims, requestId }: { claims: Record<string, unknown>
         </div>
         <div>
           <div style={{ fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", letterSpacing: '0.15em', textTransform: 'uppercase', color: '#16a34a', marginBottom: 4 }}>
-            ✓ Identità verificata
+            ✓ Presentazione verificata
           </div>
           <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--clavex-ink)', letterSpacing: '-0.01em' }}>
             {name}
@@ -1180,7 +1180,17 @@ function VerifiedResult({ claims, requestId }: { claims: Record<string, unknown>
 
 // ── Claim grid ─────────────────────────────────────────────────────────────────
 
-function ClaimGrid({ claims }: { claims: Record<string, unknown> }) {
+function ClaimGrid({ claims, nested = false }: { claims: Record<string, unknown>; nested?: boolean }) {
+  const presentations = claims._clavex_presentations
+  if (!nested && Array.isArray(presentations)) {
+    return <div className="space-y-4">{presentations.map((entry: Record<string, unknown>, index: number) => (
+      <section key={`${String(entry.query_id)}-${index}`} className="rounded-lg p-4" style={{ border: '0.5px solid var(--clavex-border)' }} aria-label={`Credential ${index + 1}`}>
+        <h3 className="font-semibold text-sm mb-1">{String(entry.query_id)} · Credential {Number(entry.instance) + 1}</h3>
+        <p className="text-xs mb-3 break-all" style={{ color: 'var(--clavex-neutral)' }}>{String(entry.format)} · {String(entry.issuer)} · {String(entry.credential_status || 'Status not assessed')}</p>
+        <ClaimGrid claims={(entry.claims ?? {}) as Record<string, unknown>} nested />
+      </section>
+    ))}</div>
+  }
   const SKIP = ['iss', 'iat', 'exp', 'nbf', 'jti', 'aud', 'cnf', 'vct', 'status']
   const entries = Object.entries(claims).filter(([k]) => !SKIP.includes(k))
 
@@ -1225,6 +1235,7 @@ function StatusDot({ status }: { status: string }) {
 }
 
 function formatName(claims: Record<string, unknown>): string {
+  if (Array.isArray(claims._clavex_presentations)) return `${claims._clavex_presentations.length} verified credentials`
   const given  = claims.given_name  as string | undefined
   const family = claims.family_name as string | undefined
   if (given && family) return `${given} ${family}`
