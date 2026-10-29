@@ -5,7 +5,6 @@ import (
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
-	"crypto/x509"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -28,6 +27,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/clavex-eu/clavex/internal/sms"
 	"github.com/clavex-eu/clavex/internal/ssf"
+	"github.com/fxamacker/cbor/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -35,7 +35,6 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwe"
 	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
@@ -56,6 +55,7 @@ import (
 //	  POST   /api/v1/organizations/:org_id/oid4vci/offers/:offer_id/send
 //	  GET    /api/v1/organizations/:org_id/oid4vci/issued
 type OID4VCIHandler struct {
+	oidcHandler      *OIDCHandler
 	repo             *repository.OID4WRepository
 	orgs             *repository.OrgRepository
 	users            *repository.UserRepository
@@ -140,23 +140,23 @@ func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
 	conformanceMode := org.ConformanceMode || c.QueryParam("conformance") == "1"
 	meta := oid4w.BuildIssuerMetadata(h.cfg.BaseURL(), org.Slug, configs, conformanceMode)
 
-	// Populate key_attestation_jwks with the issuer's own public key so the
-	// keys array is non-empty.  VCICheckKeyAttestationJwksIfKeyAttestationIsRequired
-	// treats an empty key set as "missing" even when the field is present.
-	// Semantically the issuer advertises its own key as a trust anchor for
-	// wallet key-attestation verification; actual verification uses the jwk
-	// header of the incoming key_attestation JWT (validateKeyAttestation).
+	_, attesterKeys, trustErr := credentialAttesterKeys(org)
+	if trustErr != nil {
+		return echo.NewHTTPError(http.StatusServiceUnavailable, "credential attestation trust is misconfigured")
+	}
+	for _, credential := range meta.CredentialConfigurationsSupported {
+		for _, proofType := range credential.ProofTypesSupported {
+			if proofType.KeyAttestationsRequired != nil {
+				if len(attesterKeys) == 0 {
+					return echo.NewHTTPError(http.StatusServiceUnavailable, "credential attestation trust is not configured")
+				}
+				proofType.KeyAttestationsRequired.KeyAttestationJWKS.Keys = attesterKeys
+			}
+		}
+	}
 	if h.keys != nil {
 		if rawJWK, jwkErr := jwk.FromRaw(h.keys.CryptoSigner().Public()); jwkErr == nil {
 			_ = rawJWK.Set(jwk.KeyIDKey, h.keys.KID())
-			for _, credCfg := range meta.CredentialConfigurationsSupported {
-				for _, pt := range credCfg.ProofTypesSupported {
-					if pt.KeyAttestationsRequired != nil &&
-						pt.KeyAttestationsRequired.KeyAttestationJWKS != nil {
-						pt.KeyAttestationsRequired.KeyAttestationJWKS.Keys = []interface{}{rawJWK}
-					}
-				}
-			}
 			// Populate credential_request_encryption.jwks with the issuer's public key.
 			// VCICheckCredentialRequestEncryptionSupported requires the key to have an
 			// explicit alg field naming an asymmetric JWE key-encryption algorithm
@@ -210,7 +210,7 @@ func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
 }
 
 // CredentialIssuerCA serves the self-signed CA certificate whose key is
-// deterministically derived from the issuer's RSA signing key. Verifiers and
+// deterministically derived from secret issuer RSA signing material. Verifiers and
 // conformance suites configure this certificate as the "Credential Trust Anchor"
 // (HAIP-6.1 / EnsureCredentialTrustAnchorConfigured). The CA's public key is
 // stable for the lifetime of the issuer RSA key; only the signature bytes on
@@ -256,44 +256,46 @@ func (h *OID4VCIHandler) VCTTypeMetadata(c echo.Context) error {
 const vciNonceRedisPrefix = "vci_nonce:"
 const vciNonceTTL = 5 * time.Minute
 
-// Nonce handles POST /:org_slug/oid4vci/nonce — OID4VCI Final Appendix A.
+// Nonce handles POST /:org_slug/oid4vci/nonce — OID4VCI Final Section 7.
 //
 // The endpoint issues a fresh c_nonce that the wallet MUST include in the
 // key proof JWT sent to the credential endpoint. It requires no authentication
 // but is scoped to the org slug so that nonces can only be used at the
 // corresponding credential endpoint.
 //
-// Response: {"c_nonce": "<value>", "c_nonce_expires_in": 300}
+// OID4VCI 1.0 Final nonce response: {"c_nonce": "<value>"}.
+// Nonce expiry is enforced by the server-side store.
 func (h *OID4VCIHandler) Nonce(c echo.Context) error {
 	if _, err := h.resolveOrg(c); err != nil {
 		return err
 	}
 	orgSlug := c.Param("org_slug")
 
-	nonce, err := generateNonce()
+	nonce, err := h.issueCredentialNonce(c.Request().Context(), orgSlug)
 	if err != nil {
-		return echo.ErrInternalServerError
-	}
-
-	// Store nonce in Redis: key = "vci_nonce:<org_slug>:<nonce>", value = "1", TTL = 5 min.
-	// Stored value is unused; the key's existence is the proof that the nonce is valid.
-	if h.rdb != nil {
-		key := vciNonceRedisPrefix + orgSlug + ":" + nonce
-		_ = h.rdb.Set(c.Request().Context(), key, "1", vciNonceTTL).Err()
+		return writeCredentialProofError(c, err)
 	}
 
 	c.Response().Header().Set("Cache-Control", "no-store")
-	return c.JSON(http.StatusOK, map[string]any{
-		"c_nonce":            nonce,
-		"c_nonce_expires_in": int(vciNonceTTL.Seconds()),
-	})
+	return c.JSON(http.StatusOK, map[string]any{"c_nonce": nonce})
 }
 
 // Token handles POST /:org_slug/oid4vci/token
 // Accepts pre-authorized_code grant type and returns an OID4VCI access token.
 func (h *OID4VCIHandler) Token(c echo.Context) error {
+	c.Response().Header().Set("Cache-Control", "no-store")
+	org, err := h.resolveOrg(c)
+	if err != nil {
+		return err
+	}
 	grantType := c.FormValue("grant_type")
 	const preAuthGrant = "urn:ietf:params:oauth:grant-type:pre-authorized_code"
+	if grantType == "authorization_code" {
+		return h.authorizationCodeWalletGrant(c, org)
+	}
+	if grantType == "refresh_token" {
+		return h.refreshWalletGrant(c, org)
+	}
 	if grantType != preAuthGrant {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error":             "unsupported_grant_type",
@@ -311,14 +313,14 @@ func (h *OID4VCIHandler) Token(c echo.Context) error {
 
 	ctx := c.Request().Context()
 	offer, err := h.repo.GetOfferByPreAuthCode(ctx, preAuthCode)
-	if err != nil {
+	if err != nil || offer.OrgID != org.ID {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error":             "invalid_grant",
 			"error_description": "pre-authorized_code not found or expired",
 		})
 	}
 
-	if offer.Status != "pending" {
+	if offer.Status != "pending" || offer.AccessTokenHash != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error":             "invalid_grant",
 			"error_description": "pre-authorized_code already used",
@@ -352,7 +354,9 @@ func (h *OID4VCIHandler) Token(c echo.Context) error {
 					_ = h.rdb.Expire(ctx, txKey, time.Until(offer.ExpiresAt)).Err()
 				}
 				if attempts >= maxTxCodeAttempts {
-					_ = h.repo.MarkOfferUsed(ctx, offer.ID) // burn the offer
+					if err := h.repo.MarkOfferUsed(ctx, offer.ID); err != nil {
+						return echo.ErrInternalServerError
+					} // burn the offer
 					_ = h.rdb.Del(ctx, txKey).Err()
 				}
 			}
@@ -366,36 +370,21 @@ func (h *OID4VCIHandler) Token(c echo.Context) error {
 		}
 	}
 
-	// Issue an opaque access token tied to this offer.
-	rawToken, tokenHash := generateOpaqueToken()
-	if err := h.repo.SetOfferAccessToken(ctx, offer.ID, tokenHash); err != nil {
-		return echo.ErrInternalServerError
+	// Token-response nonce is retained for legacy clients, but uses the same
+	// issuer-scoped challenge store as the Final Nonce Endpoint.
+	cNonce, err := h.issueCredentialNonce(ctx, org.Slug)
+	if err != nil {
+		return writeCredentialProofError(c, err)
 	}
-
-	// c_nonce for the proof requirement in the credential request (OID4VCI Final §8).
-	cNonce, _ := generateNonce()
-	cNonceExpiresIn := 300 // seconds
-	_ = h.repo.SetCNonce(ctx, offer.ID, cNonce, time.Now().Add(time.Duration(cNonceExpiresIn)*time.Second))
-
-	// credential_identifiers lists the credential_configuration_ids the wallet may request.
-	// Must use CredentialConfigID so the key matches credential_configurations_supported.
-	credentialIdentifiers := []string{oid4w.CredentialConfigID(offer.VCT)}
-
-	return c.JSON(http.StatusOK, map[string]any{
-		"access_token":           rawToken,
-		"token_type":             "Bearer",
-		"expires_in":             300,
-		"c_nonce":                cNonce,
-		"c_nonce_expires_in":     cNonceExpiresIn,
-		"credential_identifiers": credentialIdentifiers,
-	})
+	return h.startWalletGrant(c, org, offer, cNonce)
 }
 
 // credentialRequest is the body for POST /:org_slug/oid4vci/credential (OID4VCI Final §8).
 type credentialRequest struct {
 	// CredentialConfigurationID selects the credential type (replaces Draft-13 "format"+type).
 	CredentialConfigurationID string `json:"credential_configuration_id"`
-	// Proof carries the holder key binding proof (proof_type: "jwt") — singular form.
+	CredentialIdentifier      string `json:"credential_identifier,omitempty"`
+	// Proof is the legacy singular holder proof, retained for compatibility.
 	Proof *credentialProof `json:"proof,omitempty"`
 	// Proofs is the OID4VCI Final §8 multi-proof object: {"jwt": ["<jwt1>", …]}.
 	// Either Proof or Proofs may be present; both forms are accepted.
@@ -424,19 +413,7 @@ type credentialResponseEncryptionReq struct {
 	Enc string `json:"enc"`
 }
 
-// proofJWT returns the first proof JWT regardless of whether the request uses the
-// singular "proof" form or the OID4VCI Final §8 plural "proofs" form.
-func (r *credentialRequest) proofJWT() string {
-	if r.Proof != nil && r.Proof.JWT != "" {
-		return r.Proof.JWT
-	}
-	if r.Proofs != nil && len(r.Proofs.JWT) > 0 {
-		return r.Proofs.JWT[0]
-	}
-	return ""
-}
-
-// credentialProof is the OID4VCI Final §8 singular proof object.
+// credentialProof is the legacy singular proof object.
 type credentialProof struct {
 	ProofType string `json:"proof_type"` // must be "jwt"
 	JWT       string `json:"jwt"`
@@ -461,10 +438,28 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 	ctx := c.Request().Context()
 	tokenHash := hashToken(rawToken)
 	offer, err := h.repo.GetOfferByAccessToken(ctx, tokenHash)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return echo.ErrServiceUnavailable
+	}
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A known wallet token cannot fall through to ordinary JWT authorization
+		// after its family was revoked/closed or its database lifetime elapsed.
+		_, _, _, registeredErr := h.repo.WalletGrantForToken(ctx, tokenHash, "access")
+		if registeredErr == nil {
+			return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+		}
+		if !errors.Is(registeredErr, pgx.ErrNoRows) {
+			return echo.ErrServiceUnavailable
+		}
+	}
 	if err != nil {
 		// Pre-auth offer not found — try JWT access token (authorization_code /
 		// wallet-initiated OID4VCI flow via the OIDC token endpoint).
 		return h.credentialFromAuthCode(c, ctx, rawToken)
+	}
+
+	if err := h.validateWalletResource(c, rawToken); err != nil {
+		return err
 	}
 
 	if offer.Status == "used" {
@@ -492,27 +487,19 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 		}
 	}
 
-	// Validate proof (OID4VCI Final §8.2): proof_type must be "jwt",
-	// the JWT header typ must be "openid4vci-proof+jwt", and the nonce must match.
-	if req.Proof != nil {
-		if req.Proof.ProofType != "jwt" {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "invalid_proof",
-				"error_description": "proof_type must be \"jwt\"",
-			})
-		}
-		if err := validateProofJWT(req.Proof.JWT, offer); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "invalid_proof",
-				"error_description": err.Error(),
-			})
-		}
+	if req.CredentialIdentifier != "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "unknown_credential_identifier"})
 	}
-
+	if !offerConfigurationMatches(req.CredentialConfigurationID, offer.VCT) {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "unknown_credential_configuration"})
+	}
 	// Resolve org and user.
 	org, err := h.resolveOrg(c)
 	if err != nil {
 		return err
+	}
+	if offer.OrgID != org.ID {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
 	}
 
 	cfg, err := h.repo.GetCredentialConfigByVCT(ctx, org.ID, offer.VCT)
@@ -523,9 +510,23 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 		})
 	}
 
+	proofs, proofErr := validateCredentialProofs(&req, fmt.Sprintf("%s/%s", h.cfg.BaseURL(), org.Slug), cfg.CredentialFormat, time.Now())
+	if proofErr != nil {
+		return writeCredentialProofError(c, proofErr)
+	}
+	if err := validateCredentialAttestations(org, cfg, &req, proofs, time.Now(), ctx); err != nil {
+		return writeCredentialProofError(c, err)
+	}
+	if cfg.DeferredIssuance && len(proofs) != 1 {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_credential_request", "error_description": "deferred issuance currently supports one holder proof"})
+	}
+
 	var user *models.User
 	if offer.UserID != nil {
-		user, err = h.users.GetByID(ctx, *offer.UserID)
+		user, err = h.users.GetForOrg(ctx, *offer.UserID, offer.OrgID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !user.IsActive) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_request_denied", "error_description": "subject is not eligible in this organisation"})
+		}
 		if err != nil {
 			return echo.ErrInternalServerError
 		}
@@ -537,6 +538,8 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 	// ── Verifiable Presentation Request (VPR) check ──────────────────────────
 	// If this credential type requires a VP and the wallet didn't include one,
 	// create a presentation session and ask the wallet to present first.
+	var completedVPR string
+	var completedVPRResult *oid4w.VerificationResult
 	if cfg.RequireVP {
 		if req.VPToken == nil {
 			// No VP supplied — issue a VPR and wait for the wallet to retry.
@@ -604,7 +607,7 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 		pd := unmarshalPresentationDef(session.PresentationDefinition)
 		// KB-JWT aud = the credential endpoint (response_uri) the wallet targeted.
 		vprAud := fmt.Sprintf("%s/%s/oid4vci/credential", h.cfg.BaseURL(), org.Slug)
-		_, vpErr := oid4w.VerifyPresentation(*req.VPToken, pd, session.Nonce, vprAud, nil, h.keys.PublicKey())
+		vpResult, vpErr := oid4w.VerifyPresentation(*req.VPToken, pd, session.Nonce, vprAud, nil, h.keys.PublicKey())
 		if vpErr != nil {
 			_ = h.repo.FailPresentationSession(ctx, session.RequestID)
 			return c.JSON(http.StatusBadRequest, map[string]string{
@@ -612,7 +615,29 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 				"error_description": vpErr.Error(),
 			})
 		}
-		_ = h.repo.CompletePresentationSession(ctx, session.RequestID, nil)
+		completedVPR = session.RequestID
+		completedVPRResult = vpResult
+	}
+
+	h, tx, txErr := h.beginCredentialIssuance(ctx, offer, tokenHash)
+	if txErr != nil {
+		return writeIssuanceError(c, txErr)
+	}
+	defer tx.Rollback(ctx)
+	if completedVPR != "" {
+		if err := checkWalletStatus(ctx, h.repo, org.ID, h.cfg.BaseURL()+"/"+org.Slug, org.Settings, completedVPRResult, true); err != nil {
+			return walletStatusError(c, err)
+		}
+		if err := h.repo.CompletePresentationSession(ctx, completedVPR, nil); err != nil {
+			return echo.ErrInternalServerError
+		}
+	}
+
+	if err := h.attachWalletGrantParents(ctx, org, offer, proofs); err != nil {
+		return writeCredentialProofError(c, err)
+	}
+	if err := h.consumeCredentialProofs(ctx, org.Slug, proofs); err != nil {
+		return writeCredentialProofError(c, err)
 	}
 
 	// ── Deferred issuance (OID4VCI Final §11) ────────────────────────────────
@@ -620,81 +645,73 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 	// a transaction_id instead of the credential. An admin approves later via
 	// POST /oid4vci/deferred/:txn_id/approve.
 	if cfg.DeferredIssuance {
+		grant, grantErr := h.repo.LockWalletGrant(ctx, offer.ID, org.ID)
+		if grantErr != nil {
+			return writeIssuanceError(c, grantErr)
+		}
+		deadline := time.Now().Add(walletGrantLifetime)
+		if grant != nil {
+			if !grant.DeferredAllowed {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_request_denied"})
+			}
+			deadline = grant.ExpiresAt
+		}
 		txnID, _ := generateTransactionID()
-		proofKeyID := ""
-		if req.Proof != nil {
-			proofKeyID = extractProofKeyID(req.Proof.JWT)
+		holderJWK, keyErr := marshalCredentialHolderKey(proofs[0].Key)
+		if keyErr != nil {
+			return writeCredentialProofError(c, keyErr)
 		}
 		_, crErr := h.repo.CreateDeferredCredential(ctx, repository.CreateDeferredCredentialParams{
 			OrgID:                     org.ID,
 			TransactionID:             txnID,
 			OfferID:                   offer.ID,
 			CredentialConfigurationID: offer.VCT,
-			ProofKeyID:                proofKeyID,
+			HolderJWK:                 holderJWK,
+			StatusParents:             marshalStatusParents(proofs[0].StatusParents),
 			ClaimsPayload:             offer.Payload,
-			ExpiresAt:                 time.Now().Add(7 * 24 * time.Hour),
+			ExpiresAt:                 deadline,
 		})
 		if crErr != nil {
 			return echo.ErrInternalServerError
 		}
-		_ = h.repo.MarkOfferUsed(ctx, offer.ID)
+		if err := h.repo.MarkOfferUsed(ctx, offer.ID); err != nil {
+			return echo.ErrInternalServerError
+		}
 		// OID4VCI Final §8.3: deferred response uses top-level transaction_id.
 		// c_nonce is no longer returned in the credential response per Final spec;
 		// wallets obtain a fresh nonce via POST /:org_slug/oid4vci/nonce.
-		return c.JSON(http.StatusOK, map[string]any{
-			"transaction_id": txnID,
-		})
+		return finishCredentialResponseStatus(c, tx, map[string]any{"transaction_id": txnID, "interval": deferredPollInterval}, req.CredentialResponseEncryption, http.StatusAccepted)
 	}
 
-	// ── Pre-issuance webhook + signing ───────────────────────────────────────
-	// Extract the wallet's public key from the proof JWT header for cnf.jwk binding.
-	offerHolderKey := extractHolderKey(req.proofJWT())
-	sdJWT, denyReason, err := h.runWebhookAndSign(ctx, org, cfg, user, offer.UserID, offer.Payload, offerHolderKey)
-	if denyReason != "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error":             "credential_denied",
-			"error_description": denyReason,
-		})
+	// Each returned credential is bound to the key whose possession was verified.
+	credentials := make([]map[string]any, 0, len(proofs))
+	for _, proof := range proofs {
+		sdJWT, denyReason, err := h.runWebhookAndSign(ctx, org, cfg, user, offer.UserID, offer.Payload, proof.Key)
+		if denyReason != "" {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_denied", "error_description": denyReason})
+		}
+		if err != nil {
+			return echo.ErrInternalServerError
+		}
+		expiresAt := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
+		if err := h.recordWalletCredential(ctx, org.ID, offer.UserID, offer.VCT, sdJWT, &expiresAt, cfg.CredentialFormat, proof.StatusParents); err != nil {
+			return echo.ErrInternalServerError
+		}
+		credObj := map[string]any{"credential": sdJWT}
+		if cfg.CredentialFormat == "mso_mdoc" {
+			credObj["format"] = "mso_mdoc"
+		}
+		credentials = append(credentials, credObj)
 	}
-	if err != nil {
+	if err := h.repo.MarkOfferUsed(ctx, offer.ID); err != nil {
 		return echo.ErrInternalServerError
-	}
-
-	// Record issuance and mark offer as used.
-	expiresAt := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-	sdHash := oid4w.HashToken(sdJWT)
-	_ = h.repo.RecordIssuedCredential(ctx, org.ID, offer.UserID, offer.VCT, sdHash, &expiresAt)
-	_ = h.repo.MarkOfferUsed(ctx, offer.ID)
-
-	// OID4VCI Final §8.3: "credentials" is an array of credential objects.
-	// For mso_mdoc, include "format" so the wallet knows how to interpret the bytes.
-	credObj := map[string]any{"credential": sdJWT}
-	if cfg.CredentialFormat == "mso_mdoc" {
-		credObj["format"] = "mso_mdoc"
 	}
 	// c_nonce is no longer part of the success response in Final; wallets use
 	// POST /nonce to obtain a fresh nonce before subsequent credential requests.
 	responseBody := map[string]any{
-		"credentials": []map[string]any{credObj},
+		"credentials": credentials,
 	}
-	// OID4VCI Final §8.3: when the wallet requested credential_response_encryption,
-	// the issuer MUST return the response as a JWE compact serialisation.
-	if req.CredentialResponseEncryption != nil {
-		plain, marshalErr := json.Marshal(responseBody)
-		if marshalErr != nil {
-			return echo.ErrInternalServerError
-		}
-		jweToken, encErr := encryptCredentialResponse(plain, req.CredentialResponseEncryption)
-		if encErr != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "invalid_encryption_parameters",
-				"error_description": encErr.Error(),
-			})
-		}
-		c.Response().Header().Set(echo.HeaderContentType, "application/jwt")
-		return c.String(http.StatusOK, jweToken)
-	}
-	return c.JSON(http.StatusOK, responseBody)
+	return finishCredentialResponse(c, tx, responseBody, req.CredentialResponseEncryption)
 }
 
 // batchCredentialRequest is the body for POST /:org_slug/oid4vci/batch-credential (OID4VCI Final §8).
@@ -724,6 +741,10 @@ func (h *OID4VCIHandler) BatchCredential(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
 	}
+	if err := h.validateWalletResource(c, rawToken); err != nil {
+		return err
+	}
+
 	if offer.Status == "used" {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": "invalid_request", "error_description": "credential already issued for this offer",
@@ -758,9 +779,19 @@ func (h *OID4VCIHandler) BatchCredential(c echo.Context) error {
 		})
 	}
 
+	if cfg.DeferredIssuance {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_credential_request", "error_description": "use the credential endpoint for deferred issuance"})
+	}
+
+	if cfg.RequireVP {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_credential_request", "error_description": "use the credential endpoint for presentation-required issuance"})
+	}
 	var user *models.User
 	if offer.UserID != nil {
-		user, err = h.users.GetByID(ctx, *offer.UserID)
+		user, err = h.users.GetForOrg(ctx, *offer.UserID, offer.OrgID)
+		if errors.Is(err, pgx.ErrNoRows) || (err == nil && !user.IsActive) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_request_denied", "error_description": "subject is not eligible in this organisation"})
+		}
 		if err != nil {
 			return echo.ErrInternalServerError
 		}
@@ -768,149 +799,89 @@ func (h *OID4VCIHandler) BatchCredential(c echo.Context) error {
 		user = &models.User{ID: uuid.Nil, OrgID: org.ID}
 	}
 
-	responses := make([]batchCredentialItem, 0, len(req.CredentialRequests))
+	if offer.OrgID != org.ID {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+	}
+	batchProofs := make([]verifiedCredentialProof, 0, len(req.CredentialRequests))
 	for _, cr := range req.CredentialRequests {
-		// Validate credential_configuration_id if provided.
-		if cr.CredentialConfigurationID != "" && cr.CredentialConfigurationID != offer.VCT {
-			msg := "credential_configuration_id not covered by this access token"
-			responses = append(responses, batchCredentialItem{Error: strPtr("unknown_credential_configuration"), ErrorDesc: &msg})
-			continue
+		if cr.CredentialConfigurationID != "" && cr.CredentialConfigurationID != offer.VCT && cr.CredentialConfigurationID != oid4w.CredentialConfigID(offer.VCT) {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "unknown_credential_configuration"})
 		}
-		// Validate proof if present.
-		if cr.Proof != nil {
-			if cr.Proof.ProofType != "jwt" {
-				msg := "proof_type must be \"jwt\""
-				responses = append(responses, batchCredentialItem{Error: strPtr("invalid_proof"), ErrorDesc: &msg})
-				continue
-			}
-			if pErr := validateProofJWT(cr.Proof.JWT, offer); pErr != nil {
-				msg := pErr.Error()
-				responses = append(responses, batchCredentialItem{Error: strPtr("invalid_proof"), ErrorDesc: &msg})
-				continue
-			}
+		proofs, err := validateCredentialProofs(&cr, fmt.Sprintf("%s/%s", h.cfg.BaseURL(), org.Slug), cfg.CredentialFormat, time.Now())
+		if err != nil {
+			return writeCredentialProofError(c, err)
 		}
+		if err := validateCredentialAttestations(org, cfg, &cr, proofs, time.Now(), ctx); err != nil {
+			return writeCredentialProofError(c, err)
+		}
+		if len(proofs) != 1 {
+			return writeCredentialProofError(c, invalidCredentialProof("legacy batch items require one holder proof each"))
+		}
+		batchProofs = append(batchProofs, proofs[0])
+	}
+	h, tx, txErr := h.beginCredentialIssuance(ctx, offer, tokenHash)
+	if txErr != nil {
+		return writeIssuanceError(c, txErr)
+	}
+	defer tx.Rollback(ctx)
+	if err := h.attachWalletGrantParents(ctx, org, offer, batchProofs); err != nil {
+		return writeCredentialProofError(c, err)
+	}
+	if err := h.consumeCredentialProofs(ctx, org.Slug, batchProofs); err != nil {
+		return writeCredentialProofError(c, err)
+	}
 
+	responses := make([]batchCredentialItem, 0, len(batchProofs))
+	for _, proof := range batchProofs {
 		if cfg.DeferredIssuance {
-			txnID, _ := generateTransactionID()
-			proofKeyID := ""
-			if cr.Proof != nil {
-				proofKeyID = extractProofKeyID(cr.Proof.JWT)
+			txnID, err := generateTransactionID()
+			if err != nil {
+				return echo.ErrInternalServerError
 			}
-			_, crErr := h.repo.CreateDeferredCredential(ctx, repository.CreateDeferredCredentialParams{
-				OrgID:                     org.ID,
-				TransactionID:             txnID,
-				OfferID:                   offer.ID,
-				CredentialConfigurationID: offer.VCT,
-				ProofKeyID:                proofKeyID,
-				ClaimsPayload:             offer.Payload,
-				ExpiresAt:                 time.Now().Add(7 * 24 * time.Hour),
-			})
-			if crErr != nil {
-				msg := "deferred issuance failed"
-				responses = append(responses, batchCredentialItem{Error: strPtr("server_error"), ErrorDesc: &msg})
-				continue
+			holder, err := marshalCredentialHolderKey(proof.Key)
+			if err != nil {
+				return writeCredentialProofError(c, err)
+			}
+			if _, err := h.repo.CreateDeferredCredential(ctx, repository.CreateDeferredCredentialParams{OrgID: org.ID, TransactionID: txnID, OfferID: offer.ID, CredentialConfigurationID: offer.VCT, HolderJWK: holder, StatusParents: marshalStatusParents(proof.StatusParents), ClaimsPayload: offer.Payload, ExpiresAt: time.Now().Add(7 * 24 * time.Hour)}); err != nil {
+				return echo.ErrInternalServerError
 			}
 			responses = append(responses, batchCredentialItem{TransactionID: &txnID})
 		} else {
-			batchHolderKey := extractHolderKey(cr.proofJWT())
-			sdJWT, denyReason, sErr := h.runWebhookAndSign(ctx, org, cfg, user, offer.UserID, offer.Payload, batchHolderKey)
-			if denyReason != "" {
-				responses = append(responses, batchCredentialItem{Error: strPtr("credential_denied"), ErrorDesc: &denyReason})
-				continue
+			credential, reason, err := h.runWebhookAndSign(ctx, org, cfg, user, offer.UserID, offer.Payload, proof.Key)
+			if reason != "" {
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_denied", "error_description": reason})
 			}
-			if sErr != nil {
-				msg := "issuance failed"
-				responses = append(responses, batchCredentialItem{Error: strPtr("server_error"), ErrorDesc: &msg})
-				continue
+			if err != nil {
+				return echo.ErrInternalServerError
 			}
-			expiresAt := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-			sdHash := oid4w.HashToken(sdJWT)
-			_ = h.repo.RecordIssuedCredential(ctx, org.ID, offer.UserID, offer.VCT, sdHash, &expiresAt)
-			responses = append(responses, batchCredentialItem{Credential: &sdJWT})
+			expires := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
+			if err := h.recordWalletCredential(ctx, org.ID, offer.UserID, offer.VCT, credential, &expires, cfg.CredentialFormat, proof.StatusParents); err != nil {
+				return echo.ErrInternalServerError
+			}
+			responses = append(responses, batchCredentialItem{Credential: &credential})
 		}
 	}
+	if err := h.repo.MarkOfferUsed(ctx, offer.ID); err != nil {
+		return echo.ErrInternalServerError
+	}
+	nonce, err := h.issueCredentialNonce(ctx, org.Slug)
+	if err != nil {
+		return writeCredentialProofError(c, err)
+	}
+	return finishCredentialResponse(c, tx, map[string]any{"credential_responses": responses, "c_nonce": nonce, "c_nonce_expires_in": 300}, nil)
 
-	_ = h.repo.MarkOfferUsed(ctx, offer.ID)
-	newCNonce, _ := generateNonce()
-	_ = h.repo.SetCNonce(ctx, offer.ID, newCNonce, time.Now().Add(300*time.Second))
-
-	return c.JSON(http.StatusOK, map[string]any{
-		"credential_responses": responses,
-		"c_nonce":              newCNonce,
-		"c_nonce_expires_in":   300,
-	})
 }
 
 // deferredCredentialRequest is the body for POST /:org_slug/oid4vci/deferred-credential.
 type deferredCredentialRequest struct {
-	TransactionID string `json:"transaction_id"`
+	TransactionID                string                           `json:"transaction_id"`
+	CredentialResponseEncryption *credentialResponseEncryptionReq `json:"credential_response_encryption,omitempty"`
 }
 
 // DeferredCredential handles POST /:org_slug/oid4vci/deferred-credential (OID4VCI Final §11).
 // The wallet polls this endpoint with the transaction_id received from the credential endpoint.
 func (h *OID4VCIHandler) DeferredCredential(c echo.Context) error {
-	rawToken := extractBearerToken(c)
-	if rawToken == "" {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
-	}
-
-	ctx := c.Request().Context()
-	tokenHash := hashToken(rawToken)
-	offer, err := h.repo.GetOfferByAccessToken(ctx, tokenHash)
-	if err != nil {
-		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
-	}
-
-	var req deferredCredentialRequest
-	if err := c.Bind(&req); err != nil || req.TransactionID == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "invalid_request", "error_description": "transaction_id is required",
-		})
-	}
-
-	dc, err := h.repo.GetDeferredCredential(ctx, req.TransactionID)
-	if err != nil || dc.OfferID != offer.ID {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error":             "invalid_transaction_id",
-			"error_description": "transaction_id not found or not associated with this access token",
-		})
-	}
-
-	if time.Now().After(dc.ExpiresAt) {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "transaction_expired", "error_description": "the deferred transaction has expired",
-		})
-	}
-
-	switch dc.Status {
-	case "pending":
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "issuance_pending", "error_description": "credential is not yet ready; please retry later",
-		})
-	case "failed":
-		errCode, errDesc := "server_error", "issuance failed"
-		if dc.ErrorCode != nil {
-			errCode = *dc.ErrorCode
-		}
-		if dc.ErrorDescription != nil {
-			errDesc = *dc.ErrorDescription
-		}
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": errCode, "error_description": errDesc,
-		})
-	case "expired":
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error": "transaction_expired", "error_description": "the deferred transaction has expired",
-		})
-	case "completed":
-		// OID4VCI Final §8.3 / §11: deferred-complete response uses "credentials" array.
-		return c.JSON(http.StatusOK, map[string]any{
-			"credentials": []map[string]any{
-				{"credential": *dc.CredentialJWT},
-			},
-		})
-	}
-	return echo.ErrInternalServerError
+	return h.retrieveDeferredCredential(c)
 }
 
 // ── Notification endpoint (OID4VCI Final §7) ─────────────────────────────────
@@ -1116,62 +1087,88 @@ func (h *OID4VCIHandler) ApproveDeferredCredential(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, "credential config not found")
 	}
 
+	holderKey, keyErr := deferredCredentialHolderKey(dc.HolderJWK)
+	if keyErr != nil {
+		return echo.NewHTTPError(http.StatusConflict, keyErr.Error())
+	}
+
 	// Resolve the user from the original offer (if bound).
 	user := &models.User{ID: uuid.Nil, OrgID: orgID}
 	var boundUserID *uuid.UUID
-	if origOffer, offerErr := h.repo.GetOfferByID(ctx, dc.OfferID); offerErr == nil && origOffer.UserID != nil {
-		if u, uErr := h.users.GetByID(ctx, *origOffer.UserID); uErr == nil {
-			user = u
-			boundUserID = origOffer.UserID
+	origOffer, offerErr := h.repo.GetOfferByID(ctx, dc.OfferID)
+	if offerErr != nil || origOffer.OrgID != orgID {
+		return echo.NewHTTPError(http.StatusConflict, "original issuance authorization is unavailable")
+	}
+	if origOffer.UserID != nil {
+		u, err := h.users.GetForOrg(ctx, *origOffer.UserID, orgID)
+		if err != nil || !u.IsActive {
+			return echo.NewHTTPError(http.StatusConflict, "original subject is no longer eligible")
 		}
+		user = u
+		boundUserID = origOffer.UserID
 	}
 
-	// No proof JWT available at deferred-polling time; holderKey was established
-	// at initial credential request. Pass nil to omit cnf.jwk for deferred issuance.
-	sdJWT, denyReason, signErr := h.runWebhookAndSign(ctx, org, cfg, user, boundUserID, dc.ClaimsPayload, nil)
+	h, tx, txErr := h.beginCredentialIssuance(ctx, nil, "")
+	if txErr != nil {
+		return writeIssuanceError(c, txErr)
+	}
+	defer tx.Rollback(ctx)
+	grant, grantErr := h.repo.LockWalletGrant(ctx, origOffer.ID, orgID)
+	if grantErr != nil {
+		return echo.ErrServiceUnavailable
+	}
+	currentOffer, eligErr := h.repo.LockWalletOffer(ctx, origOffer.ID, orgID)
+	if eligErr != nil {
+		return echo.ErrServiceUnavailable
+	}
+	if grant != nil {
+		if !grant.DeferredAllowed || grant.ClosedAt != nil {
+			return echo.NewHTTPError(http.StatusConflict, "issuance authorization is closed")
+		}
+		if err := h.repo.CheckWalletEligibility(ctx, grant, currentOffer); err != nil {
+			return echo.NewHTTPError(http.StatusConflict, "issuance authorization is no longer eligible")
+		}
+	} else if err := h.repo.LockWalletEligibility(ctx, orgID, currentOffer.UserID, "", cfg.ID, currentOffer.VCT); err != nil {
+		return echo.NewHTTPError(http.StatusConflict, "issuance authorization is no longer eligible")
+	}
+
+	if err := h.repo.LockDeferredIssuance(ctx, txnID, orgID); err != nil {
+		return writeIssuanceError(c, err)
+	}
+
+	parents, parentErr := oid4w.ParseStatusParents(dc.StatusParents)
+	if parentErr != nil {
+		return echo.ErrServiceUnavailable
+	}
+	settings, policyErr := h.repo.LockWalletStatusPolicy(ctx, orgID)
+	if policyErr != nil {
+		return echo.ErrServiceUnavailable
+	}
+	if err := oid4w.CheckStatusParents(ctx, orgID.String(), settings, dc.StatusParents); err != nil {
+		if errors.Is(err, oid4w.ErrRevoked) || errors.Is(err, oid4w.ErrSuspended) {
+			return echo.NewHTTPError(http.StatusConflict, "parent attestation is not active")
+		}
+		return echo.ErrServiceUnavailable
+	}
+	// Use the public key authenticated and persisted at initial request time.
+	sdJWT, denyReason, signErr := h.runWebhookAndSign(ctx, org, cfg, user, boundUserID, dc.ClaimsPayload, holderKey)
 	if denyReason != "" {
-		_ = h.repo.FailDeferredCredential(ctx, txnID, "credential_denied", denyReason)
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": "credential_denied", "error_description": denyReason,
 		})
 	}
 	if signErr != nil {
-		_ = h.repo.FailDeferredCredential(ctx, txnID, "server_error", "signing failed")
 		return echo.ErrInternalServerError
 	}
 
 	if err := h.repo.CompleteDeferredCredential(ctx, txnID, sdJWT); err != nil {
 		return echo.ErrInternalServerError
 	}
-	return c.JSON(http.StatusOK, map[string]any{
-		"transaction_id": txnID,
-		"status":         "completed",
-	})
-}
-
-// validateProofJWT validates the proof JWT per OID4VCI Final §8.2:
-//   - Header typ must be "openid4vci-proof+jwt"
-//   - Nonce in payload must match the offer's stored c_nonce (best-effort: skip if no c_nonce stored)
-//   - key_attestation claim signature is verified when present (HAIP §4.4)
-func validateProofJWT(proofJWT string, offer *models.CredentialOffer) error {
-	// typ check + signature verification against the header jwk + key_attestation.
-	// (Previously the pre-authorized_code path skipped signature verification,
-	// unlike the authorization_code path — so the holder proof-of-possession was
-	// not actually enforced.)
-	if err := validateProofJWTHeader(proofJWT); err != nil {
-		return err
+	expires := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
+	if err := h.recordWalletCredential(ctx, orgID, boundUserID, cfg.VCT, sdJWT, &expires, cfg.CredentialFormat, parents); err != nil {
+		return echo.ErrInternalServerError
 	}
-	// OID4VCI §8.2: the proof MUST replay the c_nonce issued for this offer at the
-	// token endpoint, preventing proof reuse across offers/sessions.
-	if offer != nil && offer.CNonce != nil && *offer.CNonce != "" {
-		if extractProofNonce(proofJWT) != *offer.CNonce {
-			return fmt.Errorf("proof nonce does not match the offer c_nonce")
-		}
-		if offer.CNonceExpiresAt != nil && time.Now().After(*offer.CNonceExpiresAt) {
-			return fmt.Errorf("offer c_nonce has expired")
-		}
-	}
-	return nil
+	return finishCredentialResponse(c, tx, map[string]any{"transaction_id": txnID, "status": "completed"}, nil)
 }
 
 // credentialFromAuthCode handles the credential endpoint for the
@@ -1197,6 +1194,13 @@ func (h *OID4VCIHandler) credentialFromAuthCode(c echo.Context, ctx context.Cont
 			"error":             "invalid_token",
 			"error_description": "invalid or expired access token",
 		})
+	}
+
+	if _, walletGrant := tok.Get("clavex_wallet_grant"); walletGrant {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
+	}
+	if !credentialAccessTokenValid(tok, c.Request(), time.Now()) {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token", "error_description": "invalid credential access token lifetime or sender binding"})
 	}
 
 	// Extract user UUID from sub claim.
@@ -1283,42 +1287,6 @@ func (h *OID4VCIHandler) credentialFromAuthCode(c echo.Context, ctx context.Cont
 		}
 	}
 
-	// Validate the proof JWT header (typ: "openid4vci-proof+jwt").
-	// Accepts both "proof" (singular) and "proofs" (plural, OID4VCI Final §8).
-	if pJWT := req.proofJWT(); pJWT != "" {
-		// proof_type check only applies to the singular "proof" form.
-		if req.Proof != nil && req.Proof.ProofType != "jwt" {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "invalid_proof",
-				"error_description": "proof_type must be \"jwt\"",
-			})
-		}
-		// Parse-only header validation (signature not verified here).
-		if err := validateProofJWTHeader(pJWT); err != nil {
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "invalid_proof",
-				"error_description": err.Error(),
-			})
-		}
-		// Validate nonce against Redis if nonce endpoint was used.
-		if h.rdb != nil {
-			if nonce := extractProofNonce(pJWT); nonce != "" {
-				key := vciNonceRedisPrefix + orgSlug + ":" + nonce
-				cnt, _ := h.rdb.Exists(ctx, key).Result()
-				if cnt == 0 {
-					// OID4VCI Final §8.3.1: "invalid_nonce" is the required error code
-					// when the nonce in the proof JWT does not match the issued c_nonce.
-					return c.JSON(http.StatusBadRequest, map[string]string{
-						"error":             "invalid_nonce",
-						"error_description": "nonce is invalid or expired",
-					})
-				}
-				// One-time use: consume the nonce.
-				_ = h.rdb.Del(ctx, key).Err()
-			}
-		}
-	}
-
 	// Resolve the org.
 	org, orgErr := h.resolveOrg(c)
 	if orgErr != nil {
@@ -1356,259 +1324,60 @@ func (h *OID4VCIHandler) credentialFromAuthCode(c echo.Context, ctx context.Cont
 		})
 	}
 
-	// OID4VCI Final §8.1: the issuer MUST require a key proof when
-	// proof_types_supported is declared in the credential configuration metadata.
-	// Clavex always advertises proof_types_supported, so proof is always required
-	// for the authorization_code flow.  Reject requests that omit it entirely.
-	if req.proofJWT() == "" {
-		return c.JSON(http.StatusBadRequest, map[string]string{
-			"error":             "invalid_proof",
-			"error_description": "proof is required (proof_types_supported is set for this credential type)",
-		})
+	if cfg.RequireVP || cfg.DeferredIssuance {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_credential_request", "error_description": "this credential requires an offer-based workflow"})
+	}
+	if req.CredentialIdentifier != "" {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "unknown_credential_identifier"})
+	}
+	if !credentialConfigurationAuthorized(tok, configID, issuer) {
+		return c.JSON(http.StatusForbidden, map[string]string{"error": "insufficient_scope", "error_description": "access token does not authorize this credential configuration"})
+	}
+
+	proofs, proofErr := validateCredentialProofs(&req, issuer, cfg.CredentialFormat, time.Now())
+	if proofErr != nil {
+		return writeCredentialProofError(c, proofErr)
+	}
+	if err := validateCredentialAttestations(org, cfg, &req, proofs, time.Now(), ctx); err != nil {
+		return writeCredentialProofError(c, err)
 	}
 
 	// Look up the subject user.
 	user, err := h.users.GetByID(ctx, userID)
-	if err != nil || !user.IsActive {
+	if err != nil || !user.IsActive || user.OrgID != org.ID {
 		return c.JSON(http.StatusUnauthorized, map[string]string{
 			"error": "invalid_token",
 		})
 	}
 
-	// Batch issuance (OID4VCI Final §11.2 / batch_credential_issuance): when the
-	// wallet sends multiple proofs in proofs.jwt, issue one credential per proof,
-	// each bound to its own holder key.
-	if req.Proofs != nil && len(req.Proofs.JWT) > 1 {
-		// Validate headers of proofs 2…N (proof[0] was already validated above).
-		for _, pJWT := range req.Proofs.JWT[1:] {
-			if err := validateProofJWTHeader(pJWT); err != nil {
-				return c.JSON(http.StatusBadRequest, map[string]string{
-					"error":             "invalid_proof",
-					"error_description": err.Error(),
-				})
-			}
+	h, tx, txErr := h.beginCredentialIssuance(ctx, nil, "")
+	if txErr != nil {
+		return writeIssuanceError(c, txErr)
+	}
+	defer tx.Rollback(ctx)
+	if err := h.consumeCredentialProofs(ctx, org.Slug, proofs); err != nil {
+		return writeCredentialProofError(c, err)
+	}
+	credentials := make([]map[string]any, 0, len(proofs))
+	for _, proof := range proofs {
+		credential, reason, err := h.runWebhookAndSign(ctx, org, cfg, user, &userID, nil, proof.Key)
+		if reason != "" {
+			return c.JSON(http.StatusForbidden, map[string]string{"error": "credential_denied", "error_description": reason})
 		}
-		credentials := make([]map[string]any, 0, len(req.Proofs.JWT))
-		for _, pJWT := range req.Proofs.JWT {
-			holderKey := extractHolderKey(pJWT)
-			sdJWT, denyReason, signErr := h.runWebhookAndSign(ctx, org, cfg, user, &userID, nil, holderKey)
-			if denyReason != "" {
-				return c.JSON(http.StatusForbidden, map[string]string{
-					"error": "credential_denied", "error_description": denyReason,
-				})
-			}
-			if signErr != nil {
-				return echo.ErrInternalServerError
-			}
-			expiresAt := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-			sdHash := oid4w.HashToken(sdJWT)
-			_ = h.repo.RecordIssuedCredential(ctx, org.ID, &userID, cfg.VCT, sdHash, &expiresAt)
-			credObj := map[string]any{"credential": sdJWT}
-			if cfg.CredentialFormat == "mso_mdoc" {
-				credObj["format"] = "mso_mdoc"
-			}
-			credentials = append(credentials, credObj)
-		}
-		batchResponseBody := map[string]any{"credentials": credentials}
-		if req.CredentialResponseEncryption != nil {
-			plain, marshalErr := json.Marshal(batchResponseBody)
-			if marshalErr != nil {
-				return echo.ErrInternalServerError
-			}
-			jweToken, encErr := encryptCredentialResponse(plain, req.CredentialResponseEncryption)
-			if encErr != nil {
-				return c.JSON(http.StatusBadRequest, map[string]string{
-					"error":             "invalid_encryption_parameters",
-					"error_description": encErr.Error(),
-				})
-			}
-			c.Response().Header().Set(echo.HeaderContentType, "application/jwt")
-			return c.String(http.StatusOK, jweToken)
-		}
-		return c.JSON(http.StatusOK, batchResponseBody)
-	}
-
-	// Extract the wallet's public key from the proof JWT header for cnf.jwk binding.
-	authCodeHolderKey := extractHolderKey(req.proofJWT())
-
-	// Issue the SD-JWT-VC.
-	sdJWT, denyReason, signErr := h.runWebhookAndSign(ctx, org, cfg, user, &userID, nil, authCodeHolderKey)
-	if denyReason != "" {
-		return c.JSON(http.StatusForbidden, map[string]string{
-			"error": "credential_denied", "error_description": denyReason,
-		})
-	}
-	if signErr != nil {
-		return echo.ErrInternalServerError
-	}
-
-	// Record the issuance.
-	expiresAt := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-	sdHash := oid4w.HashToken(sdJWT)
-	_ = h.repo.RecordIssuedCredential(ctx, org.ID, &userID, cfg.VCT, sdHash, &expiresAt)
-
-	// OID4VCI Final §8.3: "credentials" is an array of credential objects.
-	// c_nonce is no longer part of the success response in Final.
-	authCodeResponseBody := map[string]any{
-		"credentials": []map[string]any{
-			{"credential": sdJWT},
-		},
-	}
-	// Encrypt the response when the wallet requested credential_response_encryption.
-	if req.CredentialResponseEncryption != nil {
-		plain, marshalErr := json.Marshal(authCodeResponseBody)
-		if marshalErr != nil {
+		if err != nil {
 			return echo.ErrInternalServerError
 		}
-		jweToken, encErr := encryptCredentialResponse(plain, req.CredentialResponseEncryption)
-		if encErr != nil {
-			// OID4VCI Final §8.3.1: unsupported or invalid encryption parameters → 400.
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "invalid_encryption_parameters",
-				"error_description": encErr.Error(),
-			})
+		expires := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
+		if err := h.recordWalletCredential(ctx, org.ID, &userID, cfg.VCT, credential, &expires, cfg.CredentialFormat, proof.StatusParents); err != nil {
+			return echo.ErrInternalServerError
 		}
-		c.Response().Header().Set(echo.HeaderContentType, "application/jwt")
-		return c.String(http.StatusOK, jweToken)
-	}
-	return c.JSON(http.StatusOK, authCodeResponseBody)
-}
-
-// validateProofJWTHeader validates the protected header of a proof JWT and,
-// when the header carries a "jwk" parameter, verifies the signature against
-// that key (OID4VCI Final §8.2 — MUST verify when jwk is present).
-//
-// Returns a non-nil error (suitable for "invalid_proof" responses) on any failure.
-func validateProofJWTHeader(proofJWT string) error {
-	if proofJWT == "" {
-		return fmt.Errorf("proof jwt is empty")
-	}
-	msg, err := jws.Parse([]byte(proofJWT))
-	if err != nil {
-		return fmt.Errorf("cannot parse proof jwt: %w", err)
-	}
-	if len(msg.Signatures()) == 0 {
-		return fmt.Errorf("proof jwt has no signatures")
-	}
-	hdr := msg.Signatures()[0].ProtectedHeaders()
-	typ, _ := hdr.Get("typ")
-	if typStr, ok := typ.(string); !ok || typStr != "openid4vci-proof+jwt" {
-		return fmt.Errorf("proof jwt typ must be \"openid4vci-proof+jwt\", got %q", typ)
-	}
-
-	// OID4VCI Final §8.2: when jwk is present in the header the issuer MUST
-	// verify the signature of the proof JWT against the key it carries.
-	// This detects tampered/replayed proofs before any credential is issued.
-	if holderJWK := hdr.JWK(); holderJWK != nil {
-		alg := hdr.Algorithm()
-		if alg == "" {
-			return fmt.Errorf("proof jwt missing alg header")
+		item := map[string]any{"credential": credential}
+		if cfg.CredentialFormat == "mso_mdoc" {
+			item["format"] = "mso_mdoc"
 		}
-		if _, verr := jws.Verify([]byte(proofJWT), jws.WithKey(alg, holderJWK)); verr != nil {
-			return fmt.Errorf("proof jwt signature verification failed")
-		}
+		credentials = append(credentials, item)
 	}
-
-	// Validate key_attestation claim when present (HAIP §4.4).
-	if err := validateKeyAttestation(proofJWT); err != nil {
-		return err
-	}
-
-	return nil
-}
-
-// extractProofNonce extracts the "nonce" claim from the proof JWT payload
-// without verifying the signature. Returns "" on any parse error.
-func extractProofNonce(proofJWT string) string {
-	tok, err := jwt.ParseInsecure([]byte(proofJWT))
-	if err != nil {
-		return ""
-	}
-	if v, ok := tok.Get("nonce"); ok {
-		if s, ok := v.(string); ok {
-			return s
-		}
-	}
-	return ""
-}
-
-// validateKeyAttestation validates the key_attestation header parameter inside a
-// proof JWT, if present.  Per OID4VCI Final §D.1 / HAIP §4.4, key_attestation is
-// carried as a JWS protected header parameter of the proof JWT (not a payload
-// claim).  The nested JWT is signed by the wallet attester; when its header
-// contains a "jwk" parameter the signature is verified against that key.
-// Any signature failure causes "invalid_proof".  Absent key_attestation is
-// silently accepted — the caller enforces presence when the credential config
-// declares key_attestations_required.
-func validateKeyAttestation(proofJWT string) error {
-	// Parse the proof JWT as a JWS to access the protected header.
-	// jwt.ParseInsecure only exposes payload claims; key_attestation is in the header.
-	msg, err := jws.Parse([]byte(proofJWT))
-	if err != nil {
-		return nil // proof parse failure is handled elsewhere
-	}
-	if len(msg.Signatures()) == 0 {
-		return nil
-	}
-	hdr := msg.Signatures()[0].ProtectedHeaders()
-
-	// key_attestation is a custom header parameter — use the generic getter.
-	kaRaw, ok := hdr.Get("key_attestation")
-	if !ok {
-		return nil // no key_attestation header — skip
-	}
-	kaJWT, ok := kaRaw.(string)
-	if !ok || kaJWT == "" {
-		return fmt.Errorf("key_attestation header must be a JWT string")
-	}
-
-	// Parse the key attestation JWT header to find the signing key.
-	kaMsg, err := jws.Parse([]byte(kaJWT))
-	if err != nil {
-		return fmt.Errorf("cannot parse key_attestation JWT: %w", err)
-	}
-	if len(kaMsg.Signatures()) == 0 {
-		return fmt.Errorf("key_attestation JWT has no signatures")
-	}
-	kaHdr := kaMsg.Signatures()[0].ProtectedHeaders()
-	kaAlg := kaHdr.Algorithm()
-	if kaAlg == "" {
-		return fmt.Errorf("key_attestation JWT missing alg header")
-	}
-
-	// Determine the verification key: prefer self-contained jwk, then x5c leaf cert.
-	var verifyKey interface{}
-	if k := kaHdr.JWK(); k != nil {
-		verifyKey = k
-	} else if chain := kaHdr.X509CertChain(); chain != nil && chain.Len() > 0 {
-		certB64, ok := chain.Get(0)
-		if !ok {
-			return fmt.Errorf("key_attestation x5c[0] not readable")
-		}
-		// cert.Chain stores base64-encoded DER strings (not decoded DER bytes).
-		// UnmarshalJSON does []byte(string) not base64.Decode, so Get() returns
-		// the ASCII base64 bytes — decode them first.
-		der, decErr := base64.StdEncoding.DecodeString(string(certB64))
-		if decErr != nil {
-			return fmt.Errorf("key_attestation x5c[0] base64 decode error: %w", decErr)
-		}
-		leaf, certErr := x509.ParseCertificate(der)
-		if certErr != nil {
-			return fmt.Errorf("key_attestation x5c[0] parse error: %w", certErr)
-		}
-		verifyKey = leaf.PublicKey
-	}
-
-	if verifyKey == nil {
-		// No verifiable key in header — skip (cannot verify without a trust anchor).
-		return nil
-	}
-
-	// Verify the key attestation JWT signature.
-	if _, verr := jws.Verify([]byte(kaJWT), jws.WithKey(kaAlg, verifyKey)); verr != nil {
-		return fmt.Errorf("key_attestation signature invalid: %w", verr)
-	}
-	return nil
+	return finishCredentialResponse(c, tx, map[string]any{"credentials": credentials}, req.CredentialResponseEncryption)
 }
 
 // encryptCredentialResponse wraps a plaintext credential response JSON in a JWE
@@ -1661,7 +1430,7 @@ func encryptCredentialResponse(plaintext []byte, encReq *credentialResponseEncry
 // OID4VCI Final §8 / credential_request_encryption), the body is a JWE compact
 // serialisation.  It is decrypted with the issuer's private key before JSON
 // unmarshalling.  Plain JSON requests are handled with echo's normal Bind.
-func (h *OID4VCIHandler) bindCredentialRequest(c echo.Context, req *credentialRequest) error {
+func (h *OID4VCIHandler) bindCredentialRequest(c echo.Context, req any) error {
 	ct := c.Request().Header.Get(echo.HeaderContentType)
 	if !strings.HasPrefix(ct, "application/jwt") {
 		return c.Bind(req)
@@ -2038,6 +1807,10 @@ func (h *OID4VCIHandler) CreateOffer(c echo.Context) error {
 		if err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "invalid user_id")
 		}
+		u, userErr := h.users.GetForOrg(ctx, uid, orgID)
+		if userErr != nil || !u.IsActive {
+			return echo.NewHTTPError(http.StatusBadRequest, "user is not active in this organisation")
+		}
 		userID = &uid
 	}
 
@@ -2075,7 +1848,6 @@ func (h *OID4VCIHandler) CreateOffer(c echo.Context) error {
 	}
 	if txCodeHash != nil {
 		preAuthGrant["tx_code"] = map[string]any{
-			"required":    true,
 			"input_mode":  "numeric",
 			"description": "Enter the transaction code provided by your administrator",
 		}
@@ -2161,7 +1933,7 @@ func (h *OID4VCIHandler) SendOffer(c echo.Context) error {
 			return echo.NewHTTPError(http.StatusBadRequest,
 				"'to' is required when no user is linked to the offer")
 		}
-		user, err := h.users.GetByID(ctx, *offer.UserID)
+		user, err := h.users.GetForOrg(ctx, *offer.UserID, offer.OrgID)
 		if err != nil {
 			return echo.NewHTTPError(http.StatusBadRequest, "linked user not found")
 		}
@@ -2330,7 +2102,6 @@ func (h *OID4VCIHandler) OfferJSON(c echo.Context) error {
 	}
 	if offer.TxCodeHash != nil {
 		publicGrant["tx_code"] = map[string]any{
-			"required":   true,
 			"input_mode": "numeric",
 		}
 	}
@@ -2518,27 +2289,29 @@ func (h *OID4VCIHandler) signCredential(
 	payload map[string]interface{},
 	holderKey jwk.Key,
 ) (string, error) {
+	list, index, err := h.repo.AllocateCredentialStatus(ctx, org.ID)
+	if err != nil {
+		return "", err
+	}
+	status := oid4w.BuildStatusClaim(h.cfg.BaseURL()+"/"+org.Slug+"/oid4vci/status-list/"+list.String(), index)
 	if cfg.CredentialFormat == "mso_mdoc" {
-		return h.issueMdocCredential(ctx, org, cfg, user, payload, holderKey)
+		return h.issueMdocCredential(ctx, org, cfg, user, payload, holderKey, status)
 	}
 	// Default: SD-JWT-VC.
 	userSub := org.ID.String()
 	if user != nil && user.ID != uuid.Nil {
 		userSub = user.ID.String()
 	}
-	var (
-		sdJWT string
-		err   error
-	)
+	var sdJWT string
 	if len(payload) > 0 {
-		sdJWT, _, err = oid4w.IssueVerifiedCredential(payload, userSub, org, cfg, h.keys, h.cfg.BaseURL(), holderKey)
+		sdJWT, _, err = oid4w.IssueVerifiedCredential(payload, userSub, org, cfg, h.keys, h.cfg.BaseURL(), holderKey, status)
 	} else if isAgeOnlyConfig(cfg) {
 		// Anonymous age credential: only derived age claims, pseudonymous sub.
 		// Birth date is used for computation but never included in the credential
 		// (GDPR Art.5(1)(c) data minimization — the strongest possible form).
-		sdJWT, _, err = oid4w.IssueAgeCredential(user, org, cfg, h.keys, h.cfg.BaseURL(), holderKey)
+		sdJWT, _, err = oid4w.IssueAgeCredential(user, org, cfg, h.keys, h.cfg.BaseURL(), holderKey, status)
 	} else {
-		sdJWT, _, err = oid4w.IssueIdentityCredential(user, org, cfg, h.keys, h.cfg.BaseURL(), holderKey)
+		sdJWT, _, err = oid4w.IssueIdentityCredential(user, org, cfg, h.keys, h.cfg.BaseURL(), holderKey, status)
 	}
 	return sdJWT, err
 }
@@ -2575,6 +2348,7 @@ func (h *OID4VCIHandler) issueMdocCredential(
 	user *models.User,
 	payload map[string]interface{},
 	holderKey jwk.Key,
+	status oid4w.StatusClaim,
 ) (string, error) {
 	// Determine docType from VCT (for mso_mdoc, VCT == docType per OID4VCI §E.2).
 	docType := cfg.VCT
@@ -2613,8 +2387,13 @@ func (h *OID4VCIHandler) issueMdocCredential(
 		}
 	}
 
+	statusCBOR, err := cbor.Marshal(map[string]interface{}{"idx": status.StatusList.IDX, "uri": status.StatusList.URI})
+	if err != nil {
+		return "", err
+	}
 	issuerSignedCBOR, err := mdoc.IssueMdoc(mdoc.IssuanceParams{
 		DocType:         docType,
+		StatusList:      statusCBOR,
 		Namespace:       namespace,
 		Attributes:      attrs,
 		DSKey:           dsKey,
@@ -2671,38 +2450,6 @@ func mdocNamespaceForDocType(docType string) string {
 	}
 }
 
-// extractProofKeyID extracts the holder key ID from the proof JWT header.
-func extractProofKeyID(proofJWT string) string {
-	msg, err := jws.Parse([]byte(proofJWT))
-	if err != nil || len(msg.Signatures()) == 0 {
-		return ""
-	}
-	return msg.Signatures()[0].ProtectedHeaders().KeyID()
-}
-
-// extractHolderKey extracts the wallet's public key from the proof JWT "jwk" header
-// (OID4VCI Final §8.2 / SD-JWT §4.1.2). Returns nil if the header is absent or invalid.
-// The returned key is always a public key — no private material is retained.
-func extractHolderKey(proofJWT string) jwk.Key {
-	if proofJWT == "" {
-		return nil
-	}
-	msg, err := jws.Parse([]byte(proofJWT))
-	if err != nil || len(msg.Signatures()) == 0 {
-		return nil
-	}
-	k := msg.Signatures()[0].ProtectedHeaders().JWK()
-	if k == nil {
-		return nil
-	}
-	// Ensure only the public portion is returned.
-	pub, err := k.PublicKey()
-	if err != nil {
-		return nil
-	}
-	return pub
-}
-
 // baseURLFromConfig satisfies baseURLProvider using config.Config.
 type baseURLFromConfig struct{ url string }
 
@@ -2750,9 +2497,10 @@ func defaultIdentityPD(vct string) map[string]any {
 // waiting for the wallet to poll the status-list JWT.
 //
 // Auth: Authorization: Bearer <sd-jwt>
-//   The server computes SHA-256(<sd-jwt>) as hex (matching the sd_jwt_hash
-//   column) and resolves the issued_credential row.  Only the credential
-//   holder — who possesses the raw SD-JWT — can authenticate this endpoint.
+//
+//	The server computes SHA-256(<sd-jwt>) as hex (matching the sd_jwt_hash
+//	column) and resolves the issued_credential row.  Only the credential
+//	holder — who possesses the raw SD-JWT — can authenticate this endpoint.
 //
 // Wire format: text/event-stream
 //
@@ -2834,49 +2582,29 @@ func (h *OID4VCIHandler) StatusUpdates(c echo.Context) error {
 //   - status_list.bits = 1 (1 bit per credential)
 //   - status_list.lst  = zlib+base64url bitstring
 func (h *OID4VCIHandler) StatusList(c echo.Context) error {
-	listIDStr := c.Param("list_id")
-	listID, err := uuid.Parse(listIDStr)
+	org, err := h.resolveOrg(c)
 	if err != nil {
-		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid list_id"})
+		return err
 	}
-
-	sl, err := h.repo.GetStatusList(c.Request().Context(), listID)
+	id, err := uuid.Parse(c.Param("list_id"))
 	if err != nil {
-		return c.JSON(http.StatusNotFound, map[string]string{"error": "status list not found"})
+		return echo.ErrBadRequest
 	}
-
-	privKey := h.keys.PrivateKey()
-	kid := h.keys.KID()
-	if privKey == nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "no signing key"})
+	list, err := h.repo.GetStatusList(c.Request().Context(), id)
+	if err != nil || list.OrgID != org.ID {
+		return echo.ErrNotFound
 	}
-
-	decodedSL, err := oid4w.DecodeStatusList(sl.Encoded)
+	decoded, err := oid4w.DecodeStatusListWithBits(list.Encoded, list.Bits)
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "decode status list"})
+		return echo.ErrServiceUnavailable
 	}
-
-	issuerURL := h.cfg.BaseURL()
-	slug := c.Param("org_slug")
-	if slug != "" {
-		issuerURL = h.cfg.BaseURL() + "/" + slug
-	}
-
-	params := oid4w.StatusListJWTParams{
-		Issuer:     issuerURL,
-		ListID:     listID,
-		StatusList: decodedSL,
-		TTL:        24 * time.Hour,
-		PrivateKey: privKey,
-		KID:        kid,
-	}
-	tokenStr, err := oid4w.IssueStatusListJWT(params)
+	issuer := h.cfg.BaseURL() + "/" + org.Slug
+	token, err := oid4w.IssueStatusListJWT(oid4w.StatusListJWTParams{Issuer: issuer, ListID: id, StatusList: decoded, TTL: 5 * time.Minute, Signer: h.keys.CryptoSigner(), Algorithm: h.keys.Algorithm(), KID: h.keys.KID()})
 	if err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": "issue status list jwt"})
+		return echo.ErrServiceUnavailable
 	}
-
-	c.Response().Header().Set("Cache-Control", "public, max-age=3600")
-	return c.String(http.StatusOK, tokenStr)
+	c.Response().Header().Set("Cache-Control", "public, max-age=60")
+	return c.Blob(200, "application/statuslist+jwt", []byte(token))
 }
 
 // RevokeCredential handles POST /api/v1/organizations/:org_id/oid4vci/issued/:cred_id/revoke
@@ -2899,6 +2627,14 @@ func (h *OID4VCIHandler) RevokeCredential(c echo.Context) error {
 	cred, err := h.repo.GetIssuedCredentialByID(ctx, credID)
 	if err != nil || cred == nil {
 		return c.JSON(http.StatusNotFound, map[string]string{"error": "credential not found"})
+	}
+
+	orgID, parseErr := uuidParam(c, "org_id")
+	if parseErr != nil {
+		return parseErr
+	}
+	if cred.OrgID != orgID {
+		return echo.ErrNotFound
 	}
 
 	if err := h.repo.RevokeIssuedCredential(ctx, credID, body.Reason); err != nil {
@@ -2936,6 +2672,38 @@ func (h *OID4VCIHandler) RevokeCredential(c echo.Context) error {
 	return c.JSON(http.StatusOK, map[string]string{"status": "revoked"})
 }
 
+// SuspendCredential makes a tracked credential temporarily unusable.
+func (h *OID4VCIHandler) SuspendCredential(c echo.Context) error {
+	org, err := uuidParam(c, "org_id")
+	if err != nil {
+		return err
+	}
+	id, err := uuidParam(c, "cred_id")
+	if err != nil {
+		return err
+	}
+	record, err := h.repo.GetIssuedCredentialByID(c.Request().Context(), id)
+	if err != nil || record == nil || record.OrgID != org {
+		return echo.ErrNotFound
+	}
+	var body struct {
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(c.Request().Body).Decode(&body); err != nil && err != io.EOF {
+		return echo.ErrBadRequest
+	}
+	if err := h.repo.SuspendIssuedCredential(c.Request().Context(), id, body.Reason); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "credential_state_conflict"})
+		}
+		return echo.ErrServiceUnavailable
+	}
+	if h.statusDispatcher != nil {
+		h.statusDispatcher.Publish(id, "suspended")
+	}
+	return c.JSON(http.StatusOK, map[string]string{"status": "suspended"})
+}
+
 // RestoreCredential handles POST /api/v1/organizations/:org_id/oid4vci/issued/:cred_id/restore
 func (h *OID4VCIHandler) RestoreCredential(c echo.Context) error {
 	credIDStr := c.Param("cred_id")
@@ -2943,8 +2711,20 @@ func (h *OID4VCIHandler) RestoreCredential(c echo.Context) error {
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid cred_id"})
 	}
+	orgID, parseErr := uuidParam(c, "org_id")
+	if parseErr != nil {
+		return parseErr
+	}
+	record, lookupErr := h.repo.GetIssuedCredentialByID(c.Request().Context(), credID)
+	if lookupErr != nil || record == nil || record.OrgID != orgID {
+		return echo.ErrNotFound
+	}
+
 	if err := h.repo.RestoreIssuedCredential(c.Request().Context(), credID); err != nil {
-		return c.JSON(http.StatusInternalServerError, map[string]string{"error": err.Error()})
+		if errors.Is(err, pgx.ErrNoRows) {
+			return c.JSON(http.StatusConflict, map[string]string{"error": "credential_state_conflict", "error_description": "only suspended credentials can be restored; revocation is terminal"})
+		}
+		return echo.ErrServiceUnavailable
 	}
 	if h.statusDispatcher != nil {
 		h.statusDispatcher.Publish(credID, "restored")
@@ -3063,4 +2843,12 @@ func (h *OID4VCIHandler) OfferQRByOrgID(c echo.Context) error {
 	c.Response().Header().Set("Content-Type", "image/png")
 	c.Response().Header().Set("Cache-Control", "no-store")
 	return png.Encode(c.Response().Writer, scaled)
+}
+
+func marshalStatusParents(parents []oid4w.StatusParent) json.RawMessage {
+	if len(parents) == 0 {
+		return json.RawMessage(`[]`)
+	}
+	raw, _ := json.Marshal(parents)
+	return raw
 }

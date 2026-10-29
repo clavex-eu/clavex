@@ -267,6 +267,9 @@ func (h *OIDCHandler) WithBundIDSAMLRepository(r *repository.BundIDSAMLRepositor
 
 func (h *OIDCHandler) WithOID4VCIHandler(vci *OID4VCIHandler) *OIDCHandler {
 	h.vciH = vci
+	if vci != nil {
+		vci.oidcHandler = h
+	}
 	return h
 }
 
@@ -606,6 +609,9 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 		"check_session_iframe":   base + "/check-session",
 		"introspection_endpoint": base + "/introspect",
 		"revocation_endpoint":    base + "/revoke",
+
+		// OID4VCI Final 12.3: advertise anonymous pre-authorized wallet requests.
+		"pre-authorized_grant_anonymous_access_supported": h.vciH != nil,
 
 		// Supported values
 		"response_types_supported":              []string{"code", "id_token", "token", "code id_token", "code token", "token id_token", "code token id_token"},
@@ -1789,7 +1795,6 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 	ctx := c.Request().Context()
 	orgSlug := c.Param("org_slug")
 
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
 	grantType := c.FormValue("grant_type")
 
 	ctx, span := tracing.Tracer("clavex/handler").Start(ctx, "handler.token")
@@ -1798,6 +1803,24 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 		attribute.String("org_slug", orgSlug),
 		attribute.String("grant_type", grantType),
 	)
+
+	// VCI token families use a distinct namespace and lifecycle. Delegate before
+	// generic DPoP processing so one request does not consume its proof twice.
+	if h.vciH != nil && (grantType == "urn:ietf:params:oauth:grant-type:pre-authorized_code" ||
+		grantType == "refresh_token" && strings.HasPrefix(c.FormValue("refresh_token"), walletRefreshPrefix)) {
+		return h.vciH.Token(c)
+	}
+
+	if h.vciH != nil && grantType == "authorization_code" {
+		handles, err := h.vciH.walletAuthorizationCodeRequest(c)
+		if err != nil {
+			return err
+		}
+		if handles {
+			return h.vciH.Token(c)
+		}
+	}
+	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
 
 	// DPoP (RFC 9449): parse proof if present.
 	// htu = URL without query string; htm = HTTP method.
@@ -2792,7 +2815,10 @@ func (h *OIDCHandler) authenticateClientByAssertion(c echo.Context) (string, err
 	// extraAudiences accepts /par (PAR endpoint) and /bc-authorize (CIBA
 	// backchannel authentication endpoint) in addition to the token endpoint
 	// and issuer, since this function authenticates clients at all three.
-	if _, err = oidc.ValidateClientAssertionJWT(ctx, assertion, keySet, issuer+"/token", issuer, jtiCache, issuer+"/par", issuer+"/bc-authorize"); err != nil {
+	if _, err = oidc.ValidateClientAssertionJWT(ctx, assertion, keySet, issuer+"/token", issuer, jtiCache, issuer+"/par", issuer+"/bc-authorize", issuer+"/oid4vci/token"); err != nil {
+		if errors.Is(err, oidc.ErrClientReplayUnavailable) {
+			return "", echo.ErrServiceUnavailable
+		}
 		var te *oidc.TokenError
 		if errors.As(err, &te) {
 			return "", echo.NewHTTPError(http.StatusUnauthorized, te.Description)
@@ -2844,7 +2870,8 @@ func (h *OIDCHandler) resolveClientJWKS(ctx context.Context, client *models.OIDC
 // draft-ietf-oauth-attestation-based-client-auth.
 //
 // client_assertion_type must be
-//   urn:ietf:params:oauth:client-assertion-type:jwt-client-attestation
+//
+//	urn:ietf:params:oauth:client-assertion-type:jwt-client-attestation
 //
 // client_assertion must be "<attest_jwt>~<pop_jwt>" (tilde-separated).
 // The attestation JWT is verified against the client's registered JWKS
@@ -2895,6 +2922,10 @@ func (h *OIDCHandler) authenticateClientByAttestationAssertion(c echo.Context) (
 		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "client not configured for attest_jwt_client_auth")
 	}
 
+	org, orgErr := h.orgs.GetBySlug(ctx, c.Param("org_slug"))
+	if orgErr != nil || org.ID != client.OrgID || !org.IsActive {
+		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "client does not belong to the active organisation")
+	}
 	// Resolve the client's public key set (used to verify the attestation JWT).
 	keySet, err := h.resolveClientJWKS(ctx, client)
 	if err != nil {
@@ -2914,13 +2945,36 @@ func (h *OIDCHandler) authenticateClientByAttestationAssertion(c echo.Context) (
 		jtiCache,
 		issuer+"/par",
 		issuer+"/bc-authorize",
+		issuer+"/oid4vci/token",
 	)
 	if valErr != nil {
+		if errors.Is(valErr, oidc.ErrClientReplayUnavailable) {
+			return "", "", echo.ErrServiceUnavailable
+		}
 		var te *oidc.TokenError
 		if errors.As(valErr, &te) {
 			return "", "", echo.NewHTTPError(http.StatusUnauthorized, te.Description)
 		}
 		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "client_assertion invalid")
+	}
+
+	required := false
+	if value, ok := org.Settings["wallet_attestation_status_required"]; ok {
+		flag, valid := value.(bool)
+		if !valid {
+			return "", "", echo.ErrServiceUnavailable
+		}
+		required = flag
+	}
+	var status json.RawMessage
+	if value, ok := unverifiedAttest.Get("status"); ok {
+		status, _ = json.Marshal(value)
+	}
+	if err := oid4w.CheckDelegatedStatus(ctx, org.ID.String(), org.Settings, "wallet-attestation+jwt", unverifiedAttest.Issuer(), "oauth-client-attestation+jwt", status, required); err != nil {
+		if errors.Is(err, oid4w.ErrStatusUnavailable) {
+			return "", "", echo.ErrServiceUnavailable
+		}
+		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "wallet attestation status is invalid")
 	}
 
 	return clientID, instanceJKT, nil
@@ -2932,6 +2986,9 @@ type redisJTICache struct {
 }
 
 func (r *redisJTICache) CheckAndSet(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if r.rdb == nil {
+		return false, oidc.ErrClientReplayUnavailable
+	}
 	set, err := r.rdb.SetNX(ctx, key, 1, ttl).Result()
 	if err != nil {
 		return false, err

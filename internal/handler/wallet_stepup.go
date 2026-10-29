@@ -3,6 +3,7 @@ package handler
 import (
 	"context"
 	"crypto"
+	"errors"
 	"net/http"
 	"time"
 
@@ -12,8 +13,10 @@ import (
 	"github.com/clavex-eu/clavex/internal/session"
 	"github.com/clavex-eu/clavex/internal/ssf"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
+	"github.com/redis/go-redis/v9"
 )
 
 // walletStepUpRiskThreshold is the minimum risk score (0–100) that triggers a
@@ -109,10 +112,10 @@ func (h *WalletStepUpHandler) CreateChallenge(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, map[string]any{
-		"challenge_id":  challenge.ID,
-		"request_url":   h.cfg.BaseURL() + "/" + org.Slug + "/wallet/stepup/" + challenge.ID,
-		"expires_at":    challenge.ExpiresAt,
-		"status":        challenge.Status,
+		"challenge_id": challenge.ID,
+		"request_url":  h.cfg.BaseURL() + "/" + org.Slug + "/wallet/stepup/" + challenge.ID,
+		"expires_at":   challenge.ExpiresAt,
+		"status":       challenge.Status,
 	})
 }
 
@@ -134,15 +137,18 @@ func (h *WalletStepUpHandler) GetChallengeStatus(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusNotFound, "challenge not found or expired")
 	}
 
+	if challenge.OrgID != c.Param("org_id") {
+		return echo.ErrNotFound
+	}
 	return c.JSON(http.StatusOK, map[string]any{
-		"challenge_id":  challenge.ID,
-		"status":        challenge.Status,
-		"user_id":       challenge.UserID,
-		"created_at":    challenge.CreatedAt,
-		"expires_at":    challenge.ExpiresAt,
-		"completed_at":  challenge.CompletedAt,
-		"risk_score":    challenge.RiskScore,
-		"risk_reasons":  challenge.RiskReasons,
+		"challenge_id": challenge.ID,
+		"status":       challenge.Status,
+		"user_id":      challenge.UserID,
+		"created_at":   challenge.CreatedAt,
+		"expires_at":   challenge.ExpiresAt,
+		"completed_at": challenge.CompletedAt,
+		"risk_score":   challenge.RiskScore,
+		"risk_reasons": challenge.RiskReasons,
 	})
 }
 
@@ -163,6 +169,9 @@ func (h *WalletStepUpHandler) GetRequest(c echo.Context) error {
 	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "challenge not found or expired")
 	}
+	if challenge.OrgSlug != c.Param("org_slug") {
+		return echo.ErrNotFound
+	}
 	if challenge.Status != "pending" {
 		return c.JSON(http.StatusGone, map[string]string{"error": "challenge_expired_or_used"})
 	}
@@ -176,7 +185,7 @@ func (h *WalletStepUpHandler) GetRequest(c echo.Context) error {
 
 	authReq := oid4w.AuthorizationRequest{
 		ResponseType:   "vp_token",
-		ClientID:       baseURL + "/" + orgSlug,
+		ClientID:       "redirect_uri:" + responseURI,
 		ResponseMode:   "direct_post",
 		ResponseURI:    responseURI,
 		Nonce:          challenge.Nonce,
@@ -227,6 +236,9 @@ func (h *WalletStepUpHandler) SubmitResponse(c echo.Context) error {
 			"error_description": "challenge not found or expired",
 		})
 	}
+	if challenge.OrgSlug != orgSlug {
+		return echo.ErrNotFound
+	}
 	if challenge.Status != "pending" || time.Now().After(challenge.ExpiresAt) {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error": "challenge_expired_or_used",
@@ -243,12 +255,17 @@ func (h *WalletStepUpHandler) SubmitResponse(c echo.Context) error {
 		issuerID: h.keys.PublicKey(),
 	}
 
+	query := buildStepUpDCQL(challenge.VCTs)
+	sdJWT, extractErr := oid4w.ExtractDCQLSDJWT(vpToken, query)
+	if extractErr != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "vp_token_invalid"})
+	}
 	result, err := oid4w.VerifyDCQLPresentation(
 		ctx,
-		extractDCQLVPToken(vpToken),
+		sdJWT,
 		buildStepUpDCQL(challenge.VCTs),
 		challenge.Nonce,
-		responseURI,
+		"redirect_uri:"+responseURI,
 		trustedIssuers,
 		true, // step-up credentials are always Clavex-issued (issuer always trusted)
 		h.keys.PublicKey(),
@@ -261,31 +278,58 @@ func (h *WalletStepUpHandler) SubmitResponse(c echo.Context) error {
 		})
 	}
 
-	// Verify the credential was issued recently (replay prevention).
-	if iat, ok := result.Claims["iat"].(float64); ok {
-		issuedAt := time.Unix(int64(iat), 0)
-		if issuedAt.Before(challenge.IssuedAfter) {
-			_ = h.store.FailWalletStepUpChallenge(ctx, challengeID)
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "credential_too_old",
-				"error_description": "presented credential was issued before the step-up window",
-			})
-		}
+	orgID, parseErr := uuid.Parse(challenge.OrgID)
+	if parseErr != nil {
+		return echo.ErrBadRequest
 	}
-
-	// Verify the credential subject matches the challenged user.
-	if sub, ok := result.Claims["sub"].(string); ok && sub != "" {
-		if sub != challenge.UserID {
-			_ = h.store.FailWalletStepUpChallenge(ctx, challengeID)
-			return c.JSON(http.StatusBadRequest, map[string]string{
-				"error":             "credential_subject_mismatch",
-				"error_description": "presented credential subject does not match the challenged user",
-			})
-		}
+	userID, parseErr := uuid.Parse(challenge.UserID)
+	if parseErr != nil {
+		return echo.ErrBadRequest
 	}
-
-	if err := h.store.CompleteWalletStepUpChallenge(ctx, challengeID); err != nil {
-		return echo.ErrInternalServerError
+	tx, err := h.pool.Begin(ctx)
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
+	defer tx.Rollback(ctx)
+	identities := repository.NewWalletIdentityRepository(tx)
+	slug, settings, err := identities.LockActiveOrg(ctx, orgID)
+	if err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return echo.ErrForbidden
+		}
+		return echo.ErrServiceUnavailable
+	}
+	if slug != orgSlug {
+		return echo.ErrForbidden
+	}
+	if err := identities.LockActiveUser(ctx, orgID, userID); err != nil {
+		if errors.Is(err, pgx.ErrNoRows) {
+			return echo.ErrForbidden
+		}
+		return echo.ErrServiceUnavailable
+	}
+	if err := checkWalletStatus(ctx, repository.NewOID4WRepository(tx), orgID, issuerID, settings, result, true); err != nil {
+		if errors.Is(err, errWalletStatusRejected) {
+			_ = h.store.FailWalletStepUpChallenge(ctx, challengeID)
+		}
+		return walletStatusError(c, err)
+	}
+	if _, err := bindWalletAccount(ctx, identities, orgID, userID, issuerID, settings, result); err != nil {
+		_ = h.store.FailWalletStepUpChallenge(ctx, challengeID)
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_subject_mismatch"})
+	}
+	if result.Identity.IssuedAt.IsZero() || result.Identity.IssuedAt.Before(challenge.IssuedAfter) || result.Identity.IssuedAt.After(time.Now().Add(30*time.Second)) {
+		_ = h.store.FailWalletStepUpChallenge(ctx, challengeID)
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_too_old"})
+	}
+	if err := h.store.CompleteWalletStepUpForSubject(ctx, challengeID, challenge.OrgID, challenge.UserID, challenge.Nonce); err != nil {
+		if !errors.Is(err, session.ErrWalletStepUpConsumed) && !errors.Is(err, redis.Nil) {
+			return echo.ErrServiceUnavailable
+		}
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "challenge_expired_or_used"})
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return echo.ErrServiceUnavailable
 	}
 
 	// Notify all registered SSF receivers that the assurance level has been
@@ -327,9 +371,9 @@ func (h *WalletStepUpHandler) CheckAndCreateStepUp(
 	existing, _ := h.store.GetPendingWalletStepUpChallenge(ctx, orgID.String(), userIDStr)
 	if existing != nil {
 		return map[string]any{
-			"wallet_stepup_required":   true,
+			"wallet_stepup_required":     true,
 			"wallet_stepup_challenge_id": existing.ID,
-			"wallet_stepup_url":        h.cfg.BaseURL() + "/" + orgSlug + "/wallet/stepup/" + existing.ID,
+			"wallet_stepup_url":          h.cfg.BaseURL() + "/" + orgSlug + "/wallet/stepup/" + existing.ID,
 		}
 	}
 
@@ -364,6 +408,14 @@ func (h *WalletStepUpHandler) buildChallenge(
 	riskScore *int,
 	riskReasons []string,
 ) (*session.WalletStepUpChallenge, error) {
+	uid, err := uuid.Parse(userID)
+	if err != nil {
+		return nil, err
+	}
+	u, err := repository.NewUserRepository(h.pool).GetForOrg(ctx, uid, orgID)
+	if err != nil || !u.IsActive {
+		return nil, errorf("user is not active in this organisation")
+	}
 	spidCreds, _ := h.credRepo.GetCredentialConfigsBySourceIdp(ctx, orgID, "spid")
 	cieCreds, _ := h.credRepo.GetCredentialConfigsBySourceIdp(ctx, orgID, "cie")
 
@@ -404,16 +456,7 @@ func (h *WalletStepUpHandler) buildChallenge(
 // buildStepUpDCQL returns a minimal DCQL query (OID4VP 1.0 Final §6) that
 // accepts any credential with one of the provided VCT values.
 func buildStepUpDCQL(vcts []string) map[string]any {
-	return map[string]any{
-		"credentials": map[string]any{
-			"stepup_identity": map[string]any{
-				"format": "dc+sd-jwt",
-				"meta": map[string]any{
-					"vct_values": vcts,
-				},
-			},
-		},
-	}
+	return map[string]any{"credentials": []any{map[string]any{"id": "stepup_identity", "format": "dc+sd-jwt", "meta": map[string]any{"vct_values": vcts}}}}
 }
 
 // dispatchAssuranceLevelChange fires a CAEP assurance-level-change SSF SET

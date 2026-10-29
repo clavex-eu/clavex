@@ -350,6 +350,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	oidcH.WithOID4VCIHandler(oid4vciH)
 	walletStepUpH := handler.NewWalletStepUpHandler(pool, store, keys, walletBaseURL).
 		WithSSFDispatcher(ssfDisp)
+	walletIdentityH := handler.NewWalletIdentityHandler(pool, walletBaseURL)
 	oidcH.WithWalletStepUp(walletStepUpH)
 	// Opt-in: score agent-token usage for anomalies on introspection and reuse
 	// the wallet step-up above for the delegating user when a token is anomalous.
@@ -1042,6 +1043,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Wallet step-up — Continuous Adaptive Authentication (CAA):
 		// admin/RS creates a step-up challenge; backend/RS polls for completion.
 		adminUsers.POST("/:user_id/wallet-stepup", walletStepUpH.CreateChallenge)
+		adminUsers.POST("/:user_id/wallet-identities", walletIdentityH.Create)
+		adminUsers.GET("/:user_id/wallet-identities", walletIdentityH.List)
+		adminUsers.DELETE("/:user_id/wallet-identities/:link_id", walletIdentityH.Revoke)
 		orgScoped.GET("/wallet-stepup/:challenge_id", walletStepUpH.GetChallengeStatus,
 			middleware.RequireResourcePermission("users"))
 
@@ -1490,6 +1494,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		adminVCI.GET("/analytics/summary", analyticsH.Summary)
 		adminVCI.GET("/issued", oid4vciH.ListIssued)
 		adminVCI.POST("/issued/:cred_id/revoke", oid4vciH.RevokeCredential)
+		adminVCI.POST("/issued/:cred_id/suspend", oid4vciH.SuspendCredential)
 		adminVCI.POST("/issued/:cred_id/restore", oid4vciH.RestoreCredential)
 		// /offers is rate-limited per-endpoint (configurable via endpoint_limits)
 		adminVCIOffers := adminVCI.Group("/offers")
@@ -2106,6 +2111,7 @@ func (s *Server) Start() error {
 	if s.merkleSealer != nil {
 		go s.merkleSealer.RunAllOrgs(ctx, 5*time.Minute)
 	}
+	go worker.RunWalletStatusMonitor(ctx, s.pool)
 	go worker.RunEntityReviewWorker(ctx, s.pool, entityReviewBaseURL)
 	go worker.RunPAMRotationWorker(ctx, s.pool, s.enc, s.pamNotifier, s.webhookDisp)
 	go worker.RunDeviceCARotationWorker(ctx, s.pool, s.enc, s.webhookDisp)
