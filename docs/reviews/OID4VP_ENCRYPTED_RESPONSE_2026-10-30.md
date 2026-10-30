@@ -85,8 +85,60 @@ verification. Lint with the CI version (golangci-lint 2.12.1, Go 1.26.4) reports
 zero issues in both repositories. Full race tests (`go test ./... -race -count=1 -timeout 10m`, Go 1.26.4)
 passed: 49 packages in the private repository and 44 in the public repository,
 zero failing packages. Handler packages completed in 170.661s and 149.050s
-respectively. Deployment validation follows the private image build.
+respectively. Final CI/deployment evidence follows below.
 
 Public changes are applied as scoped patches adapted to its module namespace,
 not by overwriting the private/public files wholesale. The public branch remains
 local. No production payment, license or customer state is involved.
+
+
+## Final test-deployment validation — 31 October (Europe/Berlin)
+
+Private implementation commits `3a90a02c` and `ba854c90` were pushed. Public
+commits `d9e9c12` and `7018b05` remain local; no public push was made.
+
+[Private CI run 41142040201](https://github.com/fcraviolatti/clavex_private/actions/runs/41142040201)
+passed Test & Lint, all 49 race-tested packages, Go build and backend image
+publication for `ba854c90`. **The overall workflow failed in other jobs**:
+SPID seed lacks the required password (`CLAVEX_SEED_PASSWORD`), and badge sync
+cannot rebase a dirty checkout and reports the unmapped `.conformance-suite`
+submodule. These are not a passing SPID validation or a fully green workflow;
+no changes to those CI jobs are included in this response-encryption fix.
+
+On the final source, local public race tests passed all 44 packages. A repeated
+private run on the reused disposable database passed 48 packages and failed the
+repository package on existing fixed-ID billing fixtures (`sub_1`, `sub_a`). A
+fresh-database repository rerun passed in 27.439s. The final CI's fresh-database
+49-package pass independently confirms the final private source. No billing
+record in the deployed installation was modified for this investigation.
+
+The private test deployment was rolled out after the successful backend image
+job. Its init container reports schema version **192**; the new pod became Ready
+and the rollout completed. Pre-rollout deployment/image identifiers and final
+probe summaries are stored privately outside Git for audit/rollback.
+
+An independent Python client, using standard P-256 ECDH, RFC 7518 Concat KDF and
+AES-GCM (not the Go JOSE library under test), exercised the live endpoints:
+
+| Check | A128GCM | A256GCM |
+| --- | --- | --- |
+| Signed JAR and current reader certificate | Verified | Verified |
+| `direct_post.jwt`, public ephemeral JWK and opaque key ID | Verified | Verified |
+| Plain success response to encrypted session | Rejected, request stays pending | Same |
+| Encrypted synthetic `access_denied` response | Decrypted and acknowledged | Same |
+| Synthetic session failure and response replay rejection | Verified | Verified |
+
+The probe submitted no real credential and used no user account. It verifies
+live request generation, independent response encryption, server decryption and
+session handling; it is not a physical-wallet credential test. It used a direct
+Traefik-pod port-forward while retaining the original hostname and normal TLS
+certificate verification. An initial HTTP timeout occurred before the successful
+retry; the previously observed transport instability remains a separate open
+issue. The disposable local PostgreSQL and Redis test containers were stopped.
+
+Use the existing **CA2 APK**, create a **new QR** in the verifier's regular
+request_uri flow (no inline conformance endpoint), and test the matching
+credential format. Old requests retain their original response mode. Device
+presentation of PID SD-JWT, PID mdoc and mDL remains to be confirmed by the
+maintainer. No wallet security policy, issuer trust or certificate was relaxed
+or rotated as part of this response-encryption change.
