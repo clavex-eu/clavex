@@ -21,6 +21,9 @@ func RunWalletStatusMonitor(ctx context.Context, pool *pgxpool.Pool) {
 	defer ticker.Stop()
 	for {
 		passCtx, cancel := context.WithTimeout(ctx, 25*time.Second)
+		if err := repository.NewOID4WRepository(pool).ClearExpiredPresentationKeys(passCtx); err != nil && ctx.Err() == nil {
+			log.Warn().Err(err).Msg("wallet presentation key cleanup pass incomplete")
+		}
 		if err := PollWalletStatusParents(passCtx, pool); err != nil && ctx.Err() == nil {
 			log.Warn().Err(err).Msg("wallet parent status monitor pass incomplete")
 		}

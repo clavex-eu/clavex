@@ -66,8 +66,9 @@ type JSONSchemaFilter struct {
 //
 //	GET /:org_slug/wallet/request/:request_id
 //
-// Per OID4VP §6 / JAR (RFC 9101), this can be returned as a signed JWT
-// (request object) or as plain JSON. For now we return plain JSON.
+// The request_uri endpoint returns this object inside a signed JAR JWT
+// (RFC 9101). Client metadata carries the public response-encryption key when
+// the session uses direct_post.jwt.
 type AuthorizationRequest struct {
 	ResponseType   string `json:"response_type"`
 	ClientID       string `json:"client_id"`

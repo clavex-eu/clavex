@@ -51,7 +51,7 @@ func verifierMdoc(t *testing.T, session *models.PresentationSession, extra ...ma
 	require.NoError(t, err)
 	doc.DeviceSigned.NameSpaces, err = cbor.Marshal(cbor.Tag{Number: 24, Content: namespaces})
 	require.NoError(t, err)
-	transcript, err := mdoc.BuildSessionTranscript(session.ClientID, session.ResponseURI, session.Nonce)
+	transcript, err := mdoc.BuildRedirectSessionTranscript(session.ClientID, session.ResponseURI, session.Nonce, session.ResponseKeyThumbprint)
 	require.NoError(t, err)
 	// Independent construction of the detached payload used by a wallet.
 	auth, err := cbor.Marshal([]any{"DeviceAuthentication", cbor.RawMessage(transcript), doc.DocType, doc.DeviceSigned.NameSpaces})

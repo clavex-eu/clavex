@@ -319,7 +319,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		WithRedis(rdb).
 		WithStatusDispatcher(oid4w.NewCredStatusDispatcher())
 	analyticsH := handler.NewCredentialAnalyticsHandler(pool)
-	oid4vpH := handler.NewOID4VPHandler(pool, keys, walletBaseURL, parseTrustedIssuers(cfg.OID4VP.TrustedCredentialIssuers), cfg.OID4VP.RequireTrustedIssuer, repository.NewCIBARepository(pool), cfg.OID4VP.JARCertFile, cfg.OID4VP.JARKeyFile)
+	oid4vpH := handler.NewOID4VPHandler(pool, keys, walletBaseURL, parseTrustedIssuers(cfg.OID4VP.TrustedCredentialIssuers), cfg.OID4VP.RequireTrustedIssuer, repository.NewCIBARepository(pool), cfg.OID4VP.JARCertFile, cfg.OID4VP.JARKeyFile).WithResponseEncryption(enc)
 	walletH := handler.NewWalletHandler(repository.NewOID4WRepository(pool))
 	mdocProximityH := handler.NewMdocProximityHandler(pool, keys, walletBaseURL)
 	complianceH := handler.NewComplianceHandler(pool, keys)

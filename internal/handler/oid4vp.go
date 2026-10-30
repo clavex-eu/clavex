@@ -23,6 +23,7 @@ import (
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
+	secretcrypto "github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/mdoc"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/oid4w"
@@ -60,11 +61,12 @@ const cibaVPACR = "urn:clavex:acr:oid4vp-credential"
 //	GET  /api/v1/organizations/:org_id/oid4vp/sessions       → list sessions
 //	GET  /api/v1/organizations/:org_id/oid4vp/sessions/:id   → get session status
 type OID4VPHandler struct {
-	repo           *repository.OID4WRepository
-	orgs           *repository.OrgRepository
-	keys           oidc.Signer
-	cfg            baseURLProvider
-	trustedIssuers map[string]crypto.PublicKey
+	responseEncryption *secretcrypto.Encryptor
+	repo               *repository.OID4WRepository
+	orgs               *repository.OrgRepository
+	keys               oidc.Signer
+	cfg                baseURLProvider
+	trustedIssuers     map[string]crypto.PublicKey
 	// requireTrustedIssuer rejects DCQL presentations from issuers not in
 	// trustedIssuers (default true; false only for the conformance suite).
 	requireTrustedIssuer bool
@@ -190,6 +192,7 @@ var defaultClientMetadata = map[string]interface{}{
 }
 
 type createVPRequestBody struct {
+	ResponseMode string `json:"response_mode"`
 	// DCQLQuery is the OID4VP 1.0 Final DCQL credential query (§6).
 	// Preferred over PresentationDefinition for new integrations.
 	DCQLQuery map[string]interface{} `json:"dcql_query"`
@@ -216,6 +219,22 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 	var req createVPRequestBody
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
+	}
+	mode := req.ResponseMode
+	if mode == "" {
+		mode = "direct_post.jwt"
+		if req.WalletAuthorizationEndpoint != nil && *req.WalletAuthorizationEndpoint != "" {
+			mode = "direct_post"
+		}
+	}
+	if mode == "direct_post.jwt" && req.State != nil && *req.State == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "state must not be empty")
+	}
+	if mode != "direct_post" && mode != "direct_post.jwt" {
+		return echo.NewHTTPError(http.StatusBadRequest, "unsupported response_mode")
+	}
+	if mode == "direct_post.jwt" && h.responseEncryption == nil {
+		return echo.NewHTTPError(http.StatusServiceUnavailable, "response encryption not configured")
 	}
 	if req.DCQLQuery == nil && req.PresentationDefinition == nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "dcql_query or presentation_definition is required")
@@ -265,12 +284,16 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 		nonce,
 		time.Now().Add(10*time.Minute),
 		nil, // cibaAuthReqID — nil for standalone VP sessions
-		clientID,
+		clientID, mode,
 	)
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
 
+	metadata, err := h.responseClientMetadata(c.Request().Context(), session)
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
 	resp := map[string]any{
 		"request_uri": requestURI,
 		"request_id":  session.RequestID,
@@ -299,7 +322,7 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 		// For url_query requests use redirect_uri prefix so client_id is
 		// self-verifiable without a certificate (client_id == "redirect_uri:" + response_uri).
 		params.Set("client_id", clientID)
-		params.Set("response_mode", "direct_post")
+		params.Set("response_mode", mode)
 		params.Set("response_uri", responseURI)
 		params.Set("nonce", nonce)
 		params.Set("state", requestID)
@@ -317,7 +340,7 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 		}
 
 		// client_metadata with vp_formats_supported is MANDATORY per OID4VP 1.0 Final §5.1.
-		if cmJSON, jsonErr := json.Marshal(defaultClientMetadata); jsonErr == nil {
+		if cmJSON, jsonErr := json.Marshal(metadata); jsonErr == nil {
 			params.Set("client_metadata", string(cmJSON))
 		}
 
@@ -368,15 +391,19 @@ func (h *OID4VPHandler) GetRequest(c echo.Context) error {
 
 	// OID4VP 1.0 Final §5.7.1 / x509_san_dns scheme:
 	// client_id = "x509_san_dns:<hostname>"; public key verified from x5c cert SAN.
+	metadata, err := h.responseClientMetadata(ctx, session)
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
 	hostname := h.jarCert.DNSNames[0]
 	authReq := oid4w.AuthorizationRequest{
 		ResponseType:   "vp_token",
 		ClientID:       "x509_san_dns:" + hostname,
 		ClientIDScheme: "x509_san_dns",
-		ResponseMode:   "direct_post",
+		ResponseMode:   session.ResponseMode,
 		ResponseURI:    session.ResponseURI,
 		Nonce:          session.Nonce,
-		ClientMetadata: defaultClientMetadata,
+		ClientMetadata: metadata,
 	}
 	// state must round-trip back to us so Response() can look up the session
 	// via GetPresentationSession(ctx, state) which queries WHERE request_id = $1.
@@ -410,10 +437,37 @@ func (h *OID4VPHandler) GetRequest(c echo.Context) error {
 // Per OID4VP §7.3 the wallet may also POST an error instead of a vp_token; in that
 // case we mark the session as failed and return 200 so the wallet does not retry.
 func (h *OID4VPHandler) Response(c echo.Context) error {
+	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 2*1024*1024)
+	if strings.HasPrefix(c.Request().Header.Get(echo.HeaderContentType), "application/x-www-form-urlencoded") {
+		if err := c.Request().ParseForm(); err != nil {
+			return echo.ErrBadRequest
+		}
+	}
+	var encryptedSession *models.PresentationSession
+	var decrypted *encryptedVPResponse
+	if compact := c.FormValue("response"); compact != "" {
+		form := c.Request().PostForm
+		if len(form["response"]) != 1 || c.FormValue("state") != "" || c.FormValue("vp_token") != "" || c.FormValue("error") != "" {
+			return echo.ErrBadRequest
+		}
+		var err error
+		encryptedSession, decrypted, err = h.decryptVPResponse(c, compact)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_encrypted_response"})
+		}
+	}
 	// OID4VP §7.3: wallet error response — form-encoded error parameter.
-	if walletErr := c.FormValue("error"); walletErr != "" {
+	walletErr := c.FormValue("error")
+	if decrypted != nil {
+		walletErr = decrypted.Error
+	}
+	if walletErr != "" {
 		state := c.FormValue("state")
 		desc := c.FormValue("error_description")
+		if decrypted != nil {
+			state = encryptedSession.RequestID
+			desc = decrypted.ErrorDescription
+		}
 		org, err := h.resolveOrgVP(c)
 		if err != nil {
 			return err
@@ -431,7 +485,19 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 	// Accept either JSON body or form-encoded.
 	state := c.FormValue("state")
 	vpToken := c.FormValue("vp_token")
-	if vpToken == "" {
+	if decrypted != nil {
+		state = encryptedSession.RequestID
+		if len(decrypted.VPToken) > 0 && string(decrypted.VPToken) != "null" {
+			if decrypted.VPToken[0] == '"' {
+				if json.Unmarshal(decrypted.VPToken, &vpToken) != nil {
+					return echo.ErrBadRequest
+				}
+			} else {
+				vpToken = string(decrypted.VPToken)
+			}
+		}
+	}
+	if vpToken == "" && decrypted == nil {
 		var body struct {
 			VPToken string `json:"vp_token"`
 			State   string `json:"state"`
@@ -467,7 +533,11 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 	}
 
 	// Derive the request_id from the state (we store them together).
-	session, err := h.repo.GetPresentationSession(ctx, state)
+	session := encryptedSession
+	var err error
+	if session == nil {
+		session, err = h.repo.GetPresentationSession(ctx, state)
+	}
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error":             "invalid_request",
@@ -489,6 +559,9 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 		})
 	}
 
+	if session.ResponseMode == "direct_post.jwt" && decrypted == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "encrypted_response_required"})
+	}
 	// Resolve the effective client_id for KB-JWT aud verification.
 	// New sessions store client_id at creation time; older sessions (pre-migration
 	// 000165) fall back to the x509_san_dns scheme if a JAR cert is configured.
@@ -646,7 +719,7 @@ func (h *OID4VPHandler) CreateLoginChallengeSession(
 		nonce,
 		time.Now().Add(10*time.Minute),
 		nil, // not a CIBA flow
-		loginClientID,
+		loginClientID, h.defaultResponseMode(),
 	)
 }
 
@@ -796,7 +869,7 @@ func (h *OID4VPHandler) verifyMdocDCQLVPToken(ctx context.Context, vpToken strin
 	if err != nil {
 		return nil, err
 	}
-	transcript, err := mdoc.BuildSessionTranscript(clientID, session.ResponseURI, session.Nonce)
+	transcript, err := mdoc.BuildRedirectSessionTranscript(clientID, session.ResponseURI, session.Nonce, session.ResponseKeyThumbprint)
 	if err != nil {
 		return nil, err
 	}

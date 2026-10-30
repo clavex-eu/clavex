@@ -828,6 +828,14 @@ func (h *OIDCHandler) createCIBALinkedVPSession(
 	baseURL := h.cfg.Auth.IssuerBase
 	responseURI := baseURL + "/" + orgSlug + "/wallet/response"
 
+	clientID := "redirect_uri:" + responseURI
+	mode := "direct_post"
+	if h.oid4vpH != nil {
+		mode = h.oid4vpH.defaultResponseMode()
+		if h.oid4vpH.jarCert != nil && len(h.oid4vpH.jarCert.DNSNames) > 0 {
+			clientID = "x509_san_dns:" + h.oid4vpH.jarCert.DNSNames[0]
+		}
+	}
 	_, err = h.vpSessions.CreatePresentationSession(
 		ctx,
 		org.ID,
@@ -840,11 +848,10 @@ func (h *OIDCHandler) createCIBALinkedVPSession(
 		nonce,
 		time.Now().Add(10*time.Minute),
 		&authReqID,
-		"redirect_uri:"+responseURI,
+		clientID, mode,
 	)
 	if err != nil {
 		return "", "", err
 	}
 	return requestID, nonce, nil
 }
-

@@ -690,7 +690,15 @@ func (r *OID4WRepository) CreatePresentationSession(
 	// Stored so the response handler can verify KB-JWT aud without re-deriving
 	// the scheme from config.
 	clientID string,
+	responseModes ...string,
 ) (*models.PresentationSession, error) {
+	mode := "direct_post"
+	if len(responseModes) > 0 {
+		mode = responseModes[0]
+	}
+	if mode != "direct_post" && mode != "direct_post.jwt" {
+		return nil, fmt.Errorf("unsupported response mode")
+	}
 	var defJSON, dcqlJSON []byte
 	var err error
 	if presentationDef != nil {
@@ -710,13 +718,13 @@ func (r *OID4WRepository) CreatePresentationSession(
 	var dcqlRaw []byte
 	err = r.pool.QueryRow(ctx, `
 		INSERT INTO presentation_sessions
-		    (org_id, request_id, presentation_definition, dcql_query, response_uri, redirect_uri, state, nonce, expires_at, ciba_auth_req_id, client_id)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11)
-		RETURNING id, org_id, request_id, presentation_definition, dcql_query, response_uri, redirect_uri, state, nonce, status, vp_claims, ciba_auth_req_id, client_id, created_at, expires_at
-	`, orgID, requestID, defJSON, dcqlJSON, responseURI, redirectURI, state, nonce, expiresAt, cibaAuthReqID, clientID).Scan(
+		    (org_id, request_id, presentation_definition, dcql_query, response_uri, redirect_uri, state, nonce, expires_at, ciba_auth_req_id, client_id, response_mode)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12)
+		RETURNING id, org_id, request_id, presentation_definition, dcql_query, response_uri, redirect_uri, state, nonce, status, vp_claims, ciba_auth_req_id, client_id, created_at, expires_at, response_mode, response_key_ciphertext
+	`, orgID, requestID, defJSON, dcqlJSON, responseURI, redirectURI, state, nonce, expiresAt, cibaAuthReqID, clientID, mode).Scan(
 		&s.ID, &s.OrgID, &s.RequestID, &s.PresentationDefinition, &dcqlRaw,
 		&s.ResponseURI, &s.RedirectURI, &s.State, &s.Nonce,
-		&s.Status, &s.VPClaims, &s.CIBAAuthReqID, &s.ClientID, &s.CreatedAt, &s.ExpiresAt,
+		&s.Status, &s.VPClaims, &s.CIBAAuthReqID, &s.ClientID, &s.CreatedAt, &s.ExpiresAt, &s.ResponseMode, &s.ResponseKeyCiphertext,
 	)
 	if err != nil {
 		return nil, err
@@ -731,13 +739,13 @@ func (r *OID4WRepository) GetPresentationSession(ctx context.Context, requestID 
 	s := &models.PresentationSession{}
 	var dcqlRaw []byte
 	err := r.pool.QueryRow(ctx, `
-		SELECT id, org_id, request_id, presentation_definition, dcql_query, response_uri, redirect_uri, state, nonce, status, vp_claims, ciba_auth_req_id, COALESCE(client_id,''), created_at, expires_at
+		SELECT id, org_id, request_id, presentation_definition, dcql_query, response_uri, redirect_uri, state, nonce, status, vp_claims, ciba_auth_req_id, COALESCE(client_id,''), created_at, expires_at, response_mode, response_key_ciphertext
 		FROM presentation_sessions
 		WHERE request_id = $1
 	`, requestID).Scan(
 		&s.ID, &s.OrgID, &s.RequestID, &s.PresentationDefinition, &dcqlRaw,
 		&s.ResponseURI, &s.RedirectURI, &s.State, &s.Nonce,
-		&s.Status, &s.VPClaims, &s.CIBAAuthReqID, &s.ClientID, &s.CreatedAt, &s.ExpiresAt,
+		&s.Status, &s.VPClaims, &s.CIBAAuthReqID, &s.ClientID, &s.CreatedAt, &s.ExpiresAt, &s.ResponseMode, &s.ResponseKeyCiphertext,
 	)
 	if err != nil {
 		return nil, err
@@ -753,7 +761,7 @@ func (r *OID4WRepository) CompletePresentationSession(ctx context.Context, reque
 	if err != nil {
 		return fmt.Errorf("marshal vp_claims: %w", err)
 	}
-	tag, err := r.pool.Exec(ctx, `UPDATE presentation_sessions SET status='verified',vp_claims=$1
+	tag, err := r.pool.Exec(ctx, `UPDATE presentation_sessions SET status='verified',vp_claims=$1,response_key_ciphertext=NULL
 	 WHERE request_id=$2 AND status='pending' AND expires_at>clock_timestamp()`, claimsJSON, requestID)
 	if err == nil && tag.RowsAffected() != 1 {
 		return pgx.ErrNoRows
@@ -763,7 +771,7 @@ func (r *OID4WRepository) CompletePresentationSession(ctx context.Context, reque
 
 func (r *OID4WRepository) FailPresentationSession(ctx context.Context, requestID string) error {
 	_, err := r.pool.Exec(ctx, `
-		UPDATE presentation_sessions SET status = 'failed' WHERE request_id = $1
+		UPDATE presentation_sessions SET status = 'failed', response_key_ciphertext=NULL WHERE request_id = $1 AND status='pending'
 	`, requestID)
 	return err
 }
@@ -1711,4 +1719,28 @@ func (r *OID4WRepository) ListInactiveCredentials(ctx context.Context) ([]uuid.U
 		out = append(out, id)
 	}
 	return out, rows.Err()
+}
+
+// SetPresentationResponseKey installs one stable ephemeral key per request across
+// concurrent request_uri fetches and nodes. The ciphertext is already bound to
+// the session by the handler's authenticated encrypted envelope.
+func (r *OID4WRepository) SetPresentationResponseKey(ctx context.Context, orgID uuid.UUID, requestID string, ciphertext []byte) ([]byte, error) {
+	var stored []byte
+	err := r.pool.QueryRow(ctx, `UPDATE presentation_sessions
+ SET response_key_ciphertext=COALESCE(response_key_ciphertext,$3)
+ WHERE org_id=$1 AND request_id=$2 AND response_mode='direct_post.jwt'
+ AND status='pending' AND expires_at>clock_timestamp()
+ RETURNING response_key_ciphertext`, orgID, requestID, ciphertext).Scan(&stored)
+	return stored, err
+}
+
+// ClearExpiredPresentationKeys erases a bounded batch without deleting session
+// results or blocking another replica's cleanup/verification transaction.
+func (r *OID4WRepository) ClearExpiredPresentationKeys(ctx context.Context) error {
+	_, err := r.pool.Exec(ctx, `WITH expired AS (
+ SELECT id FROM presentation_sessions WHERE response_key_ciphertext IS NOT NULL
+ AND expires_at<=clock_timestamp() ORDER BY expires_at LIMIT 256 FOR UPDATE SKIP LOCKED
+ ) UPDATE presentation_sessions s SET response_key_ciphertext=NULL
+ FROM expired e WHERE s.id=e.id`)
+	return err
 }

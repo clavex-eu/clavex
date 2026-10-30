@@ -874,6 +874,10 @@ type DeferredCredential struct {
 }
 
 type PresentationSession struct {
+	ResponseMode string `db:"response_mode" json:"response_mode,omitempty"`
+	// Private ephemeral response keys are encrypted at rest and never exposed in APIs.
+	ResponseKeyCiphertext  []byte                 `db:"response_key_ciphertext" json:"-"`
+	ResponseKeyThumbprint  []byte                 `json:"-"`
 	ID                     uuid.UUID              `db:"id"                      json:"id"`
 	OrgID                  uuid.UUID              `db:"org_id"                  json:"org_id"`
 	RequestID              string                 `db:"request_id"              json:"request_id"`
