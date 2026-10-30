@@ -11,7 +11,7 @@ import (
 )
 
 // Status allocation and its eventual issued record must share a transaction.
-// The advisory lock serializes list rollover without upgrading organisation
+// The advisory lock serialises list rollover without upgrading organisation
 // SHARE locks acquired by the issuance grant's eligibility checks.
 func (r *OID4WRepository) AllocateCredentialStatus(ctx context.Context, org uuid.UUID) (uuid.UUID, int, error) {
 	if _, ok := r.pool.(pgx.Tx); !ok {
@@ -56,7 +56,7 @@ func (r *OID4WRepository) RecordCredentialWithStatus(ctx context.Context, org uu
 }
 
 // Match the immutable signed issuer JWT, never the selectively disclosed
-// presentation serialization. Locks order this decision against local revoke.
+// presentation serialisation. Locks order this decision against local revoke.
 func (r *OID4WRepository) LockCredentialStatus(ctx context.Context, org, list uuid.UUID, index int, issuerHash, coseHash, vct string) (string, int, error) {
 	var id uuid.UUID
 	if err := r.pool.QueryRow(ctx, `SELECT id FROM identity.issued_credentials WHERE org_id=$1 AND status_list_id=$2 AND status_index=$3

@@ -81,7 +81,7 @@ type StatusValidationPolicy struct {
 }
 
 func ValidateStatusListToken(raw string, ref StatusClaim, issuer string, key crypto.PublicKey, now time.Time, maxAge time.Duration, policies ...StatusValidationPolicy) (*ValidatedStatusList, error) {
-	if len(raw) > 512*1024 || key == nil || (reflect.ValueOf(key).Kind() == reflect.Ptr && reflect.ValueOf(key).IsNil()) || maxAge <= 0 || maxAge > 24*time.Hour {
+	if len(raw) > 512*1024 || key == nil || (reflect.ValueOf(key).Kind() == reflect.Pointer && reflect.ValueOf(key).IsNil()) || maxAge <= 0 || maxAge > 24*time.Hour {
 		return nil, ErrUnknownStatus
 	}
 	refJSON, err := json.Marshal(ref)

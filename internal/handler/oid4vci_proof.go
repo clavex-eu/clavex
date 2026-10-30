@@ -50,7 +50,7 @@ type verifiedCredentialProof struct {
 	StatusParents []oid4w.StatusParent
 }
 
-// proofJWTs normalizes Final proofs and the supported legacy singular form.
+// proofJWTs normalises Final proofs and the supported legacy singular form.
 // Both forms are subject to exactly the same cryptographic checks.
 func (r *credentialRequest) proofJWTs() ([]string, error) {
 	if r.Proof != nil && r.Proofs != nil {
@@ -256,7 +256,7 @@ func (h *OID4VCIHandler) consumeCredentialProofs(ctx context.Context, orgSlug st
 	return nil
 }
 
-// Public serialization is deliberately explicit; never persist private material.
+// Public serialisation is deliberately explicit; never persist private material.
 func marshalCredentialHolderKey(key jwk.Key) (json.RawMessage, error) {
 	if key == nil {
 		return nil, invalidCredentialProof("verified holder key is required")

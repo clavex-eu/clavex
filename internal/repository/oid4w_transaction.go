@@ -25,7 +25,7 @@ func (r *OID4WRepository) BeginIssuance(ctx context.Context) (*OID4WRepository, 
 	return NewOID4WRepository(tx), tx, nil
 }
 
-// LockIssuanceOffer serializes consumption across nodes and rechecks state after
+// LockIssuanceOffer serialises consumption across nodes and rechecks state after
 // obtaining the lock. NOWAIT avoids holding HTTP requests behind slow signers.
 func (r *OID4WRepository) LockIssuanceOffer(ctx context.Context, id, orgID uuid.UUID, tokenHash string) error {
 	grant, err := r.LockWalletGrant(ctx, id, orgID)

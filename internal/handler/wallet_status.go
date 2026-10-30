@@ -102,7 +102,7 @@ func checkWalletStatus(ctx context.Context, repo *repository.OID4WRepository, or
 	prefix := strings.TrimRight(issuer, "/") + "/oid4vci/status-list/"
 	local := (e.Format == "dc+sd-jwt" && e.Issuer == issuer && e.SignedByLocalIssuer) || (e.Format == "mso_mdoc" && e.IssuerTrusted && e.IssuerCOSEHash != "")
 	if !local || !strings.HasPrefix(ref.StatusList.URI, prefix) {
-		if !e.IssuerTrusted && !(e.SignedByLocalIssuer && e.Issuer == issuer) {
+		if !e.IssuerTrusted && (!e.SignedByLocalIssuer || e.Issuer != issuer) {
 			return errWalletStatusRejected
 		}
 		sources, err := oid4w.StatusSources(settings)

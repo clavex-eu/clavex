@@ -1,6 +1,7 @@
 package mdoc
 
 import (
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
@@ -144,6 +145,67 @@ func TestMdocTrustedIssuerAndSessionBoundDeviceAuthentication(t *testing.T) {
 			tc.mutate(&copy, &o)
 			_, errs := VerifyDeviceResponse(&copy, o)
 			require.NotEmpty(t, errs)
+		})
+	}
+}
+
+// Check all supported curves and malformed points independently of certificate parsing.
+func TestMdocPublicPointValidation(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		curve     elliptic.Curve
+		coseCurve int
+		alg       int
+	}{
+		{"P256", elliptic.P256(), 1, algES256},
+		{"P384", elliptic.P384(), 2, algES384},
+		{"P521", elliptic.P521(), 3, algES512},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			private, err := ecdsa.GenerateKey(tc.curve, rand.Reader)
+			require.NoError(t, err)
+			size := (tc.curve.Params().BitSize + 7) / 8
+			key := COSEKey{KeyType: 2, Curve: tc.coseCurve, X: private.X.FillBytes(make([]byte, size)), Y: private.Y.FillBytes(make([]byte, size))}
+			public, err := coseKeyToECDSA(key)
+			require.NoError(t, err)
+			require.True(t, public.Equal(&private.PublicKey))
+			payload, err := cbor.Marshal([]byte("payload"))
+			require.NoError(t, err)
+			sig := &coseSig1{Payload: payload}
+			structure, err := cbor.Marshal([]any{"Signature1", sig.Protected, []byte{}, sig.Payload})
+			require.NoError(t, err)
+			digest := crypto.SHA256
+			if tc.alg == algES384 {
+				digest = crypto.SHA384
+			}
+			if tc.alg == algES512 {
+				digest = crypto.SHA512
+			}
+			h := digest.New()
+			_, err = h.Write(structure)
+			require.NoError(t, err)
+			r, s, err := ecdsa.Sign(rand.Reader, private, h.Sum(nil))
+			require.NoError(t, err)
+			sig.Signature = append(r.FillBytes(make([]byte, size)), s.FillBytes(make([]byte, size))...)
+			require.NoError(t, verifyCOSESign1(sig, tc.alg, public))
+			for _, invalid := range []*ecdsa.PublicKey{
+				nil,
+				{Curve: tc.curve, X: big.NewInt(0), Y: big.NewInt(0)},
+				{Curve: tc.curve, X: new(big.Int).Neg(private.X), Y: private.Y},
+				{Curve: tc.curve, X: new(big.Int).Set(tc.curve.Params().P), Y: private.Y},
+			} {
+				require.Error(t, verifyCOSESign1(sig, tc.alg, invalid))
+			}
+			key.X, key.Y = make([]byte, size), make([]byte, size)
+			_, err = coseKeyToECDSA(key)
+			require.Error(t, err)
+			key.X = tc.curve.Params().P.FillBytes(make([]byte, size))
+			key.Y = private.Y.FillBytes(make([]byte, size))
+			_, err = coseKeyToECDSA(key)
+			require.Error(t, err)
+			key.X = key.X[1:]
+			_, err = coseKeyToECDSA(key)
+			require.Error(t, err)
 		})
 	}
 }

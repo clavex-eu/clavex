@@ -1176,7 +1176,7 @@ func (r *OID4WRepository) UpdateStatusListEncoded(ctx context.Context, id uuid.U
 	return err
 }
 
-// SetIssuedCredentialState serializes the registry and signed-list state.
+// SetIssuedCredentialState serialises the registry and signed-list state.
 // Revocation is terminal; only a suspended credential can be restored.
 func (r *OID4WRepository) setIssuedCredentialState(ctx context.Context, credID uuid.UUID, state byte, reason string) error {
 	if state > 2 {
@@ -1217,7 +1217,10 @@ func (r *OID4WRepository) setIssuedCredentialState(ctx context.Context, credID u
 			return err
 		}
 		if state == 2 && width == 1 {
-			sl = sl.widen()
+			sl, err = sl.widen()
+			if err != nil {
+				return err
+			}
 			width = 2
 		}
 		if err := sl.Set(*index, state); err != nil {
@@ -1250,9 +1253,6 @@ type statusBitList struct {
 }
 
 func newEmptyEncodedList() (string, error) { return encodeStatusBits(make([]byte, 65536*2/8)) }
-func decodeStatusListRaw(encoded string) (*statusBitList, error) {
-	return decodeStatusListRawWithBits(encoded, 1)
-}
 func decodeStatusListRawWithBits(encoded string, width int) (*statusBitList, error) {
 	if width != 1 && width != 2 && width != 4 && width != 8 {
 		return nil, fmt.Errorf("invalid status width")
@@ -1298,12 +1298,14 @@ func (sl *statusBitList) Set(index int, val byte) error {
 	sl.bits[pos] = (sl.bits[pos] & ^(mask << shift)) | (val << shift)
 	return nil
 }
-func (sl *statusBitList) widen() *statusBitList {
+func (sl *statusBitList) widen() (*statusBitList, error) {
 	out := &statusBitList{bits: make([]byte, 65536*2/8), width: 2}
 	for i := 0; i < 65536; i++ {
-		out.Set(i, (sl.bits[i/8]>>uint(i%8))&1)
+		if err := out.Set(i, (sl.bits[i/8]>>uint(i%8))&1); err != nil {
+			return nil, err
+		}
 	}
-	return out
+	return out, nil
 }
 func (sl *statusBitList) Encode() (string, error) { return encodeStatusBits(sl.bits) }
 

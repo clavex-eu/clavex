@@ -38,7 +38,7 @@ func publicKeysEqual(a, b crypto.PublicKey) bool {
 	}
 	for _, key := range []crypto.PublicKey{a, b} {
 		value := reflect.ValueOf(key)
-		if value.Kind() == reflect.Ptr && value.IsNil() {
+		if value.Kind() == reflect.Pointer && value.IsNil() {
 			return false
 		}
 	}

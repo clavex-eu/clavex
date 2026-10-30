@@ -296,11 +296,12 @@ func (h *OID4VCIHandler) refreshWalletGrant(c echo.Context, org *models.Organiza
 	if err := repo.CheckWalletEligibility(ctx, g, offer); err != nil {
 		return walletGrantError(c, err)
 	}
-	if offer.Status == "pending" {
+	switch offer.Status {
+	case "pending":
 		if !time.Now().Before(offer.ExpiresAt) {
 			return walletTokenError(c, "invalid_grant")
 		}
-	} else if offer.Status == "used" {
+	case "used":
 		ok, err := repo.DeferredRetrievable(ctx, offer.ID)
 		if err != nil {
 			return echo.ErrServiceUnavailable
@@ -308,7 +309,7 @@ func (h *OID4VCIHandler) refreshWalletGrant(c echo.Context, org *models.Organiza
 		if !ok {
 			return walletTokenError(c, "invalid_grant")
 		}
-	} else {
+	default:
 		return walletTokenError(c, "invalid_grant")
 	}
 	settings, err := repo.LockWalletStatusPolicy(ctx, g.OrgID)

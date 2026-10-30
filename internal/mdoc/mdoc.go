@@ -88,12 +88,6 @@ type coseSig1 struct {
 	Signature   []byte
 }
 
-// coseHeader is the decoded protected header map.
-type coseHeader struct {
-	Algorithm int    `cbor:"1,keyasint,omitempty"`  // alg
-	X5Chain   []byte `cbor:"33,keyasint,omitempty"` // x5chain (single cert)
-}
-
 // COSE algorithm numbers (RFC 9053 / IANA COSE Algorithms Registry).
 const (
 	algES256 = -7  // ECDSA w/ SHA-256 (P-256)
@@ -538,7 +532,7 @@ func verifyCOSESign1(sig1 *coseSig1, alg int, pub crypto.PublicKey) error {
 	}
 
 	ecPub, ok := pub.(*ecdsa.PublicKey)
-	if !ok {
+	if !ok || ecPub == nil {
 		return errors.New("issuer public key is not ECDSA")
 	}
 
@@ -557,8 +551,13 @@ func verifyCOSESign1(sig1 *coseSig1, alg int, pub crypto.PublicKey) error {
 	default:
 		return fmt.Errorf("unsupported COSE algorithm: %d", alg)
 	}
-	if ecPub.Curve != expectedCurve || !ecPub.Curve.IsOnCurve(ecPub.X, ecPub.Y) || len(sig1.Signature) != 2*((expectedCurve.Params().BitSize+7)/8) {
+	if ecPub.Curve != expectedCurve || len(sig1.Signature) != 2*((expectedCurve.Params().BitSize+7)/8) {
 		return errors.New("mdoc: invalid ECDSA key, curve or signature length")
+	}
+
+	// Bytes validates the public point using the supported ECDSA API.
+	if _, err := ecPub.Bytes(); err != nil {
+		return fmt.Errorf("mdoc: invalid issuer public point: %w", err)
 	}
 
 	h.Write(sigStructure)
@@ -904,14 +903,18 @@ func coseKeyToECDSA(k COSEKey) (*ecdsa.PublicKey, error) {
 	default:
 		return nil, fmt.Errorf("mdoc: unsupported COSE_Key curve %d", k.Curve)
 	}
-	if len(k.X) != (curve.Params().BitSize+7)/8 || len(k.Y) != (curve.Params().BitSize+7)/8 || !curve.IsOnCurve(new(big.Int).SetBytes(k.X), new(big.Int).SetBytes(k.Y)) {
+	if len(k.X) != (curve.Params().BitSize+7)/8 || len(k.Y) != (curve.Params().BitSize+7)/8 {
 		return nil, errors.New("mdoc: invalid device public point")
 	}
-	return &ecdsa.PublicKey{
-		Curve: curve,
-		X:     new(big.Int).SetBytes(k.X),
-		Y:     new(big.Int).SetBytes(k.Y),
-	}, nil
+	point := make([]byte, 1+len(k.X)+len(k.Y))
+	point[0] = 4 // SEC 1 uncompressed point.
+	copy(point[1:], k.X)
+	copy(point[1+len(k.X):], k.Y)
+	pub, err := ecdsa.ParseUncompressedPublicKey(curve, point)
+	if err != nil {
+		return nil, fmt.Errorf("mdoc: invalid device public point: %w", err)
+	}
+	return pub, nil
 }
 
 // ── PID / mDL attribute helpers ───────────────────────────────────────────────

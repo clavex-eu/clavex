@@ -120,7 +120,7 @@ func TestWalletStatusLocalIssuancePublicationCIBARevocationAndDisclosureChanges(
 	rec = publish()
 	require.Equal(t, 200, rec.Code)
 	require.ErrorIs(t, oid4w.CheckStatus(rec.Body.String(), ref, f.vciIssuanceFixture.h.keys.PublicKey()), oid4w.ErrSuspended)
-	se, auth = f.request(t, false)
+	se, _ = f.request(t, false)
 	rec = f.submit(t, se, presentStatusCredential(t, raw, holder, se.Nonce, se.ClientID, true), false)
 	require.Equal(t, 400, rec.Code, rec.Body.String())
 	rec = statusEndpoint(t, f.vciIssuanceFixture, f.vciIssuanceFixture.h.RestoreCredential, f.org.Slug, f.org.ID.String(), record.ID.String(), "")
