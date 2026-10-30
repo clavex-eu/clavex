@@ -20,7 +20,7 @@ registration or physical-wallet interoperability.
 
 - New standalone `request_uri` requests default to `direct_post.jwt`. Signed
   request objects advertise one request-specific P-256 public encryption JWK,
-  with `use=enc`, `alg=ECDH-ES` and a unique `kid`, plus both `A128GCM` and
+  with `use=enc`, `alg=ECDH-ES` and a unique opaque `kid`, plus both `A128GCM` and
   `A256GCM` in `encrypted_response_enc_values_supported`.
 - Each request has a fresh random key, independent of JAR signing and other
   requests. The private key is encrypted with the deployment's existing
@@ -32,7 +32,9 @@ registration or physical-wallet interoperability.
   parameter. It restricts algorithms, curve and content encryption, rejects
   compression/critical extensions, bounds inputs to 2 MiB, and checks tenant,
   pending status, expiry and encrypted state. `kid` selects only a local stored
-  session; no header-driven key discovery is performed.
+  session through an authenticated, domain-tagged encrypted selector. The
+  unencrypted JWE header does not disclose the request/polling bearer capability;
+  no header-driven key discovery is performed.
 - A request stored as encrypted cannot be completed with a plain `vp_token`.
   Mixed encrypted/plain outer parameters are rejected. Invalid encrypted envelopes
   do not consume a still-valid request. After decryption, issuer trust, holder

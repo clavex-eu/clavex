@@ -28,6 +28,7 @@ func (h *OID4VPHandler) WithResponseEncryption(enc *secretcrypto.Encryptor) *OID
 }
 
 type vpResponseKeyEnvelope struct {
+	KeyID      string `json:"key_id"`
 	RequestID  string `json:"request_id"`
 	OrgID      string `json:"org_id"`
 	PrivateDER []byte `json:"private_der"`
@@ -46,7 +47,13 @@ func (h *OID4VPHandler) responseKey(ctx context.Context, s *models.PresentationS
 		if err != nil {
 			return nil, nil, err
 		}
-		plain, err := json.Marshal(vpResponseKeyEnvelope{s.RequestID, s.OrgID.String(), der})
+		// The polling API treats request_id as a bearer capability. Keep it out
+		// of the unencrypted JWE header by using a sealed, domain-tagged selector.
+		kid, err := h.responseEncryption.Encrypt("oid4vp-response-key:" + s.RequestID)
+		if err != nil {
+			return nil, nil, err
+		}
+		plain, err := json.Marshal(vpResponseKeyEnvelope{KeyID: kid, RequestID: s.RequestID, OrgID: s.OrgID.String(), PrivateDER: der})
 		if err != nil {
 			return nil, nil, err
 		}
@@ -67,7 +74,7 @@ func (h *OID4VPHandler) responseKey(ctx context.Context, s *models.PresentationS
 	if err = json.Unmarshal(plain, &stored); err != nil {
 		return nil, nil, err
 	}
-	if stored.RequestID != s.RequestID || stored.OrgID != s.OrgID.String() {
+	if stored.RequestID != s.RequestID || stored.OrgID != s.OrgID.String() || stored.KeyID == "" {
 		return nil, nil, fmt.Errorf("response key session mismatch")
 	}
 	raw, err := x509.ParsePKCS8PrivateKey(stored.PrivateDER)
@@ -82,7 +89,7 @@ func (h *OID4VPHandler) responseKey(ctx context.Context, s *models.PresentationS
 	if err != nil {
 		return nil, nil, err
 	}
-	for name, value := range map[string]any{"kid": s.RequestID, "alg": jwa.ECDH_ES, "use": "enc"} {
+	for name, value := range map[string]any{"kid": stored.KeyID, "alg": jwa.ECDH_ES, "use": "enc"} {
 		if err = public.Set(name, value); err != nil {
 			return nil, nil, err
 		}
@@ -116,7 +123,7 @@ type encryptedVPResponse struct {
 
 func (h *OID4VPHandler) decryptVPResponse(c echo.Context, compact string) (*models.PresentationSession, *encryptedVPResponse, error) {
 	invalid := fmt.Errorf("invalid encrypted authorization response")
-	if len(compact) > 2*1024*1024 || strings.Count(compact, ".") != 4 {
+	if h.responseEncryption == nil || len(compact) > 2*1024*1024 || strings.Count(compact, ".") != 4 {
 		return nil, nil, invalid
 	}
 	message, err := jwe.Parse([]byte(compact))
@@ -139,8 +146,19 @@ func (h *OID4VPHandler) decryptVPResponse(c echo.Context, compact string) (*mode
 	if !ok || ec.Curve != elliptic.P256() {
 		return nil, nil, invalid
 	}
+	if !secretcrypto.IsEncrypted(header.KeyID()) {
+		return nil, nil, invalid
+	}
+	selector, err := h.responseEncryption.Decrypt(header.KeyID())
+	if err != nil {
+		return nil, nil, invalid
+	}
+	requestID, ok := strings.CutPrefix(selector, "oid4vp-response-key:")
+	if !ok || requestID == "" {
+		return nil, nil, invalid
+	}
 	ctx := c.Request().Context()
-	s, err := h.repo.GetPresentationSession(ctx, header.KeyID())
+	s, err := h.repo.GetPresentationSession(ctx, requestID)
 	if err != nil {
 		return nil, nil, invalid
 	}
@@ -151,8 +169,8 @@ func (h *OID4VPHandler) decryptVPResponse(c echo.Context, compact string) (*mode
 	if s.OrgID != org.ID || s.ResponseMode != "direct_post.jwt" || s.Status != "pending" || !time.Now().Before(s.ExpiresAt) {
 		return nil, nil, invalid
 	}
-	key, _, err := h.responseKey(ctx, s, false)
-	if err != nil {
+	key, public, err := h.responseKey(ctx, s, false)
+	if err != nil || public.KeyID() != header.KeyID() {
 		return nil, nil, invalid
 	}
 	plain, err := jwe.Decrypt([]byte(compact), jwe.WithKey(jwa.ECDH_ES, key))

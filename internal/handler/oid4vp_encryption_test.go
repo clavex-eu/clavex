@@ -48,6 +48,7 @@ func readerPublicKey(t *testing.T, f cibaWalletFixture, s *models.PresentationSe
 	encoded, err := json.Marshal(metadata)
 	require.NoError(t, err)
 	require.NotContains(t, string(encoded), `"d":`)
+	require.NotContains(t, string(encoded), s.RequestID, "JWE metadata must not disclose the polling capability")
 	require.Equal(t, []string{"A128GCM", "A256GCM"}, metadata["encrypted_response_enc_values_supported"])
 	return metadata["jwks"].(map[string]any)["keys"].([]jwk.Key)[0]
 }
@@ -131,6 +132,7 @@ func TestEncryptedVPRejectsDowngradeTamperingCrossSessionAndWrongState(t *testin
 		t.Run(name, func(t *testing.T) {
 			s := encryptedSession(t, f, bindingQuery(f.cfg.VCT, false), nil)
 			key := readerPublicKey(t, f, s)
+			originalKeyID := key.KeyID()
 			payload := encryptedSDJWTPayload(t, f, s)
 			if name == "wrong-state" {
 				payload["state"] = "other"
@@ -138,7 +140,7 @@ func TestEncryptedVPRejectsDowngradeTamperingCrossSessionAndWrongState(t *testin
 			if name == "wrong-key" {
 				other := encryptedSession(t, f, bindingQuery(f.cfg.VCT, false), nil)
 				key = readerPublicKey(t, f, other)
-				require.NoError(t, key.Set(jwk.KeyIDKey, s.RequestID))
+				require.NoError(t, key.Set(jwk.KeyIDKey, originalKeyID))
 			}
 			compact := encryptWalletResponse(t, key, jwa.A256GCM, payload)
 			if name == "tampered" {
