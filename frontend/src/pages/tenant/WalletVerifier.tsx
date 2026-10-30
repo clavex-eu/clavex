@@ -45,7 +45,7 @@ interface GDPRWarning {
 const PRESETS = [
   {
     id: 'pid',
-    label: 'PID — Person Identification',
+    label: 'PID — SD-JWT VC',
     icon: '🪪',
     description: 'Name, date of birth, tax ID (codice fiscale), nationality',
     definition: {
@@ -78,8 +78,27 @@ const PRESETS = [
     },
   },
   {
+    id: 'pid-mdoc',
+    label: 'PID — MSO mdoc',
+    icon: '🪪',
+    description: 'Name and date of birth from an EUDI PID in MSO mdoc format',
+    definition: null,
+    dcqlQuery: {
+      credentials: [{
+        id: 'pid-mdoc',
+        format: 'mso_mdoc',
+        meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+        claims: [
+          { path: ['eu.europa.ec.eudi.pid.1', 'given_name'] },
+          { path: ['eu.europa.ec.eudi.pid.1', 'family_name'] },
+          { path: ['eu.europa.ec.eudi.pid.1', 'birth_date'] },
+        ],
+      }],
+    },
+  },
+  {
     id: 'mdl',
-    label: 'mDL — Driving Licence',
+    label: 'mDL — MSO mdoc',
     icon: '🚗',
     description: 'Name, birth date, driving privilege categories (ISO 18013-5)',
     definition: {
@@ -114,7 +133,7 @@ const PRESETS = [
   },
   {
     id: 'age',
-    label: 'Age Verification',
+    label: 'Age ≥ 18 — SD-JWT VC',
     icon: '🔞',
     description: 'age_over_18 boolean only — minimal data, GDPR-friendly',
     definition: {
@@ -131,14 +150,29 @@ const PRESETS = [
       credentials: [{
         id: 'age-check',
         format: 'dc+sd-jwt',
-        meta: { vct_values: ['eu.europa.ec.eudi.pid.1'] },
+        meta: { vct_values: ['urn:eudi:pid:1'] },
         claims: [{ path: ['age_over_18'] }],
       }],
     },
   },
   {
+    id: 'age-mdoc',
+    label: 'Age ≥ 18 — MSO mdoc',
+    icon: '🔞',
+    description: 'Request only age_over_18 from an EUDI PID in MSO mdoc format',
+    definition: null,
+    dcqlQuery: {
+      credentials: [{
+        id: 'age-check-mdoc',
+        format: 'mso_mdoc',
+        meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+        claims: [{ path: ['eu.europa.ec.eudi.pid.1', 'age_over_18'] }],
+      }],
+    },
+  },
+  {
     id: 'eidas',
-    label: 'eIDAS 2.0 EUDIW',
+    label: 'eIDAS 2.0 PID — SD-JWT VC',
     icon: '🇪🇺',
     description: 'Full eIDAS 2.0 PID bundle: name, address, birth place, nationality',
     definition: {
@@ -694,10 +728,15 @@ export default function WalletVerifier() {
               <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--clavex-neutral)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14 }}>
                 Credential type
               </p>
+              <p style={{ fontSize: 12, color: 'var(--clavex-neutral)', marginBottom: 14, lineHeight: 1.5 }}>
+                Choose the format stored in the wallet. MSO mdoc and SD-JWT VC are separate credential formats.
+              </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {PRESETS.map(p => (
                   <button
                     key={p.id}
+                    type="button"
+                    aria-pressed={preset.id === p.id}
                     onClick={() => { setPreset(p); setJSONError('') }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 10,

@@ -1,6 +1,6 @@
 # Wallet fisico: checklist di interoperabilità
 
-Checkpoint 29 ottobre 2026. **Prova non ancora eseguita**. Il laboratorio suite
+Aggiornamento 30 ottobre 2026. **Prova automatica sul telefono non eseguita**. Il laboratorio suite
 non sostituisce il dispositivo e non dimostra il riconoscimento in un ecosistema
 nazionale. Usare un tenant e dati sintetici, senza collegare utenti reali.
 
@@ -8,12 +8,36 @@ nazionale. Usare un tenant e dati sintetici, senza collegare utenti reali.
 
 | Client indicato dall'autore | Informazioni note | Dato ancora necessario |
 | --- | --- | --- |
-| EUDI reference Android ricompilato | Build vecchia, versione non visibile | Repository, commit/tag e modifiche alla configurazione di trust |
+| EUDI reference Android ricompilato | Checkout `045c1d56` del 4 giugno 2026; Core `0.28.1`; APK `demoDebug` del medesimo giorno, confermato dall’autore. Versione visualizzata `yyyy.mm.v`. CA Clavex aggiunta al solo reader trust store. | Richiesta reale del verifier e log di selezione dei documenti |
 | HopaeEUDIWALLET iOS | Versione 1.0.1 | Profilo supportato e modalità di onboarding/trust documentate per questa app/versione |
 
 Non trasferire automaticamente a Hopae le impostazioni della reference app EC.
-Se il sorgente Android non è recuperabile, un'eventuale prova con una build nuova
-deve avere un proprio verbale: non sarebbe la riproduzione della vecchia build.
+Una prova con una build Android aggiornata deve avere un proprio verbale, distinto
+da quello della build sopra identificata.
+
+## Preset del verifier e segnalazione Android
+
+Il verifier distingue esplicitamente i formati nei preset. I PID non sono
+intercambiabili tra SD-JWT e mdoc:
+
+| Preset | Formato | Tipo richiesto | Namespace dei claim |
+| --- | --- | --- | --- |
+| PID / età SD-JWT | `dc+sd-jwt` | `vct=urn:eudi:pid:1` | Claim alla radice |
+| PID / età mdoc | `mso_mdoc` | `doctype=eu.europa.ec.eudi.pid.1` | `eu.europa.ec.eudi.pid.1` |
+| mDL | `mso_mdoc` | `doctype=org.iso.18013.5.1.mDL` | `org.iso.18013.5.1` |
+
+Il preset età SD-JWT usa ora il VCT del PID SD-JWT anziché l'identificatore del
+PID mdoc. La richiesta età richiede soltanto `age_over_18` nel rispettivo formato;
+non richiede un'attestazione autonoma di età con un tipo diverso.
+
+L'autore segnala il messaggio «The requested document is not available in your
+EUDI Wallet» sia per mDL sia per PID. Nel codice Android questo testo corrisponde
+allo stato `NoData`: nessun elemento richiesto disponibile oppure nessun documento
+rimasto dopo la trasformazione e il filtro dei documenti revocati. Non identifica
+una causa unica. Confrontare la richiesta realmente distribuita con formato,
+VCT/doctype, namespace, campi, disponibilità delle credenziali e stato dei documenti.
+Il preset mDL era già mdoc: il suo fallimento non è spiegato dall'assenza del preset
+PID mdoc. Le nuove scelte UI non dimostrano il superamento della prova sul telefono.
 
 ## Preparare un profilo dichiarato
 
