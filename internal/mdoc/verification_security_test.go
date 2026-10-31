@@ -56,6 +56,11 @@ func attachDeviceProof(t *testing.T, doc *Document, key *ecdsa.PrivateKey, trans
 
 func testTrustedMdoc(t *testing.T) (*DeviceResponse, *x509.CertPool, []byte, *ecdsa.PrivateKey) {
 	t.Helper()
+	return testTrustedMdocWithMSO(t, nil)
+}
+
+func testTrustedMdocWithMSO(t *testing.T, mutate func(*MSO)) (*DeviceResponse, *x509.CertPool, []byte, *ecdsa.PrivateKey) {
+	t.Helper()
 	rootKey := testMdocKey(t)
 	rootTemplate := &x509.Certificate{SerialNumber: big.NewInt(1), IsCA: true, BasicConstraintsValid: true, KeyUsage: x509.KeyUsageCertSign, NotBefore: time.Now().Add(-time.Hour), NotAfter: time.Now().Add(24 * time.Hour)}
 	rootDER, err := x509.CreateCertificate(rand.Reader, rootTemplate, rootTemplate, &rootKey.PublicKey, rootKey)
@@ -80,6 +85,15 @@ func testTrustedMdoc(t *testing.T) (*DeviceResponse, *x509.CertPool, []byte, *ec
 	require.NoError(t, cbor.Unmarshal(is.IssuerAuth, &issuerAuth))
 	var payload []byte
 	require.NoError(t, cbor.Unmarshal(issuerAuth[2], &payload))
+	if mutate != nil {
+		mso, err := decodeMSO(payload)
+		require.NoError(t, err)
+		mutate(mso)
+		encoded, err := mdocEncMode.Marshal(mso)
+		require.NoError(t, err)
+		payload, err = cbor.Marshal(cbor.Tag{Number: 24, Content: encoded})
+		require.NoError(t, err)
+	}
 	protected, err := cbor.Marshal(map[int]int{1: -7})
 	require.NoError(t, err)
 	is.IssuerAuth, err = cbor.Marshal([]any{protected, map[int]any{33: [][]byte{dsDER, intermediateDER}}, payload, testMdocSignature(t, ds, protected, payload)})
