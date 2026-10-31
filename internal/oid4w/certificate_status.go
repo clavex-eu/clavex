@@ -26,6 +26,7 @@ type CRLSource struct {
 }
 type cachedCRL struct {
 	revoked                    map[string]bool
+	distributionPoint          []byte
 	until, lastUse, freshUntil time.Time
 	size                       int
 }
@@ -167,17 +168,12 @@ func (r *StatusResolver) checkCRL(ctx context.Context, scope string, source CRLS
 	encoded, _ := json.Marshal([]any{"crl", scope, source})
 	hash := sha256.Sum256(encoded)
 	key := hex.EncodeToString(hash[:])
-	serial := cert.SerialNumber.String()
 	r.mu.Lock()
 	if entry := r.crls[key]; entry != nil {
 		if r.now().Before(entry.until) {
 			entry.lastUse = r.now()
-			revoked := entry.revoked[serial]
 			r.mu.Unlock()
-			if revoked {
-				return ErrRevoked
-			}
-			return nil
+			return entry.checkCertificate(cert)
 		}
 		r.cacheBytes -= entry.size
 		delete(r.crls, key)
@@ -195,10 +191,7 @@ func (r *StatusResolver) checkCRL(ctx context.Context, scope string, source CRLS
 		if !r.now().Before(flight.entry.freshUntil) {
 			return ErrStatusUnavailable
 		}
-		if flight.entry.revoked[serial] {
-			return ErrRevoked
-		}
-		return nil
+		return flight.entry.checkCertificate(cert)
 	}
 	if len(r.flights)+len(r.crlFlights) >= 32 || r.perScope[scope] >= 4 {
 		r.mu.Unlock()
@@ -228,10 +221,50 @@ func (r *StatusResolver) checkCRL(ctx context.Context, scope string, source CRLS
 	if !r.now().Before(entry.freshUntil) {
 		return ErrStatusUnavailable
 	}
-	if entry.revoked[serial] {
+	return entry.checkCertificate(cert)
+}
+
+// A named CRL must cover this certificate, including on cache hits and shared
+// fetches. Only a single URI, all reasons, direct issuer and all certificate
+// types are supported. More complex distribution-point scopes fail closed.
+func (e *cachedCRL) checkCertificate(cert *x509.Certificate) error {
+	if len(e.distributionPoint) > 0 {
+		matched := false
+		for _, extension := range cert.Extensions {
+			if extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 31}) {
+				matched = bytes.Equal(extension.Value, e.distributionPoint)
+			}
+		}
+		if !matched {
+			return ErrStatusInvalid
+		}
+	}
+	if e.revoked[cert.SerialNumber.String()] {
 		return ErrRevoked
 	}
 	return nil
+}
+
+// Canonical DER for an IssuingDistributionPoint containing only
+// distributionPoint.fullName = one URI, with every scope flag absent/false.
+// Comparing the entire DER rejects indirect, reason-limited, typed, relative,
+// duplicate and unknown scope fields instead of interpreting them partially.
+func uriIssuingDistributionPoint(uri string) ([]byte, error) {
+	encoded := []byte(uri)
+	for _, value := range []asn1.RawValue{
+		{Class: 2, Tag: 6},
+		{Class: 2, Tag: 0, IsCompound: true},
+		{Class: 2, Tag: 0, IsCompound: true},
+		{Tag: asn1.TagSequence, IsCompound: true},
+	} {
+		value.Bytes = encoded
+		var err error
+		encoded, err = asn1.Marshal(value)
+		if err != nil {
+			return nil, err
+		}
+	}
+	return encoded, nil
 }
 
 func (r *StatusResolver) fetchCRL(ctx context.Context, source CRLSource, issuer *x509.Certificate) (*cachedCRL, error) {
@@ -294,9 +327,21 @@ func (r *StatusResolver) fetchCRL(ctx context.Context, source CRLSource, issuer 
 	if crl.ThisUpdate.IsZero() || crl.NextUpdate.IsZero() || crl.ThisUpdate.After(r.now().Add(30*time.Second)) || !crl.NextUpdate.After(crl.ThisUpdate) || !r.now().Before(crl.NextUpdate) || !r.now().Before(crl.ThisUpdate.Add(time.Duration(maxAge)*time.Second)) {
 		return nil, ErrStatusInvalid
 	}
+	var distributionPoint []byte
 	for _, extension := range crl.Extensions {
-		if extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 27}) || extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 28}) {
-			return nil, fmt.Errorf("%w: delta/partitioned CRL is unsupported by the direct-CRL profile", ErrStatusInvalid)
+		if extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 27}) {
+			return nil, fmt.Errorf("%w: delta CRL is unsupported by the direct-CRL profile", ErrStatusInvalid)
+		}
+		if extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 28}) {
+			expected, err := uriIssuingDistributionPoint(source.URI)
+			if err != nil || distributionPoint != nil || !bytes.Equal(extension.Value, expected) {
+				return nil, fmt.Errorf("%w: unsupported or mismatched CRL distribution point", ErrStatusInvalid)
+			}
+			distributionPoint, err = asn1.Marshal(asn1.RawValue{Tag: asn1.TagSequence, IsCompound: true, Bytes: expected})
+			if err != nil {
+				return nil, ErrStatusInvalid
+			}
+			continue
 		}
 		if extension.Critical && !extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 35}) && !extension.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 20}) {
 			return nil, ErrStatusInvalid
@@ -306,6 +351,7 @@ func (r *StatusResolver) fetchCRL(ctx context.Context, source CRLSource, issuer 
 		return nil, ErrStatusInvalid
 	}
 	entry := &cachedCRL{revoked: map[string]bool{}, until: crl.NextUpdate, lastUse: r.now(), size: len(body) + len(crl.RevokedCertificateEntries)*256}
+	entry.distributionPoint = distributionPoint
 	if at := crl.ThisUpdate.Add(time.Duration(maxAge) * time.Second); at.Before(entry.until) {
 		entry.until = at
 	}

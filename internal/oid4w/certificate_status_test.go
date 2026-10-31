@@ -9,6 +9,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/asn1"
 	"errors"
+	"fmt"
 	"io"
 	"math/big"
 	"net/http"
@@ -32,12 +33,95 @@ func crlTestCA(t *testing.T, now time.Time) (*x509.Certificate, *ecdsa.PrivateKe
 }
 func crlTestLeaf(t *testing.T, now time.Time, ca *x509.Certificate, key *ecdsa.PrivateKey, serial int64) *x509.Certificate {
 	t.Helper()
-	tmpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "DS"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, CRLDistributionPoints: []string{"https://crl.example/list"}}
+	return crlTestLeafAt(t, now, ca, key, serial, "https://crl.example/list")
+}
+func crlTestLeafAt(t *testing.T, now time.Time, ca *x509.Certificate, key *ecdsa.PrivateKey, serial int64, uri string) *x509.Certificate {
+	t.Helper()
+	tmpl := &x509.Certificate{SerialNumber: big.NewInt(serial), Subject: pkix.Name{CommonName: "DS"}, NotBefore: now.Add(-time.Hour), NotAfter: now.Add(24 * time.Hour), KeyUsage: x509.KeyUsageDigitalSignature, CRLDistributionPoints: []string{uri}}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, ca, &key.PublicKey, key)
 	require.NoError(t, err)
 	cert, err := x509.ParseCertificate(der)
 	require.NoError(t, err)
 	return cert
+}
+
+func TestCertificateStatusNamedDirectCRLScopeAndCache(t *testing.T) {
+	now := time.Now().UTC().Truncate(time.Second)
+	ca, key := crlTestCA(t, now)
+	leaf := crlTestLeaf(t, now, ca, key, 10)
+	other := crlTestLeafAt(t, now, ca, key, 11, "https://crl.example/other-partition")
+	// Obtain the independent x509 encoder's DistributionPoint DER. The
+	// supported IDP has exactly this encoding, inside the CDP outer sequence.
+	var point []byte
+	for _, ext := range leaf.Extensions {
+		if ext.Id.Equal(asn1.ObjectIdentifier{2, 5, 29, 31}) {
+			var sequence asn1.RawValue
+			rest, err := asn1.Unmarshal(ext.Value, &sequence)
+			require.NoError(t, err)
+			require.Empty(t, rest)
+			point = sequence.Bytes
+		}
+	}
+	require.NotEmpty(t, point)
+	for _, critical := range []bool{false, true} {
+		t.Run(fmt.Sprintf("critical=%t", critical), func(t *testing.T) {
+			calls := 0
+			der := crlTestDER(t, now, ca, key, func(c *x509.RevocationList) {
+				c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Critical: critical, Value: point}}
+			})
+			resolver := NewStatusResolverWithHTTPClient(&http.Client{Transport: statusRoundTrip(func(*http.Request) (*http.Response, error) {
+				calls++
+				return crlResponse(der), nil
+			})})
+			resolver.now = func() time.Time { return now }
+			settings := map[string]interface{}{"wallet_crl_sources": []CRLSource{{IssuerSHA256: CertificateFingerprint(ca), URI: leaf.CRLDistributionPoints[0]}}}
+			for range 2 {
+				assessment, err := resolver.CheckCertificateChain(context.Background(), "org", settings, [][]*x509.Certificate{{leaf, ca}}, true)
+				require.NoError(t, err)
+				require.Equal(t, "valid_crl", assessment)
+			}
+			_, err := resolver.CheckCertificateChain(context.Background(), "org", settings, [][]*x509.Certificate{{other, ca}}, true)
+			require.ErrorIs(t, err, ErrStatusInvalid, "a cached named CRL cannot cover another signed distribution point, even with an override")
+			require.Equal(t, 1, calls)
+			_, err = resolver.CheckCertificateChain(context.Background(), "other-org", nil, [][]*x509.Certificate{{other, ca}}, true)
+			require.ErrorIs(t, err, ErrStatusInvalid, "the signed CRL name must match the fetched URI")
+			now = now.Add(61 * time.Second)
+			der = crlTestDER(t, now, ca, key, func(c *x509.RevocationList) {
+				c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Critical: critical, Value: point}}
+				c.RevokedCertificateEntries = []x509.RevocationListEntry{{SerialNumber: leaf.SerialNumber, RevocationTime: now.Add(-time.Minute), ReasonCode: 1}}
+			})
+			_, err = resolver.CheckCertificateChain(context.Background(), "org", settings, [][]*x509.Certificate{{leaf, ca}}, true)
+			require.ErrorIs(t, err, ErrRevoked)
+		})
+	}
+	var sequence asn1.RawValue
+	_, err := asn1.Unmarshal(point, &sequence)
+	require.NoError(t, err)
+	for _, tc := range []struct {
+		name string
+		tag  int
+		data []byte
+	}{
+		{"only user certificates", 1, []byte{0xff}},
+		{"only CA certificates", 2, []byte{0xff}},
+		{"partial reasons", 3, []byte{0x00, 0x80}},
+		{"indirect CRL", 4, []byte{0xff}},
+		{"only attribute certificates", 5, []byte{0xff}},
+		{"unknown scope", 6, []byte{0xff}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			flag, err := asn1.Marshal(asn1.RawValue{Class: 2, Tag: tc.tag, Bytes: tc.data})
+			require.NoError(t, err)
+			invalid, err := asn1.Marshal(asn1.RawValue{Tag: asn1.TagSequence, IsCompound: true, Bytes: append(append([]byte{}, sequence.Bytes...), flag...)})
+			require.NoError(t, err)
+			der := crlTestDER(t, now, ca, key, func(c *x509.RevocationList) {
+				c.ExtraExtensions = []pkix.Extension{{Id: asn1.ObjectIdentifier{2, 5, 29, 28}, Value: invalid}}
+			})
+			resolver := NewStatusResolverWithHTTPClient(&http.Client{Transport: statusRoundTrip(func(*http.Request) (*http.Response, error) { return crlResponse(der), nil })})
+			_, err = resolver.CheckCertificateChain(context.Background(), "org", nil, [][]*x509.Certificate{{leaf, ca}}, true)
+			require.ErrorIs(t, err, ErrStatusInvalid)
+		})
+	}
 }
 func crlTestDER(t *testing.T, now time.Time, ca *x509.Certificate, key *ecdsa.PrivateKey, edit func(*x509.RevocationList)) []byte {
 	t.Helper()
