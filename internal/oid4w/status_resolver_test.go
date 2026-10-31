@@ -15,6 +15,7 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/stretchr/testify/require"
 )
 
@@ -76,6 +77,35 @@ func TestRemoteStatusCacheTenantPolicyAndExpiry(t *testing.T) {
 	now = now.Add(11 * time.Second)
 	unavailable = true
 	require.ErrorIs(t, resolver.Check(context.Background(), "org-a", source, ref), ErrStatusUnavailable, "no stale result may be served during outage")
+}
+
+func TestRemoteDailyListRevalidationAfterTTL(t *testing.T) {
+	key := newTestKey(t)
+	source := remoteSource(t, key)
+	source.Format = "mso_mdoc"
+	source.MaxAgeSeconds = 86400
+	now := time.Now().Truncate(time.Second)
+	raw := statusJWT(t, key, source.ListURIs[0], 1, []byte{0}, func(c map[string]any, _ jws.Headers) {
+		c["iat"], c["exp"], c["ttl"] = now.Add(-8*time.Hour).Unix(), now.Add(time.Hour).Unix(), 5
+	})
+	calls := 0
+	resolver := NewStatusResolverWithHTTPClient(&http.Client{Transport: statusRoundTrip(func(*http.Request) (*http.Response, error) {
+		calls++
+		return remoteResponse(raw), nil
+	})})
+	resolver.now = func() time.Time { return now }
+	ref := BuildStatusClaim(source.ListURIs[0], 0)
+	require.NoError(t, resolver.Check(context.Background(), "org", source, ref))
+	require.NoError(t, resolver.Check(context.Background(), "org", source, ref))
+	require.Equal(t, 1, calls)
+	now = now.Add(6 * time.Second)
+	require.NoError(t, resolver.Check(context.Background(), "org", source, ref))
+	require.Equal(t, 2, calls, "an unchanged, still valid signed list can be freshly retrieved after TTL")
+	// Selecting a longer age is explicit; other sources keep the five-minute default.
+	source.MaxAgeSeconds = 0
+	require.ErrorIs(t, resolver.Check(context.Background(), "org", source, ref), ErrStatusInvalid)
+	source.MaxAgeSeconds = 86401
+	require.Error(t, source.Validate())
 }
 
 func TestRemoteStatusSingleFlightAndHTTPConstraints(t *testing.T) {

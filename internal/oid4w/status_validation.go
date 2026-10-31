@@ -133,7 +133,9 @@ func ValidateStatusListToken(raw string, ref StatusClaim, issuer string, key cry
 		if json.Unmarshal(encoded, &seconds) != nil || seconds <= 0 || seconds > 86400 {
 			return nil, fmt.Errorf("invalid status token ttl")
 		}
-		deadline := iat.Add(time.Duration(seconds * float64(time.Second)))
+		// TTL bounds reuse after fetching (TSL section 13.7), not the age of
+		// the signed token. maxAge above independently limits age since iat.
+		deadline := now.Add(time.Duration(seconds * float64(time.Second)))
 		if deadline.Before(fresh) {
 			fresh = deadline
 		}

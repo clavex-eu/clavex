@@ -119,7 +119,7 @@ func (s StatusSource) Validate() error {
 	if s.CredentialIssuer == "" || len(s.CredentialIssuer) > 1024 || s.CredentialType == "" || len(s.CredentialType) > 512 || s.StatusIssuer == "" || len(s.StatusIssuer) > 1024 || len(s.ListURIs) == 0 || len(s.ListURIs) > 100 {
 		return fmt.Errorf("invalid status source selector")
 	}
-	if s.MaxAgeSeconds < 0 || s.MaxAgeSeconds > 3600 || s.CacheSeconds != nil && (*s.CacheSeconds < 0 || *s.CacheSeconds > 300) {
+	if s.MaxAgeSeconds < 0 || s.MaxAgeSeconds > 86400 || s.CacheSeconds != nil && (*s.CacheSeconds < 0 || *s.CacheSeconds > 300) {
 		return fmt.Errorf("invalid status freshness policy")
 	}
 	seen := map[string]bool{}

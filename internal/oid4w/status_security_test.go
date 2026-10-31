@@ -130,3 +130,37 @@ func TestStatusListOptionalIssuerAndExpirationRemainBoundedByTrustAndAge(t *test
 	_, err = ValidateStatusListToken(raw, BuildStatusClaim(uri, 0), "https://issuer.example", &key.PublicKey, now.Add(6*time.Minute), 5*time.Minute)
 	require.Error(t, err)
 }
+
+func TestStatusListTTLBoundsReuseSeparatelyFromSignedAge(t *testing.T) {
+	key := newTestKey(t)
+	uri := "https://issuer.example/list/daily"
+	now := time.Now().UTC().Truncate(time.Second)
+	iat := now.Add(-8 * time.Hour)
+	for _, tc := range []struct {
+		name   string
+		maxAge time.Duration
+		exp    time.Time
+		until  time.Time
+		fail   bool
+	}{
+		{"daily policy", 24 * time.Hour, now.Add(time.Hour), now.Add(time.Minute), false},
+		{"signed expiry bounds cache", 24 * time.Hour, now.Add(10 * time.Second), now.Add(10 * time.Second), false},
+		{"age policy bounds cache", 8*time.Hour + 20*time.Second, now.Add(time.Hour), now.Add(20 * time.Second), false},
+		{"default age still rejects", 5 * time.Minute, now.Add(time.Hour), time.Time{}, true},
+		{"expired still rejects", 24 * time.Hour, now.Add(-time.Second), time.Time{}, true},
+		{"maximum age still rejects", 8 * time.Hour, now.Add(time.Hour), time.Time{}, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			raw := statusJWT(t, key, uri, 1, []byte{0}, func(c map[string]any, _ jws.Headers) {
+				c["iat"], c["exp"], c["ttl"] = iat.Unix(), tc.exp.Unix(), 60
+			})
+			list, err := ValidateStatusListToken(raw, BuildStatusClaim(uri, 0), "https://issuer.example", &key.PublicKey, now, tc.maxAge)
+			if tc.fail {
+				require.Error(t, err)
+				return
+			}
+			require.NoError(t, err)
+			require.Equal(t, tc.until, list.FreshUntil)
+		})
+	}
+}
