@@ -51,7 +51,10 @@ result, never an implicit active state. Invalid evidence is rejected.
 Cache entries are separated by tenant, complete signer policy and exact URI.
 The default reuse window is 60 seconds (maximum configurable 300), clipped by
 signed expiry/TTL when present, maximum age and HTTP freshness. Maximum age defaults to 300
-seconds (maximum configurable 3600). No stale-on-error fallback. `no-store` and
+seconds (maximum configurable 86400, explicitly selected per source). TTL limits
+reuse from fetching; it is separate from the maximum signed age measured from
+`iat`. A freshly fetched, unchanged list can remain usable within its signed
+expiry and configured age. No stale-on-error fallback. `no-store` and
 `no-cache` disable reuse; HTTP `Age` cannot extend freshness. Revocation can be
 observed after the bounded reuse interval, not instantaneously on other nodes.
 The shared cache is bounded to 128 entries/16 MiB and deduplicates concurrent
@@ -93,8 +96,13 @@ verified against the actual issuer; the same SSRF, redirect, size and timeout
 controls apply. DER or a single PEM X509 CRL is accepted. Every non-root
 certificate needs fresh, correctly signed evidence when required. CRL maximum
 age defaults to one day, configurable up to seven days; `nextUpdate` and HTTP
-freshness remain upper bounds. Complete direct CRLs only: OCSP, delta/indirect/
-partitioned CRLs and unsupported critical extensions are not implemented and
+freshness remain upper bounds. A named direct CRL is also supported when its
+IssuingDistributionPoint contains only one full-name URI, exactly matching the
+fetch URI and the certificate's sole signed distribution point. Applicability
+is checked on every decision, including cache hits and shared fetches. This
+subset accepts a processed non-critical IDP, as used by the development issuer;
+RFC 5280 issuers are required to mark that extension critical. Complete direct
+CRLs only: OCSP, delta/indirect/reason-limited/typed/multi-point CRLs and unsupported critical extensions are not implemented and
 must not be described as covered. A declared unsupported mechanism never
 silently becomes a positive status decision.
 
@@ -108,7 +116,11 @@ checks. Standalone diagnostic verification can permit missing status, while
 still reporting the exception; authentication must not infer assurance from it.
 
 For mdoc credential lists, the parser reads a signed MSO `status_list` extension
-or `status.status_list`, rejecting ambiguous/unsupported combinations. New local
+or `status.status_list`, rejecting simultaneous layouts and duplicate CBOR keys.
+The nested status object is extensible: `status_list` is selected even if an
+`identifier_list` or another mechanism is also advertised. Sibling mechanisms
+are not evaluated; identifier-list-only credentials remain unsupported. Selection
+does not bypass subsequent list authentication, freshness or status checks. New local
 issuance uses `MSO.status_list`. These are explicit extension layouts, **not a
 claim of universal ISO or IT-Wallet interoperability**. Each issued record stores
 the stable COSE signature-input/signature digest so selective disclosure does not
