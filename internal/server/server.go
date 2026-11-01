@@ -1537,6 +1537,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// IACA trust anchors — upload / list / remove per-org CA certs for
 		// IssuerAuth chain validation (ISO 18013-5 §9.3.3).
 		iacaH := handler.NewIACAHandler(pool)
+		adminMdoc.GET("/iaca-catalog", iacaH.Catalog)
 		adminMdoc.POST("/iaca-roots", iacaH.Upload)
 		adminMdoc.GET("/iaca-roots", iacaH.List)
 		adminMdoc.DELETE("/iaca-roots/:root_id", iacaH.Delete)

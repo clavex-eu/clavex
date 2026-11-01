@@ -1,0 +1,92 @@
+{
+  "id": "eudi-reference-test",
+  "name": "EUDI reference development authorities",
+  "environment": "test",
+  "reference_commit": "4b295477f69351c1015ae253006bf240dd02d8ef",
+  "entries": [
+    {
+      "id": "eudi-reference-test-cz",
+      "label": "EUDI reference test \u2014 CZ",
+      "country": "CZ",
+      "sha256_fingerprint": "1b5befc3952604c34f370d559e5e4f810e1bc31ddf6792c1c3f5beb78913b0c5",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIC0zCCAnmgAwIBAgIUFxoZrqz1jgmJeXu6UxkuRcCgf/AwCgYIKoZIzj0EAwMw\nVzEZMBcGA1UEAwwQUElEIElzc3VlciBDQSAwMjEtMCsGA1UECgwkRVVESSBXYWxs\nZXQgUmVmZXJlbmNlIEltcGxlbWVudGF0aW9uMQswCQYDVQQGEwJDWjAeFw0yNTA0\nMDgyMzU0MTFaFw0zNDA3MDUyMzU0MTBaMFcxGTAXBgNVBAMMEFBJRCBJc3N1ZXIg\nQ0EgMDIxLTArBgNVBAoMJEVVREkgV2FsbGV0IFJlZmVyZW5jZSBJbXBsZW1lbnRh\ndGlvbjELMAkGA1UEBhMCQ1owWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAQujURw\nlrlAeGV/8wYTl9ceasR2YM55vI9cSaZOeXpBu3v6wlEhOHvDLVxlz2zJEJrqvg37\n3DOO0RdWEvkGwf7Zo4IBITCCAR0wEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSME\nGDAWgBSzozJELVa05Qse3atn1+cKtbbXgDATBgNVHSUEDDAKBggrgQICAAABBzBD\nBgNVHR8EPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9j\ncmwvcGlkX0NBX0NaXzAyLmNybDAdBgNVHQ4EFgQUs6MyRC1WtOULHt2rZ9fnCrW2\n14AwDgYDVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNv\nbS9ldS1kaWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJl\nZmVyZW5jZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDSAAwRQIhAOWHisDphPFySZtS\n+/1Ufp5aW+Ci3w4aDSw7+EW+TD6mAiAh3/SiF2zzZybp64sG/OiwdhH2LqsizuTD\n1zFx4oCdqQ==\n-----END CERTIFICATE-----\n",
+      "doc_types": [
+        "org.iso.18013.5.1.mDL",
+        "eu.europa.ec.eudi.pid.1"
+      ],
+      "source_url": "https://github.com/eu-digital-identity-wallet/eudi-app-android-wallet-ui/blob/4b295477f69351c1015ae253006bf240dd02d8ef/resources-logic/src/main/res/raw/pidissuerca02_cz.pem"
+    },
+    {
+      "id": "eudi-reference-test-ee",
+      "label": "EUDI reference test \u2014 EE",
+      "country": "EE",
+      "sha256_fingerprint": "719dd2ae8cc31fab34a5e5ee8a33154862cc8cbcc55a28c8e15b2a575eaa7c56",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIC0jCCAnmgAwIBAgIUPP5TRFaC6GrLVVc5T83dCyunbcMwCgYIKoZIzj0EAwMw\nVzEZMBcGA1UEAwwQUElEIElzc3VlciBDQSAwMjEtMCsGA1UECgwkRVVESSBXYWxs\nZXQgUmVmZXJlbmNlIEltcGxlbWVudGF0aW9uMQswCQYDVQQGEwJFRTAeFw0yNTA0\nMDkwMDAxMzZaFw0zNDA3MDYwMDAxMzVaMFcxGTAXBgNVBAMMEFBJRCBJc3N1ZXIg\nQ0EgMDIxLTArBgNVBAoMJEVVREkgV2FsbGV0IFJlZmVyZW5jZSBJbXBsZW1lbnRh\ndGlvbjELMAkGA1UEBhMCRUUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAR+Lkqc\ngTsK8wHwzdAgCtL54yHpe/pfAMF5BuDJ+0SQAl1E+eN2g2BelLKrHwyiiktORwI8\ntH/52pfJf+PdNcnno4IBITCCAR0wEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSME\nGDAWgBQ1uvSpg46wPpr1mUort5On76if2DATBgNVHSUEDDAKBggrgQICAAABBzBD\nBgNVHR8EPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9j\ncmwvcGlkX0NBX0VFXzAyLmNybDAdBgNVHQ4EFgQUNbr0qYOOsD6a9ZlKK7eTp++o\nn9gwDgYDVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNv\nbS9ldS1kaWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJl\nZmVyZW5jZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDRwAwRAIgN+axEyAC2Z62WkW0\neLB5C9vZmqOf8+MNKzoB+uHjK+wCIE5fee6J0rnBkw2ZnFHpX0zxUiuDL9C5sjkw\nAbVJjmT1\n-----END CERTIFICATE-----\n",
+      "doc_types": [
+        "org.iso.18013.5.1.mDL",
+        "eu.europa.ec.eudi.pid.1"
+      ],
+      "source_url": "https://github.com/eu-digital-identity-wallet/eudi-app-android-wallet-ui/blob/4b295477f69351c1015ae253006bf240dd02d8ef/resources-logic/src/main/res/raw/pidissuerca02_ee.pem"
+    },
+    {
+      "id": "eudi-reference-test-eu",
+      "label": "EUDI reference test \u2014 EU",
+      "country": "EU",
+      "sha256_fingerprint": "3b0a223e8748f3c42217298ad905ecf1a104e73cd2c54ff21da16fda8070b297",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIC0zCCAnmgAwIBAgIUXRXxkLbUM6+njr/XT0IIw/HA/uowCgYIKoZIzj0EAwMw\nVzEZMBcGA1UEAwwQUElEIElzc3VlciBDQSAwMjEtMCsGA1UECgwkRVVESSBXYWxs\nZXQgUmVmZXJlbmNlIEltcGxlbWVudGF0aW9uMQswCQYDVQQGEwJFVTAeFw0yNTA0\nMDkwMDAzMzBaFw0zNDA3MDYwMDAzMjlaMFcxGTAXBgNVBAMMEFBJRCBJc3N1ZXIg\nQ0EgMDIxLTArBgNVBAoMJEVVREkgV2FsbGV0IFJlZmVyZW5jZSBJbXBsZW1lbnRh\ndGlvbjELMAkGA1UEBhMCRVUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAARkqdLm\nwIlv+SSWr00tAIrt7EAMztgd3w9qA6qEm16yVfsLcyx2f4oIWuH45wa37J9GoNWp\ndeo27VoSoNMCzxOYo4IBITCCAR0wEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSME\nGDAWgBRCUFC+ELgQ8J1EXI2/qxAI7ifcSTATBgNVHSUEDDAKBggrgQICAAABBzBD\nBgNVHR8EPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9j\ncmwvcGlkX0NBX0VVXzAyLmNybDAdBgNVHQ4EFgQUQlBQvhC4EPCdRFyNv6sQCO4n\n3EkwDgYDVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNv\nbS9ldS1kaWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJl\nZmVyZW5jZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDSAAwRQIhAIavYfC5o0VVLKfg\nTKkzzWgc09hzDMsCl3O2le2sQfG7AiA2soqAN5gtUOLQKWK00DUz22EW79rvaV+V\nJPvfdQeokA==\n-----END CERTIFICATE-----\n",
+      "doc_types": [
+        "org.iso.18013.5.1.mDL",
+        "eu.europa.ec.eudi.pid.1"
+      ],
+      "source_url": "https://github.com/eu-digital-identity-wallet/eudi-app-android-wallet-ui/blob/4b295477f69351c1015ae253006bf240dd02d8ef/resources-logic/src/main/res/raw/pidissuerca02_eu.pem"
+    },
+    {
+      "id": "eudi-reference-test-lu",
+      "label": "EUDI reference test \u2014 LU",
+      "country": "LU",
+      "sha256_fingerprint": "7d8713f9aeaa821244a22e3559e095e5bb84cce6d732840a9d371055a3059178",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIC0zCCAnmgAwIBAgIUYGz2Xxw7UFgSmRsIkFTTBclg8fcwCgYIKoZIzj0EAwMw\nVzEZMBcGA1UEAwwQUElEIElzc3VlciBDQSAwMjEtMCsGA1UECgwkRVVESSBXYWxs\nZXQgUmVmZXJlbmNlIEltcGxlbWVudGF0aW9uMQswCQYDVQQGEwJMVTAeFw0yNTA0\nMDkwMDA1MzlaFw0zNDA3MDYwMDA1MzhaMFcxGTAXBgNVBAMMEFBJRCBJc3N1ZXIg\nQ0EgMDIxLTArBgNVBAoMJEVVREkgV2FsbGV0IFJlZmVyZW5jZSBJbXBsZW1lbnRh\ndGlvbjELMAkGA1UEBhMCTFUwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAR6X1Nl\nEGbdWUWiUrSA/YiNpcZeI95z2MglbvISRO19YUc4GvPTevbg/Fm9MekJeHqRQO4G\nHTlBPNGM2aiBtu5Mo4IBITCCAR0wEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSME\nGDAWgBRcYvvRpiZ6Zz81VxQ4+AdY4Iez8DATBgNVHSUEDDAKBggrgQICAAABBzBD\nBgNVHR8EPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9j\ncmwvcGlkX0NBX0xVXzAyLmNybDAdBgNVHQ4EFgQUXGL70aYmemc/NVcUOPgHWOCH\ns/AwDgYDVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNv\nbS9ldS1kaWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJl\nZmVyZW5jZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDSAAwRQIgd69HgNvnIVbHg5lY\n2SzgExy72DUNCyi20An6OGNqWw4CIQDkDMDTmPd6p/aHAtYP8Jh7z/4Nb/09LxpN\nXQS72ouixA==\n-----END CERTIFICATE-----\n",
+      "doc_types": [
+        "org.iso.18013.5.1.mDL",
+        "eu.europa.ec.eudi.pid.1"
+      ],
+      "source_url": "https://github.com/eu-digital-identity-wallet/eudi-app-android-wallet-ui/blob/4b295477f69351c1015ae253006bf240dd02d8ef/resources-logic/src/main/res/raw/pidissuerca02_lu.pem"
+    },
+    {
+      "id": "eudi-reference-test-nl",
+      "label": "EUDI reference test \u2014 NL",
+      "country": "NL",
+      "sha256_fingerprint": "d693d717d67d2c1f5364aa62a3e33bd753e7da928f5f78f5b610315a4c08225b",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIC0jCCAnmgAwIBAgIUWcI7dH8iTcdDsGe93t9tWfdoKr0wCgYIKoZIzj0EAwMw\nVzEZMBcGA1UEAwwQUElEIElzc3VlciBDQSAwMjEtMCsGA1UECgwkRVVESSBXYWxs\nZXQgUmVmZXJlbmNlIEltcGxlbWVudGF0aW9uMQswCQYDVQQGEwJOTDAeFw0yNTA0\nMDkwMDA3MjZaFw0zNDA3MDYwMDA3MjVaMFcxGTAXBgNVBAMMEFBJRCBJc3N1ZXIg\nQ0EgMDIxLTArBgNVBAoMJEVVREkgV2FsbGV0IFJlZmVyZW5jZSBJbXBsZW1lbnRh\ndGlvbjELMAkGA1UEBhMCTkwwWTATBgcqhkjOPQIBBggqhkjOPQMBBwNCAAT0h0lj\nqQJKWwHW8sHJX3psnuCJBt/z82bO9yiy8z9CxLLXUNJj4vi8ox7itb5nXTaSlL02\nChMl8GgXLl3lg1A3o4IBITCCAR0wEgYDVR0TAQH/BAgwBgEB/wIBADAfBgNVHSME\nGDAWgBTMrdmCj0nOwclVaiDpYcnwxnCY7jATBgNVHSUEDDAKBggrgQICAAABBzBD\nBgNVHR8EPDA6MDigNqA0hjJodHRwczovL3ByZXByb2QucGtpLmV1ZGl3LmRldi9j\ncmwvcGlkX0NBX05MXzAyLmNybDAdBgNVHQ4EFgQUzK3Zgo9JzsHJVWog6WHJ8MZw\nmO4wDgYDVR0PAQH/BAQDAgEGMF0GA1UdEgRWMFSGUmh0dHBzOi8vZ2l0aHViLmNv\nbS9ldS1kaWdpdGFsLWlkZW50aXR5LXdhbGxldC9hcmNoaXRlY3R1cmUtYW5kLXJl\nZmVyZW5jZS1mcmFtZXdvcmswCgYIKoZIzj0EAwMDRwAwRAIgd24eUv61oXeE2tZQ\n/WRe28t4Q575ktymDiHPzwj5UCQCIGoSN5ntiPEa4dk8P48blwgXY74+1svzmTVT\nWYtVmCsv\n-----END CERTIFICATE-----\n",
+      "doc_types": [
+        "org.iso.18013.5.1.mDL",
+        "eu.europa.ec.eudi.pid.1"
+      ],
+      "source_url": "https://github.com/eu-digital-identity-wallet/eudi-app-android-wallet-ui/blob/4b295477f69351c1015ae253006bf240dd02d8ef/resources-logic/src/main/res/raw/pidissuerca02_nl.pem"
+    },
+    {
+      "id": "eudi-reference-test-pt",
+      "label": "EUDI reference test \u2014 PT",
+      "country": "PT",
+      "sha256_fingerprint": "ab03e4143c328f122cbef3effeb3c68201c4df14ebe2ef9d80af9245d0ea9c93",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIC3jCCAoOgAwIBAgIUZXIN5wL8XzOB1WtwPqAr6GSIm2MwCgYIKoZIzj0EAwMw\nXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFBUIDAyMS0wKwYDVQQKDCRFVURJ\nIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlBUMB4X\nDTI1MDQwODE5MzU0NFoXDTM0MDcwNTE5MzU0M1owXDEeMBwGA1UEAwwVUElEIElz\nc3VlciBDQSAtIFBUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2Ug\nSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlBUMFkwEwYHKoZIzj0CAQYIKoZIzj0D\nAQcDQgAEQctevxuugp0BBrsKpxBUJfoF4t/vRgxYFh2VzklNZisO7aihVhdiXyvO\nLdZJZk7H4nbJltmhG3P+Wjb2QY8Mp6OCASEwggEdMBIGA1UdEwEB/wQIMAYBAf8C\nAQAwHwYDVR0jBBgwFoAU/Fq6x2Mh0FTKT5R5feWq08S+mJEwEwYDVR0lBAwwCgYI\nK4ECAgAAAQcwQwYDVR0fBDwwOjA4oDagNIYyaHR0cHM6Ly9wcmVwcm9kLnBraS5l\ndWRpdy5kZXYvY3JsL3BpZF9DQV9QVF8wMi5jcmwwHQYDVR0OBBYEFPxausdjIdBU\nyk+UeX3lqtPEvpiRMA4GA1UdDwEB/wQEAwIBBjBdBgNVHRIEVjBUhlJodHRwczov\nL2dpdGh1Yi5jb20vZXUtZGlnaXRhbC1pZGVudGl0eS13YWxsZXQvYXJjaGl0ZWN0\ndXJlLWFuZC1yZWZlcmVuY2UtZnJhbWV3b3JrMAoGCCqGSM49BAMDA0kAMEYCIQCs\nH7B1TjFfNI2mr3zDy2TCboDgcgiQ/Xzh5ZNfyeT3/gIhAK7frwdyKHyhe1ruHEhK\n6bZ/eovd4pE/w+WDPBOqYcIM\n-----END CERTIFICATE-----\n",
+      "doc_types": [
+        "org.iso.18013.5.1.mDL",
+        "eu.europa.ec.eudi.pid.1"
+      ],
+      "source_url": "https://github.com/eu-digital-identity-wallet/eudi-app-android-wallet-ui/blob/4b295477f69351c1015ae253006bf240dd02d8ef/resources-logic/src/main/res/raw/pidissuerca02_pt.pem"
+    },
+    {
+      "id": "eudi-reference-test-ut",
+      "label": "EUDI reference test \u2014 UT",
+      "country": "UT",
+      "sha256_fingerprint": "f5d8b03daf986de86202f886b98dc42a05bab4486ba3e262e9c5760bdf5c4500",
+      "pem": "-----BEGIN CERTIFICATE-----\nMIIC3TCCAoOgAwIBAgIUEwybFc9Jw+az3r188OiHDaxCfHEwCgYIKoZIzj0EAwMw\nXDEeMBwGA1UEAwwVUElEIElzc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJ\nIFdhbGxldCBSZWZlcmVuY2UgSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMB4X\nDTI1MDMyNDIwMjYxNFoXDTM0MDYyMDIwMjYxM1owXDEeMBwGA1UEAwwVUElEIElz\nc3VlciBDQSAtIFVUIDAyMS0wKwYDVQQKDCRFVURJIFdhbGxldCBSZWZlcmVuY2Ug\nSW1wbGVtZW50YXRpb24xCzAJBgNVBAYTAlVUMFkwEwYHKoZIzj0CAQYIKoZIzj0D\nAQcDQgAEesDKj9rCIcrGj0wbSXYvCV953bOPSYLZH5TNmhTz2xa7VdlvQgQeGZRg\n1PrF5AFwt070wvL9qr1DUDdvLp6a1qOCASEwggEdMBIGA1UdEwEB/wQIMAYBAf8C\nAQAwHwYDVR0jBBgwFoAUYseURyi9D6IWIKeawkmURPEB08cwEwYDVR0lBAwwCgYI\nK4ECAgAAAQcwQwYDVR0fBDwwOjA4oDagNIYyaHR0cHM6Ly9wcmVwcm9kLnBraS5l\ndWRpdy5kZXYvY3JsL3BpZF9DQV9VVF8wMi5jcmwwHQYDVR0OBBYEFGLHlEcovQ+i\nFiCnmsJJlETxAdPHMA4GA1UdDwEB/wQEAwIBBjBdBgNVHRIEVjBUhlJodHRwczov\nL2dpdGh1Yi5jb20vZXUtZGlnaXRhbC1pZGVudGl0eS13YWxsZXQvYXJjaGl0ZWN0\ndXJlLWFuZC1yZWZlcmVuY2UtZnJhbWV3b3JrMAoGCCqGSM49BAMDA0gAMEUCIQCe\n4R9rO4JhFp821kO8Gkb8rXm4qGG/e5/Oi2XmnTQqOQIgfFs+LDbnP2/j1MB4rwZ1\nFgGdpr4oyrFB9daZyRIcP90=\n-----END CERTIFICATE-----\n",
+      "doc_types": [
+        "org.iso.18013.5.1.mDL",
+        "eu.europa.ec.eudi.pid.1"
+      ],
+      "source_url": "https://github.com/eu-digital-identity-wallet/eudi-app-android-wallet-ui/blob/4b295477f69351c1015ae253006bf240dd02d8ef/resources-logic/src/main/res/raw/pidissuerca02_ut.pem"
+    }
+  ]
+}

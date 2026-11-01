@@ -10,6 +10,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import api from '@/lib/api'
 import { Button } from '@/components/ui'
+import WalletTrust from './WalletTrust'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -553,7 +554,7 @@ export default function WalletVerifier() {
   const [result,      setResult]      = useState<Session | null>(null)
   const [showHistory, setShowHistory] = useState(false)
   const [expandedSession, setExpandedSession] = useState<string | null>(null)
-  const [mainTab,     setMainTab]     = useState<'session' | 'batch'>('session')
+  const [mainTab,     setMainTab]     = useState<'session' | 'batch' | 'trust'>('session')
   const [conformanceEndpoint, setConformanceEndpoint] = useState('')
   const [showConformance, setShowConformance] = useState(false)
 
@@ -698,12 +699,13 @@ export default function WalletVerifier() {
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '0.5px solid var(--clavex-border)', marginBottom: 24 }}>
+      <div role="group" aria-label="Wallet verifier views" style={{ display: 'flex', flexWrap: 'wrap', gap: 0, borderBottom: '0.5px solid var(--clavex-border)', marginBottom: 24 }}>
         {([
           { id: 'session', label: 'Session Verify', icon: <QrCode size={14} /> },
           { id: 'batch',   label: 'Batch Verify',   icon: <Layers size={14} /> },
+          { id: 'trust',   label: 'Issuer trust',   icon: <Shield size={14} /> },
         ] as const).map(t => (
-          <button key={t.id} onClick={() => setMainTab(t.id)}
+          <button key={t.id} type="button" aria-pressed={mainTab === t.id} onClick={() => setMainTab(t.id)}
             style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 18px',
               background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
               color: mainTab === t.id ? 'var(--clavex-primary)' : 'var(--clavex-neutral)',
@@ -715,6 +717,7 @@ export default function WalletVerifier() {
       </div>
 
       {mainTab === 'batch' && <BatchVerifyTab orgId={orgId ?? ''} />}
+      {mainTab === 'trust' && <WalletTrust orgId={orgId} />}
 
       {mainTab === 'session' && (
       <div className="grid grid-cols-1 xl:grid-cols-[340px_minmax(0,1fr)] gap-6 items-start">
