@@ -125,6 +125,13 @@ func (h *OID4VCIHandler) CredentialSigningPublicKey() crypto.PublicKey {
 	return h.credentialSigner.CryptoSigner().Public()
 }
 
+func (h *OID4VCIHandler) CredentialSigningKeyValidity() (time.Time, time.Time) {
+	if h.credentialSigner == nil || h.credentialSigningErr != nil {
+		return time.Time{}, time.Time{}
+	}
+	return h.credentialSigner.CertificateValidity()
+}
+
 // WithRedis sets the Redis client used for the nonce endpoint.
 func (h *OID4VCIHandler) WithRedis(rdb redis.UniversalClient) *OID4VCIHandler {
 	h.rdb = rdb
@@ -748,8 +755,7 @@ func (h *OID4VCIHandler) Credential(c echo.Context) error {
 		if err != nil {
 			return echo.ErrInternalServerError
 		}
-		expiresAt := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-		if err := h.recordWalletCredential(ctx, org.ID, offer.UserID, offer.VCT, sdJWT, &expiresAt, cfg.CredentialFormat, proof.StatusParents); err != nil {
+		if err := h.recordWalletCredential(ctx, org.ID, offer.UserID, offer.VCT, sdJWT, cfg.CredentialFormat, proof.StatusParents); err != nil {
 			return echo.ErrInternalServerError
 		}
 		credObj := map[string]any{"credential": sdJWT}
@@ -909,8 +915,7 @@ func (h *OID4VCIHandler) BatchCredential(c echo.Context) error {
 			if err != nil {
 				return echo.ErrInternalServerError
 			}
-			expires := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-			if err := h.recordWalletCredential(ctx, org.ID, offer.UserID, offer.VCT, credential, &expires, cfg.CredentialFormat, proof.StatusParents); err != nil {
+			if err := h.recordWalletCredential(ctx, org.ID, offer.UserID, offer.VCT, credential, cfg.CredentialFormat, proof.StatusParents); err != nil {
 				return echo.ErrInternalServerError
 			}
 			responses = append(responses, batchCredentialItem{Credential: &credential})
@@ -1219,8 +1224,7 @@ func (h *OID4VCIHandler) ApproveDeferredCredential(c echo.Context) error {
 	if err := h.repo.CompleteDeferredCredential(ctx, txnID, sdJWT); err != nil {
 		return echo.ErrInternalServerError
 	}
-	expires := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-	if err := h.recordWalletCredential(ctx, orgID, boundUserID, cfg.VCT, sdJWT, &expires, cfg.CredentialFormat, parents); err != nil {
+	if err := h.recordWalletCredential(ctx, orgID, boundUserID, cfg.VCT, sdJWT, cfg.CredentialFormat, parents); err != nil {
 		return echo.ErrInternalServerError
 	}
 	return finishCredentialResponse(c, tx, map[string]any{"transaction_id": txnID, "status": "completed"}, nil)
@@ -1422,8 +1426,7 @@ func (h *OID4VCIHandler) credentialFromAuthCode(c echo.Context, ctx context.Cont
 		if err != nil {
 			return echo.ErrInternalServerError
 		}
-		expires := time.Now().Add(time.Duration(cfg.TTLSeconds) * time.Second)
-		if err := h.recordWalletCredential(ctx, org.ID, &userID, cfg.VCT, credential, &expires, cfg.CredentialFormat, proof.StatusParents); err != nil {
+		if err := h.recordWalletCredential(ctx, org.ID, &userID, cfg.VCT, credential, cfg.CredentialFormat, proof.StatusParents); err != nil {
 			return echo.ErrInternalServerError
 		}
 		item := map[string]any{"credential": credential}

@@ -50,7 +50,7 @@ func TestWalletStatusMdocIssuanceDeliveryAndRevocation(t *testing.T) {
 	require.NoError(t, err)
 	raw, err := h.signCredential(ctx, f.org, &cfg, nil, map[string]interface{}{"given_name": "Alice"}, holderKey)
 	require.NoError(t, err)
-	require.NoError(t, h.recordWalletCredential(ctx, f.org.ID, nil, cfg.VCT, raw, nil, cfg.CredentialFormat))
+	require.NoError(t, h.recordWalletCredential(ctx, f.org.ID, nil, cfg.VCT, raw, cfg.CredentialFormat))
 	require.NoError(t, h.checkDeferredCredentialStatus(ctx, f.org, &cfg, raw))
 	require.NoError(t, tx.Commit(ctx))
 	record, err := f.h.repo.GetIssuedCredentialByHash(ctx, f.org.ID, oid4w.HashToken(raw))

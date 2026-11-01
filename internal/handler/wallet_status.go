@@ -178,8 +178,8 @@ func walletStatusError(c echo.Context, err error) error {
 
 // Record the stable issuer JWT digest and signed status pointer in the same
 // transaction that allocated the slot and consumes the issuance authorization.
-func (h *OID4VCIHandler) recordWalletCredential(ctx context.Context, org uuid.UUID, user *uuid.UUID, vct, raw string, expires *time.Time, format string, parents ...[]oid4w.StatusParent) error {
-	if err := h.recordWalletCredentialState(ctx, org, user, vct, raw, expires, format); err != nil {
+func (h *OID4VCIHandler) recordWalletCredential(ctx context.Context, org uuid.UUID, user *uuid.UUID, vct, raw string, format string, parents ...[]oid4w.StatusParent) error {
+	if err := h.recordWalletCredentialState(ctx, org, user, vct, raw, format); err != nil {
 		return err
 	}
 	var all []oid4w.StatusParent
@@ -195,7 +195,7 @@ func (h *OID4VCIHandler) recordWalletCredential(ctx context.Context, org uuid.UU
 	}
 	return h.repo.RecordCredentialParents(ctx, org, oid4w.HashToken(raw), encoded)
 }
-func (h *OID4VCIHandler) recordWalletCredentialState(ctx context.Context, org uuid.UUID, user *uuid.UUID, vct, raw string, expires *time.Time, format string) error {
+func (h *OID4VCIHandler) recordWalletCredentialState(ctx context.Context, org uuid.UUID, user *uuid.UUID, vct, raw string, format string) error {
 	if format == "mso_mdoc" {
 		verified, err := h.verifiedIssuedMdoc(ctx, org, vct, raw)
 		if err != nil {
@@ -210,7 +210,7 @@ func (h *OID4VCIHandler) recordWalletCredentialState(ctx context.Context, org uu
 			return err
 		}
 		// The signed MSO's actual expiry is authoritative, including hour rounding.
-		expires = &verified.ValidUntil
+		expires := &verified.ValidUntil
 		return h.repo.RecordCredentialWithStatus(ctx, org, user, vct, oid4w.HashToken(raw), expires, repository.CredentialStatusBinding{ListID: list, Index: ref.StatusList.IDX, IssuerCOSEHash: verified.IssuerAuthHash})
 	}
 	issuer, _, _, err := oid4w.ParseSDJWT(raw)
@@ -218,7 +218,7 @@ func (h *OID4VCIHandler) recordWalletCredentialState(ctx context.Context, org uu
 		return err
 	}
 	// Signature was just created locally; extraction here retains signed fields.
-	result, err := oid4w.VerifyLocalIssuedCredential(raw, h.keys.CryptoSigner().Public())
+	result, err := h.verifyLocalIssuedSDJWT(raw)
 	if err != nil {
 		return err
 	}
@@ -230,6 +230,7 @@ func (h *OID4VCIHandler) recordWalletCredentialState(ctx context.Context, org uu
 	if err != nil {
 		return err
 	}
+	expires := &result.Identity.ExpiresAt
 	return h.repo.RecordCredentialWithStatus(ctx, org, user, vct, oid4w.HashToken(raw), expires, repository.CredentialStatusBinding{ListID: list, Index: ref.StatusList.IDX, IssuerJWTHash: oid4w.HashToken(issuer)})
 }
 
@@ -250,11 +251,37 @@ func (h *OID4VCIHandler) checkDeferredCredentialStatus(ctx context.Context, org 
 		result := &oid4w.VerificationResult{Claims: map[string]interface{}{}, Identity: &oid4w.VerifiedCredentialIdentity{Format: "mso_mdoc", Issuer: oid4w.MDOCIssuerIdentity(verified.IssuerCert), CredentialType: verified.DocType, ExpiresAt: verified.ValidUntil, IssuerTrusted: true, Status: verified.Status, CertificateChains: verified.VerifiedChains, IssuerCOSEHash: verified.IssuerAuthHash}}
 		return checkWalletStatus(ctx, h.repo, org.ID, h.cfg.BaseURL()+"/"+org.Slug, org.Settings, result, true)
 	}
-	result, err := oid4w.VerifyLocalIssuedCredential(raw, h.keys.CryptoSigner().Public())
+	result, err := h.verifyLocalIssuedSDJWT(raw)
 	if err != nil {
 		return errWalletStatusRejected
 	}
+	if result.Identity.Issuer != h.cfg.BaseURL()+"/"+org.Slug || result.Identity.CredentialType != cfg.VCT {
+		return errWalletStatusRejected
+	}
 	return checkWalletStatus(ctx, h.repo, org.ID, h.cfg.BaseURL()+"/"+org.Slug, org.Settings, result, true)
+}
+
+// Deferred delivery must continue to recognise both previously issued local
+// credentials and credentials made with the configured dedicated signing key.
+// No key embedded in the credential is ever used as a trust anchor.
+func (h *OID4VCIHandler) verifyLocalIssuedSDJWT(raw string) (*oid4w.VerificationResult, error) {
+	result, err := oid4w.VerifyLocalIssuedCredential(raw, h.keys.CryptoSigner().Public())
+	if err == nil || h.credentialSigner == nil {
+		return result, err
+	}
+	result, err = oid4w.VerifyLocalIssuedCredential(raw, h.credentialSigner.CryptoSigner().Public())
+	if err != nil {
+		return nil, err
+	}
+	_, end, err := h.credentialSigner.MetadataCertificateChain(result.Identity.Issuer)
+	if err != nil {
+		return nil, err
+	}
+	start, _ := h.credentialSigner.CertificateValidity()
+	if result.Identity.IssuedAt.Before(start) || result.Identity.ExpiresAt.After(end) {
+		return nil, errWalletStatusRejected
+	}
+	return result, nil
 }
 
 func (h *OID4VCIHandler) verifiedIssuedMdoc(ctx context.Context, org uuid.UUID, docType, raw string) (*mdoc.VerifiedDocument, error) {

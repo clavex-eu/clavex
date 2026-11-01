@@ -63,7 +63,7 @@ func TestWalletStatusAttestationParentPersistenceAndCascade(t *testing.T) {
 	defer tx.Rollback(ctx)
 	credential, err := h.signCredential(ctx, f.org, f.cfg, f.user, map[string]interface{}{"given_name": "Alice"}, proofs[0].Key)
 	require.NoError(t, err)
-	require.NoError(t, h.recordWalletCredential(ctx, f.org.ID, &f.user.ID, f.cfg.VCT, credential, nil, "dc+sd-jwt", proofs[0].StatusParents))
+	require.NoError(t, h.recordWalletCredential(ctx, f.org.ID, &f.user.ID, f.cfg.VCT, credential, "dc+sd-jwt", proofs[0].StatusParents))
 	require.NoError(t, tx.Commit(ctx))
 	record, err := f.vciIssuanceFixture.h.repo.GetIssuedCredentialByHash(ctx, f.org.ID, oid4w.HashToken(credential))
 	require.NoError(t, err)

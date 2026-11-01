@@ -68,6 +68,8 @@ type OID4VPHandler struct {
 	cfg                        baseURLProvider
 	trustedIssuers             map[string]crypto.PublicKey
 	credentialSigningPublicKey crypto.PublicKey
+	credentialKeyNotBefore     time.Time
+	credentialKeyNotAfter      time.Time
 	// requireTrustedIssuer rejects DCQL presentations from issuers not in
 	// trustedIssuers (default true; false only for the conformance suite).
 	requireTrustedIssuer bool

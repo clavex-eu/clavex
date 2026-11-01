@@ -128,6 +128,21 @@ func (s *CertificateMetadataSigner) RootCertificatePEM() []byte {
 	return pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: root.Raw})
 }
 
+// CertificateValidity exposes the intersection of the public chain's validity
+// windows for consumers that retain only its public verification key.
+func (s *CertificateMetadataSigner) CertificateValidity() (time.Time, time.Time) {
+	start, end := s.certificates[0].NotBefore, s.certificates[0].NotAfter
+	for _, c := range s.certificates {
+		if c.NotBefore.After(start) {
+			start = c.NotBefore
+		}
+		if c.NotAfter.Before(end) {
+			end = c.NotAfter
+		}
+	}
+	return start, end
+}
+
 // MetadataCertificateChain revalidates the chain and issuer hostname at request
 // time, excluding the trust anchor from the transmitted x5c.
 func (s *CertificateMetadataSigner) MetadataCertificateChain(issuer string) (*cert.Chain, time.Time, error) {

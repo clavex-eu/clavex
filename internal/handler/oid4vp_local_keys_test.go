@@ -46,4 +46,12 @@ func TestDedicatedCredentialKeySelectionPreservesLegacyAndTenantBoundary(t *test
 		})
 	}
 	require.Equal(t, &rsaKey.PublicKey, h.localCredentialVerificationKey("malformed", issuer))
+	presentation, _, err := oid4w.IssueSDJWT(oid4w.SDJWTParams{Issuer: issuer, Subject: "fictional", VCT: "urn:example:test", TTL: 24 * time.Hour, Signer: dedicated, Alg: jwa.ES256})
+	require.NoError(t, err)
+	h.WithCredentialSigningPublicKey(&dedicated.PublicKey, time.Now().Add(-2*time.Hour), time.Now().Add(48*time.Hour))
+	require.Equal(t, &dedicated.PublicKey, h.localCredentialVerificationKey(presentation, issuer))
+	h.credentialKeyNotAfter = time.Now().Add(time.Minute)
+	require.Equal(t, &rsaKey.PublicKey, h.localCredentialVerificationKey(presentation, issuer), "a credential must not outlive its signing certificate")
+	h.credentialKeyNotAfter = time.Now().Add(-time.Minute)
+	require.Equal(t, &rsaKey.PublicKey, h.localCredentialVerificationKey(presentation, issuer), "expired certificate key must not be selected")
 }
