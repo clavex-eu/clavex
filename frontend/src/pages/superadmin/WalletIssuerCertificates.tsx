@@ -32,19 +32,19 @@ function CertificateForm({ orgId, issuers, onClose }: { orgId: string; issuers: 
   const [hours, setHours] = useState(720)
   const [replace, setReplace] = useState(false)
   const [error, setError] = useState('')
-  const profiles = useQuery({ queryKey: ['wallet-vault-profiles', orgId], queryFn: () => api.get<Profile[]>(`/organizations/${orgId}/mdoc/vault-signers`).then(r => r.data) })
+  const profiles = useQuery({ queryKey: ['wallet-vault-profiles', orgId], queryFn: () => api.get<Profile[]>(`/superadmin/organizations/${orgId}/mdoc/vault-signers`).then(r => r.data) })
   const existing = issuers.find(i => i.doc_type === docType.trim() && i.is_active)
   const save = useMutation({
     mutationFn: async () => {
-      if (useAuthStore.getState().orgId !== orgId) throw new Error('Organisation changed')
+      if (!useAuthStore.getState().isSuperAdmin) throw new Error('Superadmin access required')
       let privateKey = ''
       if (backend === 'local') {
         if (!key || key.size > 64 * 1024) throw new Error('Select one PEM private key, at most 64 KiB.')
         privateKey = await key.text()
         if (!/^\s*-----BEGIN (EC )?PRIVATE KEY-----/.test(privateKey)) throw new Error('Select an unencrypted PKCS#8 or EC PEM private key.')
       }
-      if (useAuthStore.getState().orgId !== orgId) throw new Error('Organisation changed')
-      return api.post(`/organizations/${orgId}/mdoc/issuers`, {
+      if (!useAuthStore.getState().isSuperAdmin) throw new Error('Superadmin access required')
+      return api.post(`/superadmin/organizations/${orgId}/mdoc/issuers`, {
         display_name: name.trim(), doc_type: docType.trim(), ds_certificate_pem: cert.trim(),
         iaca_certificate_pem: ca.trim(), validity_hours: hours,
         ...(backend === 'local' ? { ds_private_key_pem: privateKey } : { vault_signer_ref: profile }),
@@ -75,8 +75,8 @@ export default function WalletIssuerCertificates({ orgId }: { orgId: string | nu
   const [open, setOpen] = useState(false)
   const [removing, setRemoving] = useState<Issuer | null>(null)
   const cache = useQueryClient()
-  const issuers = useQuery({ queryKey: ['wallet-mdoc-issuers', orgId], queryFn: () => api.get<Issuer[]>(`/organizations/${orgId}/mdoc/issuers`).then(r => r.data), enabled: !!orgId })
-  const deletion = useMutation({ mutationFn: (issuer: Issuer) => api.delete(`/organizations/${orgId}/mdoc/issuers/${issuer.id}`), onSuccess: () => { setRemoving(null); cache.invalidateQueries({ queryKey: ['wallet-mdoc-issuers', orgId] }) } })
+  const issuers = useQuery({ queryKey: ['wallet-mdoc-issuers', orgId], queryFn: () => api.get<Issuer[]>(`/superadmin/organizations/${orgId}/mdoc/issuers`).then(r => r.data), enabled: !!orgId })
+  const deletion = useMutation({ mutationFn: (issuer: Issuer) => api.delete(`/superadmin/organizations/${orgId}/mdoc/issuers/${issuer.id}`), onSuccess: () => { setRemoving(null); cache.invalidateQueries({ queryKey: ['wallet-mdoc-issuers', orgId] }) } })
   if (!orgId) return null
   return <Card><div className="flex flex-wrap items-start justify-between gap-4"><div><h2 className="flex items-center gap-2 font-semibold"><KeyRound size={18} /> Issuing certificates · mdoc</h2><p className="mt-1 text-sm text-slate-600">Configure your signing material here. Verifier trust anchors are managed separately in Wallet verifier → Issuer trust.</p></div><Button onClick={() => setOpen(true)}><Plus size={15} /> Add signer</Button></div>
     <p className="mt-3 text-xs text-slate-600">Metadata and SD-JWT signing certificates currently use installation configuration. Vault PKI certificate issuance and renewal are separate from Transit signing.</p>

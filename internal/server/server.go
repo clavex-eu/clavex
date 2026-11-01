@@ -1550,11 +1550,20 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		adminMdoc.DELETE("/iaca-roots/:root_id", iacaH.Delete)
 		// mdoc issuer DS keys — manage DS keypairs used for OID4VCI mso_mdoc issuance.
 		mdocIssuerH := handler.NewMdocIssuerHandler(pool).WithSigningStorage(enc, walletVaultProfiles)
-		adminMdoc.GET("/vault-signers", mdocIssuerH.VaultProfiles)
-		adminMdoc.POST("/issuers/generate", mdocIssuerH.Generate, echomw.BodyLimit("4K"))
-		adminMdoc.POST("/issuers", mdocIssuerH.Create, echomw.BodyLimit("640K"))
-		adminMdoc.GET("/issuers", mdocIssuerH.List)
-		adminMdoc.DELETE("/issuers/:issuer_id", mdocIssuerH.Delete)
+		// Signing-key custody is an installation-superadmin operation. Preserve
+		// existing endpoint URLs, but deny ordinary tenant admins at the server.
+		mdocSigning := adminMdoc.Group("", middleware.RequireSuperAdmin())
+		mdocSigning.GET("/vault-signers", mdocIssuerH.VaultProfiles)
+		mdocSigning.POST("/issuers/generate", mdocIssuerH.Generate, echomw.BodyLimit("4K"))
+		mdocSigning.POST("/issuers", mdocIssuerH.Create, echomw.BodyLimit("640K"))
+		mdocSigning.GET("/issuers", mdocIssuerH.List)
+		mdocSigning.DELETE("/issuers/:issuer_id", mdocIssuerH.Delete)
+		superMdoc := adminSuperadmin.Group("/organizations/:org_id/mdoc")
+		superMdoc.GET("/vault-signers", mdocIssuerH.VaultProfiles)
+		superMdoc.POST("/issuers/generate", mdocIssuerH.Generate, echomw.BodyLimit("4K"))
+		superMdoc.POST("/issuers", mdocIssuerH.Create, echomw.BodyLimit("640K"))
+		superMdoc.GET("/issuers", mdocIssuerH.List)
+		superMdoc.DELETE("/issuers/:issuer_id", mdocIssuerH.Delete)
 
 		// ── CIBA admin — approve/deny backchannel auth requests ──────────────
 		cibaG := orgScoped.Group("/ciba", middleware.RequireResourcePermission("sessions"))

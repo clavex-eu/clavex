@@ -37,9 +37,10 @@ mdoc uses its existing tenant/document-type DS configuration, through
 `GET/POST /api/v1/organizations/:org_id/mdoc/issuers`. A DS keypair must be
 configured for each intended document type; metadata signing does not create it.
 
-## Tenant administration: mdoc Document Signers
+## Superadmin administration: mdoc Document Signers
 
-**Clavex Wallet → Issuing certificates · mdoc** manages the active signer for
+**Superadmin → Signing Keys → Wallet issuing certificates**, after selecting
+an organisation, manages the active signer for
 mDL, PID mdoc or a custom document type. It supports:
 
 - importing one public P-256 DS certificate, its IACA chain (root last), and
@@ -47,8 +48,12 @@ mDL, PID mdoc or a custom document type. It supports:
 - inspecting certificate expiry, SHA-256 fingerprint and signing backend;
 - explicitly replacing an existing signer or confirming its removal.
 
-These endpoints inherit the existing organisation access and `clients` resource
-permission checks. Imports validate key/certificate matching, current chain
+The UI uses `/api/v1/superadmin/organizations/:org_id/mdoc/issuers` and
+`/mdoc/vault-signers` under the same organisation prefix. All signing-management
+routes require an authenticated installation superadmin. The former
+`/organizations/:org_id/mdoc/issuers` and `/mdoc/vault-signers` URLs remain
+available only to superadmins; tenant administrators cannot use them. Verifier
+trust-anchor management is separate and retains its existing tenant permissions. Imports validate key/certificate matching, current chain
 validity, signing key usage and leaf/root roles. The IACA remains an explicit
 configuration input, not evidence that an external wallet trusts the issuer.
 The receiving wallet remains responsible for its trust and certificate status
@@ -100,8 +105,8 @@ Only an installation administrator can configure provider connections. Set
 
 `ca_file` and `namespace` are optional. TLS verification remains enabled and
 redirects are not followed. Endpoint addresses, tokens, mount/key paths and CA
-files cannot be supplied by a tenant API request. The tenant sees only the ID,
-label and pinned version of its own profiles from `GET /mdoc/vault-signers`.
+files cannot be supplied by a tenant API request. The superadmin sees only the ID, label and pinned version of profiles
+authorised for the selected organisation from `GET /mdoc/vault-signers`.
 Invalid configuration fails closed; no implicit fallback to a local key occurs.
 Configuration is loaded at application startup; editing the file alone does not
 reload an already running process.
@@ -158,3 +163,26 @@ configuration occupies the mdoc PID type; do not silently repurpose that record.
 Passing certificate checks is necessary but does not prove that document claims,
 national profiles, registration, lifecycle behaviour or every wallet use case
 interoperate. A fresh device issuance/presentation test remains necessary.
+
+## Credential response encryption and wallet compatibility
+
+On installations with an available RSA request-decryption key, ordinary issuer
+metadata now advertises implemented response and request encryption, just as
+conformance metadata does. Previously both objects were omitted outside
+conformance mode as a workaround for an older iOS wallet; that prevented Android
+wallets requiring encryption from starting issuance. No wallet trust check is
+relaxed by this change. Re-test older iOS builds separately.
+
+Response encryption supports ECDH-ES, ECDH-ES+A128KW and ECDH-ES+A256KW, with
+A256GCM, A128CBC-HS256 or A256CBC-HS512. The response public key and algorithm are
+supplied by the wallet. Private keys, unadvertised algorithms, conflicting
+algorithm parameters and compression requests are rejected. A plaintext request
+can receive a JWE response; encrypted requests use the issuer's advertised
+RSA-OAEP-256 key. Deferred encryption retains its encrypted-request requirement.
+Remote OIDC signers without an available request-decryption key do not advertise
+these capabilities; request decryption for that backend remains separate work.
+
+Automated coverage includes all advertised response-algorithm combinations,
+wrong-key decryption rejection, ordinary metadata, and actual credential issuance
+with both plaintext and encrypted HTTP requests using temporary PostgreSQL/Redis.
+The phone test still needs a fresh offer and refreshed issuer metadata.
