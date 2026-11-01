@@ -242,6 +242,9 @@ func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
 			if meta.CredentialRequestEncryption != nil && meta.CredentialRequestEncryption.JWKS != nil {
 				if encJWK, encErr := jwk.FromRaw(h.keys.CryptoSigner().Public()); encErr == nil {
 					_ = encJWK.Set(jwk.KeyIDKey, h.keys.KID())
+					// Final metadata keys must explicitly identify encryption use; the
+					// reference wallet rejects a missing use even if alg is correct.
+					_ = encJWK.Set(jwk.KeyUsageKey, "enc")
 					// Pick a JWE key-encryption alg compatible with the key type.
 					switch h.keys.Algorithm() {
 					case jwa.RS256, jwa.RS384, jwa.RS512, jwa.PS256, jwa.PS384, jwa.PS512:

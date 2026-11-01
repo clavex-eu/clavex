@@ -85,6 +85,21 @@ func TestOrdinaryIssuerMetadataAndEncryptedCredentialHTTP(t *testing.T) {
 	require.NoError(t, json.Unmarshal(rec.Body.Bytes(), &metadata))
 	require.NotNil(t, metadata.CredentialResponseEncryption)
 	require.NotEmpty(t, metadata.CredentialRequestEncryption.JWKS.Keys)
+	// Mirror the reference wallet's SupportedRequestEncryptionParameters
+	// validation: alg/kid alone are insufficient without explicit use=enc.
+	for _, rawKey := range metadata.CredentialRequestEncryption.JWKS.Keys {
+		encoded, err := json.Marshal(rawKey)
+		require.NoError(t, err)
+		key, err := jwk.ParseKey(encoded)
+		require.NoError(t, err)
+		require.Equal(t, "enc", key.KeyUsage())
+		require.NotEmpty(t, key.KeyID())
+		require.Equal(t, string(jwa.RSA_OAEP_256), key.Algorithm().String())
+		var fields map[string]any
+		require.NoError(t, json.Unmarshal(encoded, &fields))
+		require.NotContains(t, fields, "d")
+	}
+
 	for _, encryptedRequest := range []bool{false, true} {
 		_, token := f.offer(t)
 		nonce, err := f.h.issueCredentialNonce(req.Context(), f.org.Slug)
