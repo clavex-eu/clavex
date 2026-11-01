@@ -70,6 +70,7 @@ type Config struct {
 	Storage        StorageConfig        `mapstructure:"storage"`
 	PAMAlerts      PAMAlertConfig       `mapstructure:"pam_alerts"`
 	OID4VP         OID4VPConfig         `mapstructure:"oid4vp"`
+	OID4VCI        OID4VCIConfig        `mapstructure:"oid4vci"`
 	SSF            SSFConfig            `mapstructure:"ssf"`
 	AgentTokens    AgentTokensConfig    `mapstructure:"agent_tokens"`
 }
@@ -554,6 +555,10 @@ func LoadFrom(path string) (*Config, error) {
 	// does not reliably populate nested struct fields during Unmarshal.
 	for _, pair := range []struct{ key, env string }{
 		{"dev", "CLAVEX_DEV"},
+		{"oid4vci.metadata_cert_file", "CLAVEX_OID4VCI_METADATA_CERT_FILE"},
+		{"oid4vci.metadata_key_file", "CLAVEX_OID4VCI_METADATA_KEY_FILE"},
+		{"oid4vci.credential_cert_file", "CLAVEX_OID4VCI_CREDENTIAL_CERT_FILE"},
+		{"oid4vci.credential_key_file", "CLAVEX_OID4VCI_CREDENTIAL_KEY_FILE"},
 		{"http.addr", "CLAVEX_HTTP_ADDR"},
 		{"http.base_domain", "CLAVEX_HTTP_BASE_DOMAIN"},
 		{"http.tls_cert_file", "CLAVEX_HTTP_TLS_CERT_FILE"},
@@ -725,6 +730,16 @@ type FGAConfig struct {
 	// APIKey is the shared secret for OpenFGA API-key authentication.
 	// Leave empty for unauthenticated / mTLS-protected deployments.
 	APIKey string `mapstructure:"api_key"`
+}
+
+// OID4VCIConfig configures optional certificate-backed issuer metadata signing.
+type OID4VCIConfig struct {
+	// MetadataCertFile is a leaf-first PEM chain including its root. This signer
+	// is independent of OIDC keys and credential signing keys.
+	MetadataCertFile   string `mapstructure:"metadata_cert_file"`
+	MetadataKeyFile    string `mapstructure:"metadata_key_file"`
+	CredentialCertFile string `mapstructure:"credential_cert_file"`
+	CredentialKeyFile  string `mapstructure:"credential_key_file"`
 }
 
 // OID4VPConfig holds OpenID for Verifiable Presentations settings.

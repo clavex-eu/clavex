@@ -1,18 +1,8 @@
 package oid4w
 
-// SignIssuerMetadata signs a CredentialIssuerMetadata as a JWT.
-//
-// The resulting token can be served at the .well-known/openid-credential-issuer
-// endpoint with Content-Type: application/jwt.  This satisfies the
-// oid4vci-1_0-issuer-metadata-test-signed conformance check (the test skips
-// when Content-Type is application/json and runs when it's application/jwt).
-//
-// JWT structure (OID4VCI Final §11.2.1):
-//
-//	Header: { "typ": "openid4vci-credential-issuer+jwt", "alg": "<alg>", "kid": "<kid>" }
-//	Payload: { "iss": <credential_issuer>, "sub": <credential_issuer>,
-//	           "iat": <now>, "exp": <now+24h>,
-//	           ...all CredentialIssuerMetadata fields... }
+// Signed metadata uses OID4VCI Final §12.2.3 and is served as application/jwt.
+// Certificate-backed signers advertise x5c; the legacy profile embeds a public
+// JWK. Neither mechanism establishes independent wallet trust by itself.
 
 import (
 	"crypto"
@@ -65,7 +55,7 @@ func SignIssuerMetadata(meta *CredentialIssuerMetadata, signer MetadataSigner) (
 		return "", fmt.Errorf("build jwt: %w", err)
 	}
 
-	// Protected header: typ + kid + jwk (OID4VCI-1FINAL-12.2.2 requires jwk or x5c).
+	// Certificate-backed installations use x5c; others retain the JWK profile.
 	hdrs := jws.NewHeaders()
 	if err := hdrs.Set(jws.TypeKey, "openidvci-issuer-metadata+jwt"); err != nil {
 		return "", fmt.Errorf("set typ header: %w", err)
@@ -73,7 +63,20 @@ func SignIssuerMetadata(meta *CredentialIssuerMetadata, signer MetadataSigner) (
 	if err := hdrs.Set(jws.KeyIDKey, signer.KID()); err != nil {
 		return "", fmt.Errorf("set kid header: %w", err)
 	}
-	if pubJWK, jwkErr := jwk.FromRaw(signer.CryptoSigner().Public()); jwkErr == nil {
+	if certified, ok := signer.(*CertificateMetadataSigner); ok {
+		chain, expires, err := certified.MetadataCertificateChain(meta.CredentialIssuer)
+		if err != nil {
+			return "", err
+		}
+		if expires.Before(tok.Expiration()) {
+			if err := tok.Set(jwt.ExpirationKey, expires); err != nil {
+				return "", err
+			}
+		}
+		if err := hdrs.Set(jws.X509CertChainKey, chain); err != nil {
+			return "", err
+		}
+	} else if pubJWK, jwkErr := jwk.FromRaw(signer.CryptoSigner().Public()); jwkErr == nil {
 		_ = pubJWK.Set(jwk.KeyIDKey, signer.KID())
 		if err := hdrs.Set(jws.JWKKey, pubJWK); err != nil {
 			return "", fmt.Errorf("set jwk header: %w", err)

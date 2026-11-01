@@ -61,12 +61,13 @@ const cibaVPACR = "urn:clavex:acr:oid4vp-credential"
 //	GET  /api/v1/organizations/:org_id/oid4vp/sessions       → list sessions
 //	GET  /api/v1/organizations/:org_id/oid4vp/sessions/:id   → get session status
 type OID4VPHandler struct {
-	responseEncryption *secretcrypto.Encryptor
-	repo               *repository.OID4WRepository
-	orgs               *repository.OrgRepository
-	keys               oidc.Signer
-	cfg                baseURLProvider
-	trustedIssuers     map[string]crypto.PublicKey
+	responseEncryption         *secretcrypto.Encryptor
+	repo                       *repository.OID4WRepository
+	orgs                       *repository.OrgRepository
+	keys                       oidc.Signer
+	cfg                        baseURLProvider
+	trustedIssuers             map[string]crypto.PublicKey
+	credentialSigningPublicKey crypto.PublicKey
 	// requireTrustedIssuer rejects DCQL presentations from issuers not in
 	// trustedIssuers (default true; false only for the conformance suite).
 	requireTrustedIssuer bool
@@ -586,7 +587,7 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 			session.Nonce,
 			effectiveClientID,
 			nil, // no additional trusted issuers beyond local key
-			h.keys.PublicKey(),
+			h.localCredentialVerificationKey(vpToken, h.cfg.BaseURL()+"/"+org.Slug),
 		)
 	}
 	if err != nil {
@@ -1122,7 +1123,7 @@ func (h *OID4VPHandler) BatchVerify(c echo.Context) error {
 	results := make([]itemResult, len(body.Items))
 	for i, item := range body.Items {
 		def := unmarshalPresentationDef(item.PresentationDefinition)
-		vr, err := oid4w.VerifyPresentation(item.VPToken, def, item.Nonce, item.Audience, nil, h.keys.PublicKey())
+		vr, err := oid4w.VerifyPresentation(item.VPToken, def, item.Nonce, item.Audience, nil, h.localCredentialVerificationKey(item.VPToken, h.cfg.BaseURL()+"/"+org.Slug))
 		if err == nil {
 			scoped, tx, txErr := h.repo.BeginIssuance(c.Request().Context())
 			if txErr != nil {

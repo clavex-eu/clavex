@@ -144,7 +144,7 @@ func VerifyPresentation(
 	expectedNonce string,
 	expectedAud string,
 	trustedIssuers map[string]*rsa.PublicKey,
-	localPubKey *rsa.PublicKey,
+	localPubKey crypto.PublicKey,
 ) (*VerificationResult, error) {
 	issuerJWT, disclosureRaws, kbJWT, err := ParseSDJWT(vpToken)
 	if err != nil {
@@ -215,7 +215,7 @@ func VerifyDCQLPresentation(
 	expectedAud string,
 	trustedIssuers map[string]crypto.PublicKey,
 	requireTrusted bool,
-	localPubKey *rsa.PublicKey,
+	localPubKey crypto.PublicKey,
 ) (*VerificationResult, error) {
 	issuerJWT, disclosureRaws, kbJWT, err := ParseSDJWT(vpToken)
 	if err != nil {
@@ -404,7 +404,7 @@ func verifyKBJWT(kbJWT string, holderKey crypto.PublicKey, expectedNonce, expect
 
 // resolveIssuerKey returns the RSA public key for the issuer JWT's "iss" claim.
 // localPubKey is always accepted; trustedIssuers provides additional known issuers.
-func resolveIssuerKey(issuerJWT string, trusted map[string]*rsa.PublicKey, local *rsa.PublicKey) (*rsa.PublicKey, error) {
+func resolveIssuerKey(issuerJWT string, trusted map[string]*rsa.PublicKey, local crypto.PublicKey) (crypto.PublicKey, error) {
 	// Decode the JWT header + payload without verification to read "iss".
 	type minPayload struct {
 		Iss string `json:"iss"`

@@ -23,7 +23,6 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/v2/cert"
-	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
 	"github.com/clavex-eu/clavex/internal/models"
@@ -245,6 +244,15 @@ func BuildIssuerCACertPEM(priv *rsa.PrivateKey) ([]byte, error) {
 //
 // Returns nil when PrivateKey() is nil (Vault/KMS backends).
 func buildX5C(keys oidc.Signer) *cert.Chain {
+	if certified, ok := keys.(*CertificateCredentialSigner); ok {
+		var chain cert.Chain
+		for _, c := range certified.certificates[:len(certified.certificates)-1] {
+			if err := chain.AddString(base64.StdEncoding.EncodeToString(c.Raw)); err != nil {
+				return nil
+			}
+		}
+		return &chain
+	}
 	priv := keys.PrivateKey()
 	if priv == nil {
 		return nil
@@ -382,7 +390,7 @@ func IssueIdentityCredential(
 		PlainClaims:       plain,
 		TTL:               ttl,
 		Signer:            keys.CryptoSigner(),
-		Alg:               jwa.PS256,
+		Alg:               keys.Algorithm(),
 		KID:               keys.KID(),
 		X5C:               buildX5C(keys),
 		HolderKey:         holderKey,
@@ -531,7 +539,7 @@ func IssueAgeCredential(
 		PlainClaims: map[string]any{},
 		TTL:         ttl,
 		Signer:      keys.CryptoSigner(),
-		Alg:         jwa.PS256,
+		Alg:         keys.Algorithm(),
 		KID:         keys.KID(),
 		X5C:         buildX5C(keys),
 		HolderKey:   holderKey,

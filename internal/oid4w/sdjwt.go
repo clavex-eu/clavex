@@ -122,6 +122,18 @@ func IssueSDJWT(p SDJWTParams) (string, []Disclosure, error) {
 	// Truncate to hour boundary — RFC 9901 §10.1 linkability prevention.
 	now := time.Now().UTC().Truncate(time.Hour)
 	expiry := now.Add(p.TTL)
+	if certified, ok := p.Signer.(validatingCredentialKey); ok {
+		deadline, err := certified.signer.validate("")
+		if err != nil {
+			return "", nil, err
+		}
+		if now.Before(certified.signer.certificates[0].NotBefore) {
+			now = certified.signer.certificates[0].NotBefore.UTC()
+		}
+		if deadline.Before(expiry) {
+			expiry = deadline
+		}
+	}
 
 	disclosures := make([]Disclosure, 0, len(p.DisclosableClaims))
 	sdHashes := make([]string, 0, len(p.DisclosableClaims))

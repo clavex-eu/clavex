@@ -316,11 +316,14 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 
 	// ── eIDAS 2.0 / OID4VCI / OID4VP / Compliance handlers ──────────────────
 	oid4vciH := handler.NewOID4VCIHandler(pool, keys, walletBaseURL).
+		WithMetadataSigningFiles(cfg.OID4VCI.MetadataCertFile, cfg.OID4VCI.MetadataKeyFile).
+		WithCredentialSigningFiles(cfg.OID4VCI.CredentialCertFile, cfg.OID4VCI.CredentialKeyFile).
 		WithRedis(rdb).
 		WithStatusDispatcher(oid4w.NewCredStatusDispatcher())
 	analyticsH := handler.NewCredentialAnalyticsHandler(pool)
 	oid4vpH := handler.NewOID4VPHandler(pool, keys, walletBaseURL, parseTrustedIssuers(cfg.OID4VP.TrustedCredentialIssuers), cfg.OID4VP.RequireTrustedIssuer, repository.NewCIBARepository(pool), cfg.OID4VP.JARCertFile, cfg.OID4VP.JARKeyFile).WithResponseEncryption(enc)
 	walletH := handler.NewWalletHandler(repository.NewOID4WRepository(pool))
+	oid4vpH.WithCredentialSigningPublicKey(oid4vciH.CredentialSigningPublicKey())
 	mdocProximityH := handler.NewMdocProximityHandler(pool, keys, walletBaseURL)
 	complianceH := handler.NewComplianceHandler(pool, keys)
 	loginHistoryH := handler.NewLoginHistoryHandler(pool).WithAuditor(entityAuditor)

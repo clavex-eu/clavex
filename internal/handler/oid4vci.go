@@ -2,6 +2,7 @@ package handler
 
 import (
 	"context"
+	"crypto"
 	"crypto/ecdsa"
 	"crypto/rand"
 	"crypto/sha256"
@@ -55,19 +56,23 @@ import (
 //	  POST   /api/v1/organizations/:org_id/oid4vci/offers/:offer_id/send
 //	  GET    /api/v1/organizations/:org_id/oid4vci/issued
 type OID4VCIHandler struct {
-	oidcHandler      *OIDCHandler
-	repo             *repository.OID4WRepository
-	orgs             *repository.OrgRepository
-	users            *repository.UserRepository
-	keys             oidc.Signer
-	cfg              baseURLProvider
-	smsRepo          *repository.SMSSettingsRepository
-	smtp             *repository.SMTPRepository
-	rdb              redis.UniversalClient
-	mdocIssuers      *repository.MdocIssuerRepository
-	statusDispatcher *oid4w.CredStatusDispatcher
-	ssfDisp          *ssf.Dispatcher
-	revnet           *federation.RevNetDispatcher
+	oidcHandler          *OIDCHandler
+	repo                 *repository.OID4WRepository
+	orgs                 *repository.OrgRepository
+	users                *repository.UserRepository
+	keys                 oidc.Signer
+	metadataSigner       oid4w.MetadataSigner
+	metadataSigningErr   error
+	credentialSigner     *oid4w.CertificateCredentialSigner
+	credentialSigningErr error
+	cfg                  baseURLProvider
+	smsRepo              *repository.SMSSettingsRepository
+	smtp                 *repository.SMTPRepository
+	rdb                  redis.UniversalClient
+	mdocIssuers          *repository.MdocIssuerRepository
+	statusDispatcher     *oid4w.CredStatusDispatcher
+	ssfDisp              *ssf.Dispatcher
+	revnet               *federation.RevNetDispatcher
 }
 
 type baseURLProvider interface {
@@ -85,6 +90,39 @@ func NewOID4VCIHandler(pool *pgxpool.Pool, keys oidc.Signer, cfg baseURLProvider
 		smtp:        repository.NewSMTPRepository(pool),
 		mdocIssuers: repository.NewMdocIssuerRepository(pool),
 	}
+}
+
+// WithMetadataSigningFiles enables the optional certificate-backed metadata
+// signer. Invalid configured material fails closed, including JSON requests.
+func (h *OID4VCIHandler) WithMetadataSigningFiles(certFile, keyFile string) *OID4VCIHandler {
+	if certFile != "" || keyFile != "" {
+		h.metadataSigner, h.metadataSigningErr = oid4w.LoadCertificateMetadataSigner(certFile, keyFile)
+		if h.metadataSigningErr != nil {
+			log.Error().Err(h.metadataSigningErr).Msg("oid4vci: configured metadata signer is unavailable")
+		}
+	}
+	return h
+}
+
+// WithCredentialSigningFiles only changes SD-JWT credential signing. OAuth
+// tokens, metadata and mdoc Document Signers retain their own independent keys.
+func (h *OID4VCIHandler) WithCredentialSigningFiles(certFile, keyFile string) *OID4VCIHandler {
+	if certFile != "" || keyFile != "" {
+		h.credentialSigner, h.credentialSigningErr = oid4w.LoadCertificateCredentialSigner(certFile, keyFile)
+		if h.credentialSigningErr != nil {
+			log.Error().Err(h.credentialSigningErr).Msg("oid4vci: configured credential signer is unavailable")
+		}
+	}
+	return h
+}
+
+// CredentialSigningPublicKey is used only to register this installation's
+// dedicated credential key with its local verifier. It exposes no private data.
+func (h *OID4VCIHandler) CredentialSigningPublicKey() crypto.PublicKey {
+	if h.credentialSigner == nil || h.credentialSigningErr != nil {
+		return nil
+	}
+	return h.credentialSigner.CryptoSigner().Public()
 }
 
 // WithRedis sets the Redis client used for the nonce endpoint.
@@ -117,16 +155,13 @@ func (h *OID4VCIHandler) WithRevocationNetwork(d *federation.RevNetDispatcher) *
 
 // IssuerMetadata handles GET /:org_slug/.well-known/openid-credential-issuer
 //
-// Always returns JSON (Content-Type: application/json) per OID4VCI Final §11.2.
-// When a signing key is available the response includes a "signed_metadata"
-// claim whose value is a signed JWT containing all issuer-metadata claims
-// (OID4VCI Final §11.2.1).  The JWT has typ "openid4vci-credential-issuer+jwt".
-//
-// Returning JSON rather than a raw JWT keeps the happy-flow tests that always
-// call JSON.parse() on the metadata endpoint working, while the dedicated
-// oid4vci-1_0-issuer-metadata-test-signed conformance check finds and verifies
-// the nested signed_metadata JWT.
+// OID4VCI Final §12.2: serve signed metadata as application/jwt, or plain
+// application/json when explicitly requested. The Final JWT is the entire
+// response; it is not embedded in a signed_metadata JSON member.
 func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
+	if h.metadataSigningErr != nil {
+		return echo.NewHTTPError(http.StatusServiceUnavailable, "issuer metadata signing is misconfigured")
+	}
 	org, err := h.resolveOrg(c)
 	if err != nil {
 		return err
@@ -139,6 +174,19 @@ func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
 
 	conformanceMode := org.ConformanceMode || c.QueryParam("conformance") == "1"
 	meta := oid4w.BuildIssuerMetadata(h.cfg.BaseURL(), org.Slug, configs, conformanceMode)
+	if h.credentialSigningErr != nil {
+		return echo.NewHTTPError(http.StatusServiceUnavailable, "credential signing is misconfigured")
+	}
+	if h.credentialSigner != nil {
+		if _, _, err := h.credentialSigner.MetadataCertificateChain(meta.CredentialIssuer); err != nil {
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "credential signing certificate is unavailable or invalid for this issuer")
+		}
+		for _, credential := range meta.CredentialConfigurationsSupported {
+			if credential.Format == "dc+sd-jwt" {
+				credential.CredentialSigningAlgValuesSupported = []string{string(h.credentialSigner.Algorithm())}
+			}
+		}
+	}
 
 	_, attesterKeys, trustErr := credentialAttesterKeys(org)
 	if trustErr != nil {
@@ -179,31 +227,29 @@ func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
 		}
 	}
 
-	// OID4VCI Final §11.2.1: serve signed metadata as a raw JWT when the client
-	// explicitly accepts application/openid-credential-issuer+jwt (OIDF conformance
-	// suite), otherwise return plain JSON without signed_metadata.
-	//
-	// The EUDI reference wallet SDK (openid4vci-kt) uses strict JSON parsing
-	// (ignoreUnknownKeys=false) and does NOT include signed_metadata in its
-	// CredentialIssuerMetadata data class. Embedding signed_metadata in the JSON
-	// body causes a silent deserialization failure that aborts the issuance flow.
-	// The EUDI reference issuer (issuer.eudiw.dev) also omits signed_metadata from
-	// its JSON response, confirming this library behaviour.
-	//
-	// OID4VCI Final §11.2.1: SHOULD serve signed metadata by default. We return the
-	// JWT unless the client explicitly requests application/json without also
-	// requesting the JWT type. This satisfies oid4vci-1_0-issuer-metadata-test-signed
-	// (which skips when content-type is application/json) while still serving JSON to
-	// clients that explicitly ask for it (e.g. EUDI wallet SDKs).
+	// Preserve the existing content-negotiation profile. Requiring wallets ask
+	// for application/jwt; unsigned JSON remains available to other clients.
 	accept := c.Request().Header.Get("Accept")
 	prefersPlainJSON := strings.Contains(accept, "application/json") &&
 		!strings.Contains(accept, "application/jwt")
-	if h.keys != nil && !prefersPlainJSON {
-		signed, signErr := oid4w.SignIssuerMetadata(meta, h.keys)
+	signer := h.metadataSigner
+	if signer == nil {
+		signer = h.keys
+	}
+	// Validate the configured certificate even when returning the JSON view.
+	if certified, ok := signer.(*oid4w.CertificateMetadataSigner); ok {
+		if _, _, err := certified.MetadataCertificateChain(meta.CredentialIssuer); err != nil {
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "issuer metadata certificate is unavailable or invalid for this issuer")
+		}
+	}
+	c.Response().Header().Add("Vary", "Accept")
+	if signer != nil && !prefersPlainJSON {
+		signed, signErr := oid4w.SignIssuerMetadata(meta, signer)
 		if signErr == nil {
 			c.Response().Header().Set("Content-Type", "application/jwt")
 			return c.String(http.StatusOK, signed)
 		}
+		return echo.NewHTTPError(http.StatusServiceUnavailable, "issuer metadata signing failed")
 	}
 
 	return c.JSON(http.StatusOK, meta)
@@ -217,6 +263,15 @@ func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
 // the CA cert itself may vary across server restarts (ECDSA randomness), but
 // the public key — which is what verifiers actually use — is always the same.
 func (h *OID4VCIHandler) CredentialIssuerCA(c echo.Context) error {
+	if h.credentialSigningErr != nil {
+		return echo.NewHTTPError(http.StatusServiceUnavailable, "credential signing is misconfigured")
+	}
+	if h.credentialSigner != nil {
+		if _, _, err := h.credentialSigner.MetadataCertificateChain(h.cfg.BaseURL() + "/" + c.Param("org_slug")); err != nil {
+			return echo.NewHTTPError(http.StatusServiceUnavailable, "credential signing certificate is unavailable")
+		}
+		return c.Blob(http.StatusOK, "application/x-pem-file", h.credentialSigner.RootCertificatePEM())
+	}
 	if h.keys == nil {
 		return echo.NewHTTPError(http.StatusNotFound, "no signing key configured")
 	}
@@ -2289,6 +2344,16 @@ func (h *OID4VCIHandler) signCredential(
 	payload map[string]interface{},
 	holderKey jwk.Key,
 ) (string, error) {
+	if cfg.CredentialFormat != "mso_mdoc" {
+		if h.credentialSigningErr != nil {
+			return "", fmt.Errorf("credential signing certificate is misconfigured")
+		}
+		if h.credentialSigner != nil {
+			if _, _, err := h.credentialSigner.MetadataCertificateChain(h.cfg.BaseURL() + "/" + org.Slug); err != nil {
+				return "", fmt.Errorf("credential signing certificate: %w", err)
+			}
+		}
+	}
 	list, index, err := h.repo.AllocateCredentialStatus(ctx, org.ID)
 	if err != nil {
 		return "", err
@@ -2303,15 +2368,19 @@ func (h *OID4VCIHandler) signCredential(
 		userSub = user.ID.String()
 	}
 	var sdJWT string
+	credentialKeys := h.keys
+	if h.credentialSigner != nil {
+		credentialKeys = h.credentialSigner
+	}
 	if len(payload) > 0 {
-		sdJWT, _, err = oid4w.IssueVerifiedCredential(payload, userSub, org, cfg, h.keys, h.cfg.BaseURL(), holderKey, status)
+		sdJWT, _, err = oid4w.IssueVerifiedCredential(payload, userSub, org, cfg, credentialKeys, h.cfg.BaseURL(), holderKey, status)
 	} else if isAgeOnlyConfig(cfg) {
 		// Anonymous age credential: only derived age claims, pseudonymous sub.
 		// Birth date is used for computation but never included in the credential
 		// (GDPR Art.5(1)(c) data minimization — the strongest possible form).
-		sdJWT, _, err = oid4w.IssueAgeCredential(user, org, cfg, h.keys, h.cfg.BaseURL(), holderKey, status)
+		sdJWT, _, err = oid4w.IssueAgeCredential(user, org, cfg, credentialKeys, h.cfg.BaseURL(), holderKey, status)
 	} else {
-		sdJWT, _, err = oid4w.IssueIdentityCredential(user, org, cfg, h.keys, h.cfg.BaseURL(), holderKey, status)
+		sdJWT, _, err = oid4w.IssueIdentityCredential(user, org, cfg, credentialKeys, h.cfg.BaseURL(), holderKey, status)
 	}
 	return sdJWT, err
 }

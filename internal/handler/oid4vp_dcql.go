@@ -21,19 +21,7 @@ func (h *OID4VPHandler) verifyDCQLResponse(ctx context.Context, raw string, sess
 	if err != nil {
 		return nil, err
 	}
-	trusted, requireTrusted := h.trustedIssuers, h.requireTrustedIssuer
-	if session.CIBAAuthReqID != nil {
-		trusted = make(map[string]crypto.PublicKey, len(h.trustedIssuers)+1)
-		for issuer, key := range h.trustedIssuers {
-			trusted[issuer] = key
-		}
-		org, err := h.orgs.GetByID(ctx, session.OrgID)
-		if err != nil {
-			return nil, err
-		}
-		trusted[h.cfg.BaseURL()+"/"+org.Slug] = h.keys.PublicKey()
-		requireTrusted = true
-	}
+	requireTrusted := h.requireTrustedIssuer || session.CIBAAuthReqID != nil
 	verified := []oid4w.VerifiedDCQLCredential{}
 	for _, credential := range query.Credentials {
 		for index, presentation := range envelope[credential.ID] {
@@ -43,7 +31,18 @@ func (h *OID4VPHandler) verifyDCQLResponse(ctx context.Context, raw string, sess
 			var result *oid4w.VerificationResult
 			switch credential.Format {
 			case "dc+sd-jwt":
-				result, err = oid4w.VerifyDCQLPresentation(ctx, presentation, credential.Single, session.Nonce, clientID, trusted, requireTrusted, h.keys.PublicKey())
+				org, orgErr := h.orgs.GetByID(ctx, session.OrgID)
+				if orgErr != nil {
+					return nil, orgErr
+				}
+				localIssuer := h.cfg.BaseURL() + "/" + org.Slug
+				localKey := h.localCredentialVerificationKey(presentation, localIssuer)
+				trusted := make(map[string]crypto.PublicKey, len(h.trustedIssuers)+1)
+				for issuer, key := range h.trustedIssuers {
+					trusted[issuer] = key
+				}
+				trusted[localIssuer] = localKey
+				result, err = oid4w.VerifyDCQLPresentation(ctx, presentation, credential.Single, session.Nonce, clientID, trusted, requireTrusted, localKey)
 			case "mso_mdoc":
 				single := *session
 				single.DCQLQuery = credential.Single

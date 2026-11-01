@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
 	"github.com/clavex-eu/clavex/internal/models"
@@ -61,7 +60,7 @@ func IssueVerifiedCredential(
 		},
 		TTL:       ttl,
 		Signer:    keys.CryptoSigner(),
-		Alg:       jwa.PS256,
+		Alg:       keys.Algorithm(),
 		KID:       keys.KID(),
 		X5C:       buildX5C(keys),
 		HolderKey: holderKey,

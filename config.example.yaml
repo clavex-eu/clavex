@@ -159,7 +159,8 @@ auth:
 # ── OID4VP / EUDI Wallet ──────────────────────────────────────────────────────
 # JAR signing certificate for x509_san_dns client_id_scheme (OID4VP 1.0 Final §5.7.1).
 # The certificate MUST have a dNSName SAN matching the server hostname and MUST be
-# signed by a CA trusted by the target wallet (e.g. Let's Encrypt / IGTF).
+# signed by a CA accepted by the target wallet's reader trust policy.
+# Ordinary browser/HTTPS CA trust does not automatically establish wallet trust.
 #
 # When omitted, a self-signed ephemeral cert is generated at startup (fine for
 # development but rejected by production wallets — EUDI ARF requires a trusted CA).
@@ -168,6 +169,28 @@ auth:
 #   oid4vp:
 #     jar_cert_file: "/etc/clavex/tls/tls.crt"   # PEM — leaf + intermediates
 #     jar_key_file:  "/etc/clavex/tls/tls.key"   # PEM — EC private key (P-256)
+
+# ── OID4VCI certificate-backed signing ────────────────────────────────────────
+# Optional dedicated keys, separate from the OIDC/JAR keys. Each certificate file
+# contains the leaf first, intermediates if any, and the root last. The root is
+# used for local chain validation and is omitted from the transmitted x5c.
+# The signing leaf must have digitalSignature usage and a DNS SAN matching the
+# credential issuer hostname. External wallets still need independent trust in
+# that issuer, and any registration required by their ecosystem.
+#
+# oid4vci:
+#   metadata_cert_file: "/etc/clavex/issuer/metadata-chain.pem"
+#   metadata_key_file: "/etc/clavex/issuer/metadata-key.pem"
+#   credential_cert_file: "/etc/clavex/issuer/sdjwt-chain.pem"
+#   credential_key_file: "/etc/clavex/issuer/sdjwt-key.pem"
+#
+# Environment: CLAVEX_OID4VCI_METADATA_CERT_FILE / _METADATA_KEY_FILE and
+# CLAVEX_OID4VCI_CREDENTIAL_CERT_FILE / _CREDENTIAL_KEY_FILE.
+# Leave each pair unset to retain the existing signer. Setting either member of
+# a pair with invalid or missing material makes that signing operation fail
+# closed; it does not generate a replacement key or fall back to another signer.
+# These file settings do not configure mdoc Document Signers, which are per tenant
+# and document type. See docs/wallet-issuer-signing.md for scope and limitations.
 
 
 # ── PAM Security Alerts (Slack / Microsoft Teams) ────────────────────────────
