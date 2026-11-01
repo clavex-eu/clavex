@@ -35,7 +35,7 @@ type CredentialIssuerMetadata struct {
 	// credential_response_encryption: it carries a jwks JWK Set with the
 	// issuer's public key(s) that the wallet uses to encrypt the request, not
 	// alg/enc value lists.
-	CredentialRequestEncryption       *CredentialRequestEncryptionMeta        `json:"credential_request_encryption,omitempty"`
+	CredentialRequestEncryption *CredentialRequestEncryptionMeta `json:"credential_request_encryption,omitempty"`
 	// BatchCredentialIssuance advertises support for sending multiple proofs in a
 	// single credential request (OID4VCI Final §11.2). batch_size is the max number
 	// of proofs (and thus credentials) the issuer will accept per request.
@@ -208,6 +208,7 @@ type ClaimMeta struct {
 //
 //  2. Bare namespace identifiers (e.g. eu.europa.ec.eudi.pid.1): return verbatim.
 //     EUDIW and IT-Wallet wallets look for this exact string as the map key.
+//
 // buildKeyAttestationsRequired returns a non-nil KeyAttestationRequiredMeta
 // only when required is true.  Returning nil omits key_attestations_required
 // from the JSON metadata entirely, which is the correct default for standard
@@ -301,12 +302,9 @@ func BuildTypeMetadata(cfg models.CredentialConfig) *TypeMetadata {
 	return tm
 }
 
-// buildCredentialRequestEncryption returns the credential_request_encryption metadata
-// only when conformanceMode is true. See BuildIssuerMetadata for the rationale.
-func buildCredentialRequestEncryption(conformanceMode bool) *CredentialRequestEncryptionMeta {
-	if !conformanceMode {
-		return nil
-	}
+// buildCredentialRequestEncryption supplies the request-encryption parameters.
+// The HTTP handler adds an actually available public decryption key.
+func buildCredentialRequestEncryption() *CredentialRequestEncryptionMeta {
 	return &CredentialRequestEncryptionMeta{
 		JWKS:               &KeyAttestationJWKSMeta{Keys: []interface{}{}},
 		EncValuesSupported: []string{"A256GCM", "A128CBC-HS256", "A256CBC-HS512"},
@@ -316,8 +314,7 @@ func buildCredentialRequestEncryption(conformanceMode bool) *CredentialRequestEn
 
 // BuildIssuerMetadata constructs the CredentialIssuerMetadata for an organisation.
 // Follows OID4VCI Final specification §10.2 and §11.2.
-// conformanceMode=true adds credential_request_encryption required by the OIDF
-// conformance suite; leave false for standard wallet compatibility.
+// Encryption support is advertised for ordinary wallets as well as conformance.
 func BuildIssuerMetadata(baseURL, orgSlug string, configs []models.CredentialConfig, conformanceMode bool) *CredentialIssuerMetadata {
 	issuerURL := fmt.Sprintf("%s/%s", baseURL, orgSlug)
 
@@ -422,22 +419,14 @@ func BuildIssuerMetadata(baseURL, orgSlug string, configs []models.CredentialCon
 	// flags it as an unknown property).  The batch credential endpoint still
 	// functions at /:org_slug/oid4vci/batch-credential; it is just not advertised
 	// in the discovery document.
-	// Both credential_response_encryption and credential_request_encryption are
-	// emitted together only in conformance mode. OID4VCI-1FINAL-8.2 /
-	// VCIEnsureCredentialRequestEncryptionWhenResponseEncryptionOptional requires
-	// that when credential_response_encryption is declared (even optional),
-	// credential_request_encryption MUST also be present. Emitting only the former
-	// triggers the warning. In production both are omitted to avoid the EUDI iOS
-	// wallet (eudi-lib-ios-openid4vci-swift) JWEBuilderError that occurs when
-	// credential_request_encryption is present.
-	var encResponseMeta *CredentialResponseEncryptionMeta
-	if conformanceMode {
-		encResponseMeta = &CredentialResponseEncryptionMeta{
-			AlgValuesSupported: []string{"ECDH-ES", "ECDH-ES+A128KW", "ECDH-ES+A256KW"},
-			EncValuesSupported: []string{"A256GCM", "A128CBC-HS256", "A256CBC-HS512"},
-			EncryptionRequired: false,
-		}
+	// Advertise implemented encryption to ordinary wallets. Omitting this object
+	// causes wallets requiring response encryption to reject the issuer metadata.
+	encResponseMeta := &CredentialResponseEncryptionMeta{
+		AlgValuesSupported: []string{"ECDH-ES", "ECDH-ES+A128KW", "ECDH-ES+A256KW"},
+		EncValuesSupported: []string{"A256GCM", "A128CBC-HS256", "A256CBC-HS512"},
+		EncryptionRequired: false,
 	}
+
 	return &CredentialIssuerMetadata{
 		CredentialIssuer: issuerURL,
 		// OID4VCI Final §11.2: when absent wallets must default to [credential_issuer],
@@ -451,7 +440,7 @@ func BuildIssuerMetadata(baseURL, orgSlug string, configs []models.CredentialCon
 		NotificationEndpoint:              fmt.Sprintf("%s/oid4vci/notification", issuerURL),
 		NonceEndpoint:                     fmt.Sprintf("%s/oid4vci/nonce", issuerURL),
 		CredentialResponseEncryption:      encResponseMeta,
-		CredentialRequestEncryption:       buildCredentialRequestEncryption(conformanceMode),
+		CredentialRequestEncryption:       buildCredentialRequestEncryption(),
 		BatchCredentialIssuance:           &BatchCredentialIssuanceMeta{BatchSize: 3},
 		CredentialConfigurationsSupported: supported,
 	}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/base64"
@@ -14,6 +15,7 @@ import (
 	"io"
 	"net/http"
 	"net/url"
+	"slices"
 	"strings"
 	"time"
 
@@ -219,6 +221,14 @@ func (h *OID4VCIHandler) IssuerMetadata(c echo.Context) error {
 				proofType.KeyAttestationsRequired.KeyAttestationJWKS.Keys = attesterKeys
 			}
 		}
+	}
+	// Request decryption currently needs an available RSA private key. Never
+	// advertise an empty JWKS or a remote signer that cannot decrypt requests.
+	if h.keys == nil || h.keys.PrivateKey() == nil {
+		meta.CredentialRequestEncryption = nil
+		// Optional response encryption needs request-encryption support to protect
+		// the wallet response key (OID4VCI Final section 8.2).
+		meta.CredentialResponseEncryption = nil
 	}
 	if h.keys != nil {
 		if rawJWK, jwkErr := jwk.FromRaw(h.keys.CryptoSigner().Public()); jwkErr == nil {
@@ -484,6 +494,7 @@ type credentialResponseEncryptionReq struct {
 	Alg string `json:"alg"`
 	// Enc is the JWE content-encryption algorithm, e.g. "A256GCM".
 	Enc string `json:"enc"`
+	Zip string `json:"zip,omitempty"`
 }
 
 // credentialProof is the legacy singular proof object.
@@ -1458,6 +1469,21 @@ func encryptCredentialResponse(plaintext []byte, encReq *credentialResponseEncry
 		return "", fmt.Errorf("encryptCredentialResponse: nil encReq")
 	}
 
+	if encReq.Zip != "" {
+		return "", fmt.Errorf("response compression is not supported")
+	}
+	if !slices.Contains([]string{"A256GCM", "A128CBC-HS256", "A256CBC-HS512"}, encReq.Enc) {
+		return "", fmt.Errorf("unsupported response content encryption")
+	}
+	var publicFields map[string]json.RawMessage
+	if json.Unmarshal(encReq.JWK, &publicFields) != nil {
+		return "", fmt.Errorf("invalid wallet encryption key")
+	}
+	for _, name := range []string{"d", "p", "q", "dp", "dq", "qi", "oth", "k"} {
+		if _, present := publicFields[name]; present {
+			return "", fmt.Errorf("wallet encryption key must be public")
+		}
+	}
 	// Parse the wallet's ephemeral public key from the JWK field.
 	walletKey, err := jwk.ParseKey(encReq.JWK)
 	if err != nil {
@@ -1482,6 +1508,20 @@ func encryptCredentialResponse(plaintext []byte, encReq *credentialResponseEncry
 			"neither credential_response_encryption.alg nor JWK alg parameter present")
 	}
 
+	if !slices.Contains([]string{"ECDH-ES", "ECDH-ES+A128KW", "ECDH-ES+A256KW"}, algStr) {
+		return "", fmt.Errorf("unsupported response key encryption")
+	}
+	if encReq.Alg != "" && walletKey.Algorithm() != nil && walletKey.Algorithm().String() != "" && walletKey.Algorithm().String() != encReq.Alg {
+		return "", fmt.Errorf("conflicting response key encryption algorithms")
+	}
+	var rawPublic any
+	if err := walletKey.Raw(&rawPublic); err != nil {
+		return "", fmt.Errorf("invalid wallet encryption key")
+	}
+	ecPublic, ok := rawPublic.(*ecdsa.PublicKey)
+	if !ok || (ecPublic.Curve != elliptic.P256() && ecPublic.Curve != elliptic.P384() && ecPublic.Curve != elliptic.P521()) {
+		return "", fmt.Errorf("response encryption requires a supported EC public key")
+	}
 	// Encrypt using the algorithms requested by the wallet.
 	ciphertext, err := jwe.Encrypt(plaintext,
 		jwe.WithKey(jwa.KeyEncryptionAlgorithm(algStr), walletKey),
