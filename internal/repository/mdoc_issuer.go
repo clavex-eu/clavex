@@ -32,6 +32,12 @@ func (r *MdocIssuerRepository) Create(
 	iacaCertPEM *string,
 	validityHours int,
 ) (*models.OrgMdocIssuer, error) {
+	return r.CreateWithSigner(ctx, orgID, displayName, docType, &dsPrivateKeyPEM, dsCertPEM, iacaCertPEM, validityHours, "", true)
+}
+
+// CreateWithSigner stores either an encrypted local key or an authorised Vault
+// reference. Existing callers of Create retain their legacy storage behaviour.
+func (r *MdocIssuerRepository) CreateWithSigner(ctx context.Context, orgID uuid.UUID, displayName, docType string, dsPrivateKeyPEM *string, dsCertPEM string, iacaCertPEM *string, validityHours int, vaultRef string, replaceExisting bool) (*models.OrgMdocIssuer, error) {
 	if validityHours <= 0 {
 		validityHours = 720
 	}
@@ -39,22 +45,24 @@ func (r *MdocIssuerRepository) Create(
 	err := r.pool.QueryRow(ctx, `
 		INSERT INTO org_mdoc_issuers
 		    (org_id, display_name, doc_type, ds_private_key_pem, ds_certificate_pem,
-		     iaca_certificate_pem, validity_hours)
-		VALUES ($1, $2, $3, $4, $5, $6, $7)
+		     iaca_certificate_pem, validity_hours, vault_signer_ref)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (org_id, doc_type, is_active) DO UPDATE
-		    SET ds_private_key_pem   = EXCLUDED.ds_private_key_pem,
+		    SET vault_signer_ref = EXCLUDED.vault_signer_ref,
+                ds_private_key_pem   = EXCLUDED.ds_private_key_pem,
 		        ds_certificate_pem   = EXCLUDED.ds_certificate_pem,
 		        iaca_certificate_pem = EXCLUDED.iaca_certificate_pem,
 		        validity_hours       = EXCLUDED.validity_hours,
 		        display_name         = EXCLUDED.display_name,
 		        updated_at           = NOW()
+        WHERE $9
 		RETURNING id, org_id, display_name, doc_type, ds_private_key_pem,
 		          ds_certificate_pem, iaca_certificate_pem, validity_hours,
-		          is_active, created_at, updated_at
-	`, orgID, displayName, docType, dsPrivateKeyPEM, dsCertPEM, iacaCertPEM, validityHours).Scan(
+		          is_active, created_at, updated_at, vault_signer_ref
+	`, orgID, displayName, docType, dsPrivateKeyPEM, dsCertPEM, iacaCertPEM, validityHours, vaultRef, replaceExisting).Scan(
 		&issuer.ID, &issuer.OrgID, &issuer.DisplayName, &issuer.DocType,
 		&issuer.DSPrivateKeyPEM, &issuer.DSCertificatePEM, &issuer.IACACertificatePEM,
-		&issuer.ValidityHours, &issuer.IsActive, &issuer.CreatedAt, &issuer.UpdatedAt,
+		&issuer.ValidityHours, &issuer.IsActive, &issuer.CreatedAt, &issuer.UpdatedAt, &issuer.VaultSignerRef,
 	)
 	if err != nil {
 		return nil, fmt.Errorf("create mdoc issuer: %w", err)
@@ -69,14 +77,14 @@ func (r *MdocIssuerRepository) GetActiveByDocType(ctx context.Context, orgID uui
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, org_id, display_name, doc_type, ds_private_key_pem,
 		       ds_certificate_pem, iaca_certificate_pem, validity_hours,
-		       is_active, created_at, updated_at
+		       is_active, created_at, updated_at, vault_signer_ref
 		FROM org_mdoc_issuers
 		WHERE org_id = $1 AND doc_type = $2 AND is_active = TRUE
 		LIMIT 1
 	`, orgID, docType).Scan(
 		&issuer.ID, &issuer.OrgID, &issuer.DisplayName, &issuer.DocType,
 		&issuer.DSPrivateKeyPEM, &issuer.DSCertificatePEM, &issuer.IACACertificatePEM,
-		&issuer.ValidityHours, &issuer.IsActive, &issuer.CreatedAt, &issuer.UpdatedAt,
+		&issuer.ValidityHours, &issuer.IsActive, &issuer.CreatedAt, &issuer.UpdatedAt, &issuer.VaultSignerRef,
 	)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
@@ -92,7 +100,7 @@ func (r *MdocIssuerRepository) List(ctx context.Context, orgID uuid.UUID) ([]*mo
 	rows, err := r.pool.Query(ctx, `
 		SELECT id, org_id, display_name, doc_type, ds_private_key_pem,
 		       ds_certificate_pem, iaca_certificate_pem, validity_hours,
-		       is_active, created_at, updated_at
+		       is_active, created_at, updated_at, vault_signer_ref
 		FROM org_mdoc_issuers
 		WHERE org_id = $1
 		ORDER BY doc_type, created_at DESC
@@ -108,7 +116,7 @@ func (r *MdocIssuerRepository) List(ctx context.Context, orgID uuid.UUID) ([]*mo
 		if err := rows.Scan(
 			&issuer.ID, &issuer.OrgID, &issuer.DisplayName, &issuer.DocType,
 			&issuer.DSPrivateKeyPEM, &issuer.DSCertificatePEM, &issuer.IACACertificatePEM,
-			&issuer.ValidityHours, &issuer.IsActive, &issuer.CreatedAt, &issuer.UpdatedAt,
+			&issuer.ValidityHours, &issuer.IsActive, &issuer.CreatedAt, &issuer.UpdatedAt, &issuer.VaultSignerRef,
 		); err != nil {
 			return nil, err
 		}

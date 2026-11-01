@@ -559,6 +559,7 @@ func LoadFrom(path string) (*Config, error) {
 		{"oid4vci.metadata_key_file", "CLAVEX_OID4VCI_METADATA_KEY_FILE"},
 		{"oid4vci.credential_cert_file", "CLAVEX_OID4VCI_CREDENTIAL_CERT_FILE"},
 		{"oid4vci.credential_key_file", "CLAVEX_OID4VCI_CREDENTIAL_KEY_FILE"},
+		{"oid4vci.wallet_vault_profiles_file", "CLAVEX_OID4VCI_WALLET_VAULT_PROFILES_FILE"},
 		{"http.addr", "CLAVEX_HTTP_ADDR"},
 		{"http.base_domain", "CLAVEX_HTTP_BASE_DOMAIN"},
 		{"http.tls_cert_file", "CLAVEX_HTTP_TLS_CERT_FILE"},
@@ -734,6 +735,8 @@ type FGAConfig struct {
 
 // OID4VCIConfig configures optional certificate-backed issuer metadata signing.
 type OID4VCIConfig struct {
+	// WalletVaultProfilesFile is an operator-owned JSON allowlist, never tenant input.
+	WalletVaultProfilesFile string `mapstructure:"wallet_vault_profiles_file"`
 	// MetadataCertFile is a leaf-first PEM chain including its root. This signer
 	// is independent of OIDC keys and credential signing keys.
 	MetadataCertFile   string `mapstructure:"metadata_cert_file"`

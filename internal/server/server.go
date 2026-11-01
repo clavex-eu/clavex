@@ -40,6 +40,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/session"
 	"github.com/clavex-eu/clavex/internal/shield"
 	"github.com/clavex-eu/clavex/internal/ssf"
+	"github.com/clavex-eu/clavex/internal/walletsigning"
 	"github.com/clavex-eu/clavex/internal/webhook"
 	"github.com/clavex-eu/clavex/internal/worker"
 	"github.com/google/uuid"
@@ -315,7 +316,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	eidasH := handler.NewEidasHandler(pool, store)
 
 	// ── eIDAS 2.0 / OID4VCI / OID4VP / Compliance handlers ──────────────────
+	walletVaultProfiles := walletsigning.LoadRegistry(cfg.OID4VCI.WalletVaultProfilesFile)
 	oid4vciH := handler.NewOID4VCIHandler(pool, keys, walletBaseURL).
+		WithMdocSigningStorage(enc, walletVaultProfiles).
 		WithMetadataSigningFiles(cfg.OID4VCI.MetadataCertFile, cfg.OID4VCI.MetadataKeyFile).
 		WithCredentialSigningFiles(cfg.OID4VCI.CredentialCertFile, cfg.OID4VCI.CredentialKeyFile).
 		WithRedis(rdb).
@@ -1546,9 +1549,10 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		adminMdoc.GET("/iaca-roots", iacaH.List)
 		adminMdoc.DELETE("/iaca-roots/:root_id", iacaH.Delete)
 		// mdoc issuer DS keys — manage DS keypairs used for OID4VCI mso_mdoc issuance.
-		mdocIssuerH := handler.NewMdocIssuerHandler(pool)
-		adminMdoc.POST("/issuers/generate", mdocIssuerH.Generate)
-		adminMdoc.POST("/issuers", mdocIssuerH.Create)
+		mdocIssuerH := handler.NewMdocIssuerHandler(pool).WithSigningStorage(enc, walletVaultProfiles)
+		adminMdoc.GET("/vault-signers", mdocIssuerH.VaultProfiles)
+		adminMdoc.POST("/issuers/generate", mdocIssuerH.Generate, echomw.BodyLimit("4K"))
+		adminMdoc.POST("/issuers", mdocIssuerH.Create, echomw.BodyLimit("640K"))
 		adminMdoc.GET("/issuers", mdocIssuerH.List)
 		adminMdoc.DELETE("/issuers/:issuer_id", mdocIssuerH.Delete)
 

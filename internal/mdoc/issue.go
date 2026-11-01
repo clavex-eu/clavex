@@ -16,10 +16,16 @@ package mdoc
 // OID4VCI credential response when format = "mso_mdoc".
 
 import (
+	"bytes"
+	"crypto"
 	"crypto/ecdsa"
+	"crypto/elliptic"
 	"crypto/rand"
 	"crypto/sha256"
+	"crypto/x509"
+	"encoding/asn1"
 	"fmt"
+	"math/big"
 	"time"
 
 	cbor "github.com/fxamacker/cbor/v2"
@@ -47,7 +53,11 @@ type IssuanceParams struct {
 	// time.Time → tdate, []byte → bstr, etc.).
 	Attributes map[string]interface{}
 	// DSKey is the Document Signer ECDSA private key (P-256 recommended).
-	DSKey *ecdsa.PrivateKey
+	DSKey crypto.Signer
+	// DSChainDER optionally supplies leaf/intermediates, excluding the root.
+	DSChainDER [][]byte
+	// DSCertificateValidUntil optionally caps validity by the entire chain.
+	DSCertificateValidUntil time.Time
 	// DSCertDER is the DER-encoded Document Signer certificate.
 	// It is embedded in the IssuerAuth COSE_Sign1 x5chain protected header.
 	DSCertDER []byte
@@ -68,9 +78,37 @@ func IssueMdoc(p IssuanceParams) ([]byte, error) {
 	if p.ValidityHours <= 0 {
 		p.ValidityHours = 720
 	}
-	// Truncate to hour boundary — RFC 9901 §10.1 linkability prevention.
+	cert, err := x509.ParseCertificate(p.DSCertDER)
+	if err != nil || p.DSKey == nil {
+		return nil, fmt.Errorf("mdoc issue: missing DS certificate or signer")
+	}
+	public, ok := p.DSKey.Public().(*ecdsa.PublicKey)
+	if !ok || public.Curve != elliptic.P256() {
+		return nil, fmt.Errorf("mdoc issue: ES256 requires P-256")
+	}
+	expected, ok := cert.PublicKey.(*ecdsa.PublicKey)
+	if !ok || !public.Equal(expected) {
+		return nil, fmt.Errorf("mdoc issue: DS certificate/key mismatch")
+	}
+	current := time.Now().UTC()
+	if current.Before(cert.NotBefore) || !current.Before(cert.NotAfter) {
+		return nil, fmt.Errorf("mdoc issue: DS certificate is not currently valid")
+	}
+	// Truncate to hour boundary where allowed by the certificate.
 	now := time.Now().UTC().Truncate(time.Hour)
+	if now.Before(cert.NotBefore) {
+		now = cert.NotBefore
+	}
 	validUntil := now.Add(time.Duration(p.ValidityHours) * time.Hour)
+	if validUntil.After(cert.NotAfter) {
+		validUntil = cert.NotAfter
+	}
+	if !p.DSCertificateValidUntil.IsZero() && validUntil.After(p.DSCertificateValidUntil) {
+		validUntil = p.DSCertificateValidUntil
+	}
+	if !validUntil.After(current) || !validUntil.After(now) {
+		return nil, fmt.Errorf("mdoc issue: certificate validity exhausted")
+	}
 
 	// ── 1. Build IssuerSignedItems ────────────────────────────────────────────
 	type itemEntry struct {
@@ -153,7 +191,7 @@ func IssueMdoc(p IssuanceParams) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("mdoc issue: encode MSO: %w", err)
 	}
-	issuerAuth, err := signMSO(msoCBOR, p.DSKey, p.DSCertDER)
+	issuerAuth, err := signMSO(msoCBOR, p.DSKey, p.DSCertDER, p.DSChainDER...)
 	if err != nil {
 		return nil, fmt.Errorf("mdoc issue: sign MSO: %w", err)
 	}
@@ -237,7 +275,7 @@ func FillMdlMandatory(attrs map[string]interface{}) {
 // DataItem.getAsCoseSign1() → CoseSign1.fromDataItem() which requires the
 // issuerAuth DataItem to be a bare CborArray, NOT a tag-18 Tagged item.
 // Emitting tag 18 here would cause fromDataItem to fail with "Failed requirement".
-func signMSO(msoCBOR []byte, dsKey *ecdsa.PrivateKey, dsCertDER []byte) ([]byte, error) {
+func signMSO(msoCBOR []byte, dsKey crypto.Signer, dsCertDER []byte, chain ...[]byte) ([]byte, error) {
 	// Protected header: {1: -7} — alg = ES256 only.
 	protHdrBytes, err := cbor.Marshal(map[interface{}]interface{}{
 		int64(1): int64(-7),
@@ -246,9 +284,16 @@ func signMSO(msoCBOR []byte, dsKey *ecdsa.PrivateKey, dsCertDER []byte) ([]byte,
 		return nil, fmt.Errorf("signMSO: protected header: %w", err)
 	}
 
+	var x5chain any = dsCertDER
+	if len(chain) > 1 {
+		if !bytes.Equal(chain[0], dsCertDER) {
+			return nil, fmt.Errorf("signMSO: invalid leaf in chain")
+		}
+		x5chain = chain
+	}
 	// Unprotected header: {33: dsCertDER} — x5chain per ISO 18013-5 §9.1.2.4.
 	unprotHdrBytes, err := cbor.Marshal(map[interface{}]interface{}{
-		int64(33): dsCertDER,
+		int64(33): x5chain,
 	})
 	if err != nil {
 		return nil, fmt.Errorf("signMSO: unprotected header: %w", err)
@@ -284,16 +329,21 @@ func signMSO(msoCBOR []byte, dsKey *ecdsa.PrivateKey, dsCertDER []byte) ([]byte,
 	}
 
 	digest := sha256.Sum256(sigStruct)
-	r, s, err := ecdsa.Sign(rand.Reader, dsKey, digest[:])
+	signature, err := dsKey.Sign(rand.Reader, digest[:], crypto.SHA256)
 	if err != nil {
-		return nil, fmt.Errorf("signMSO: ECDSA sign: %w", err)
+		return nil, fmt.Errorf("signMSO: signing failed: %w", err)
 	}
-	curveSize := (dsKey.Params().N.BitLen() + 7) / 8
-	sig := make([]byte, 2*curveSize)
-	rBytes := r.Bytes()
-	sBytes := s.Bytes()
-	copy(sig[curveSize-len(rBytes):curveSize], rBytes)
-	copy(sig[2*curveSize-len(sBytes):], sBytes)
+	public, ok := dsKey.Public().(*ecdsa.PublicKey)
+	if !ok || !ecdsa.VerifyASN1(public, digest[:], signature) {
+		return nil, fmt.Errorf("signMSO: invalid signer signature")
+	}
+	var values struct{ R, S *big.Int }
+	if rest, err := asn1.Unmarshal(signature, &values); err != nil || len(rest) != 0 || values.R == nil || values.S == nil {
+		return nil, fmt.Errorf("signMSO: invalid ECDSA signature")
+	}
+	sig := make([]byte, 64)
+	values.R.FillBytes(sig[:32])
+	values.S.FillBytes(sig[32:])
 
 	sign1 := coseSig1{
 		Protected:   protHdrBytes,

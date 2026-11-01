@@ -37,44 +37,109 @@ mdoc uses its existing tenant/document-type DS configuration, through
 `GET/POST /api/v1/organizations/:org_id/mdoc/issuers`. A DS keypair must be
 configured for each intended document type; metadata signing does not create it.
 
-## Administration UI and Vault: open work
+## Tenant administration: mdoc Document Signers
 
-The current CA management UI only manages **verifier trust anchors**. There is
-no complete UI to configure metadata/SD-JWT signing pairs, and the existing mdoc
-management API has no corresponding management panel. Do not describe the file
-configuration above as tenant self-service.
+**Clavex Wallet → Issuing certificates · mdoc** manages the active signer for
+mDL, PID mdoc or a custom document type. It supports:
 
-Vault PKI can issue the public signing certificates and publish their CRLs.
-Issuing a leaf with Vault PKI's `issue` operation returns a private key; storing
-that leaf/key in Clavex does **not** provide non-exportable remote signing.
-Keeping only the root CA key in Vault also does not keep leaf signing keys there.
+- importing one public P-256 DS certificate, its IACA chain (root last), and
+  either one local PEM private key or an authorised Vault Transit profile;
+- inspecting certificate expiry, SHA-256 fingerprint and signing backend;
+- explicitly replacing an existing signer or confirming its removal.
 
-Clavex has an existing OIDC RSA Transit adapter, but these new file-backed wallet
-signers are not connected to it. Wallet remote signing needs its own tested
-certificate/key binding and explicit key-version handling. The current mdoc
-model stores DS private keys as PEM in the database (the API excludes this field
-from JSON); it needs a migration to encrypted storage or remote key references
-before presenting this as hardened production key custody.
+These endpoints inherit the existing organisation access and `clients` resource
+permission checks. Imports validate key/certificate matching, current chain
+validity, signing key usage and leaf/root roles. The IACA remains an explicit
+configuration input, not evidence that an external wallet trusts the issuer.
+The receiving wallet remains responsible for its trust and certificate status
+policy; importing a signer does not register a national PID or mDL issuer.
 
-Recommended next work, in order:
+New local-key API writes, including sandbox generation, encrypt the key using
+Clavex's configured encryption key. Read responses contain an explicit public
+projection and never return private keys. Migration **193** adds a Vault
+reference without rewriting existing rows or legacy plaintext keys; the latter
+remain readable. Encryption of historical keys requires a separate deliberate
+migration. Back up and retain the installation encryption key. Downgrade is
+blocked while external references or new encrypted key envelopes remain; an
+older binary cannot resolve these signing configurations.
 
-1. Add tenant-scoped signer profiles for metadata, SD-JWT and mdoc, with explicit
-   permissions, public certificate metadata and safe rotation. Preserve old
-   verification keys and existing tenant records; no implicit replacement.
-2. Add Vault provider connections managed server-side. Store protected
-   credentials outside browser responses; allow tenants to select only providers
-   and key references authorised for them. Pin Transit key versions and verify
-   that each certificate matches the remote public key. Do not accept arbitrary
-   tenant-controlled URLs, paths or cross-tenant key names.
-3. Support non-exportable Transit/HSM signing and CSR-based PKI issuance, then
-   add the matching UI: certificate import, backend selection, CSR, status and
-   expiry, and an explicit rotation action. PKI issuance/revocation and Transit
-   signing must be shown as separate operations.
-4. Test authorisation, isolation, key mismatch, Vault failure/rotation, expired
-   or revoked certificates, and that no private key or provider token is returned
-   by read APIs, audit logs or browser error messages.
+A replacement requires `replace_existing: true`; omission returns HTTP 409 when
+an active signer already exists. Existing credentials are not reissued or
+revoked. Keep the previous public trust material available to consumers until
+old credentials expire; the replacement action is not a trust-distribution or
+certificate-rotation protocol. The generator endpoint creates a **sandbox DS
+leaf**, not an IACA CA, and also requires explicit replacement confirmation.
 
-This is an implementation gap, not a completed UI/Vault feature.
+mdoc signing now accepts `crypto.Signer`, so Transit signing does not require
+exporting a private key. COSE signatures are verified against the configured DS
+public key before use. The MSO validity is capped by the configured certificate
+chain expiry, and includes intermediate DS certificates when present.
+
+## Vault Transit configuration for mdoc
+
+Only an installation administrator can configure provider connections. Set
+`oid4vci.wallet_vault_profiles_file` (environment variable
+`CLAVEX_OID4VCI_WALLET_VAULT_PROFILES_FILE`) to an operator-owned JSON file:
+
+```json
+[
+  {
+    "id": "tenant-mdoc-v2",
+    "label": "Tenant mdoc signing key",
+    "org_id": "11111111-1111-4111-8111-111111111111",
+    "address": "https://vault.example:8200",
+    "ca_file": "/run/secrets/vault-tls-ca.pem",
+    "token_env": "CLAVEX_WALLET_VAULT_TOKEN",
+    "namespace": "",
+    "mount": "transit",
+    "key": "tenant-mdoc",
+    "version": 2
+  }
+]
+```
+
+`ca_file` and `namespace` are optional. TLS verification remains enabled and
+redirects are not followed. Endpoint addresses, tokens, mount/key paths and CA
+files cannot be supplied by a tenant API request. The tenant sees only the ID,
+label and pinned version of its own profiles from `GET /mdoc/vault-signers`.
+Invalid configuration fails closed; no implicit fallback to a local key occurs.
+Configuration is loaded at application startup; editing the file alone does not
+reload an already running process.
+
+Use a least-privilege Vault token with `read` on `transit/keys/tenant-mdoc` and
+`update` on `transit/sign/tenant-mdoc` (adjust the mount and key). No key creation,
+rotation, export, PKI issuance or revocation capability is required by Clavex.
+The token value must be supplied outside Git through the named environment
+variable. Provision a separate key/profile per tenant where key isolation is
+required; cross-tenant assignment is an explicit installation decision.
+
+Resolution checks the pinned version's public key against the DS certificate,
+requires `ecdsa-p256`, and rejects exportable keys, plaintext backups and derived
+keys. Saving a Vault-backed signer also performs a signing probe. Every returned
+signature must have the configured `vault:vN:` envelope and verify against the
+DS public key. Vault errors are sanitised; no provider response body or token is
+returned to the browser. Requests have bounded timeouts and response sizes.
+
+This integration has automated TLS-backed mock-Vault tests. It has not been
+validated against the operator's live Vault instance, and adding configuration
+or running migrations is a separate deployment action.
+
+Vault PKI certificate issuance and Transit signing are distinct. PKI's `issue`
+operation returns a leaf private key; storing that key in Clavex does **not**
+provide non-exportable remote signing. For Transit, arrange certificate issuance
+against the existing non-exportable key outside this UI. No CSR, issuance,
+renewal, revocation or trust-catalog changes are performed automatically.
+[Vault Transit API reference](https://developer.hashicorp.com/vault/api-docs/secret/transit).
+
+## Remaining administration work
+
+Metadata and SD-JWT signing still use the installation file configuration above,
+not tenant self-service or this mdoc Transit adapter. Tenant-scoped profiles for
+those purposes require preserving historical verification keys for deferred
+issuance and local account/CIBA verification during rotation. CSR-based PKI
+workflows, renewal, certificate revocation checks at signing time, and broader
+algorithm support remain separate work. Do not describe this mdoc panel as
+complete management of every wallet certificate.
 
 ## Interoperability limits
 

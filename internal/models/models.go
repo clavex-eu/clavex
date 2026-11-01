@@ -1152,9 +1152,11 @@ type OrgMdocIssuer struct {
 	OrgID       uuid.UUID `db:"org_id"               json:"org_id"`
 	DisplayName string    `db:"display_name"         json:"display_name"`
 	DocType     string    `db:"doc_type"             json:"doc_type"`
-	// DSPrivateKeyPEM is the PKCS#8 PEM-encoded ECDSA private key.
+	// DSPrivateKeyPEM stores an encrypted key envelope for new API writes,
+	// or a legacy PEM-encoded ECDSA private key.
 	// Nil when the key is managed by an external KMS.
 	DSPrivateKeyPEM    *string   `db:"ds_private_key_pem"   json:"-"`
+	VaultSignerRef     string    `db:"vault_signer_ref" json:"vault_signer_ref,omitempty"`
 	DSCertificatePEM   string    `db:"ds_certificate_pem"   json:"ds_certificate_pem"`
 	IACACertificatePEM *string   `db:"iaca_certificate_pem" json:"iaca_certificate_pem,omitempty"`
 	ValidityHours      int       `db:"validity_hours"       json:"validity_hours"`

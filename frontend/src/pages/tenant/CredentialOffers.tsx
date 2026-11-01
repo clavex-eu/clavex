@@ -1,4 +1,5 @@
 import { useEffect, useState, useCallback } from 'react'
+import WalletIssuerCertificates from './WalletIssuerCertificates'
 import { useAuthStore } from '@/stores/auth'
 import api, { toArr } from '@/lib/api'
 import toast from 'react-hot-toast'
@@ -540,6 +541,8 @@ export default function CredentialOffersPage() {
           </button>
         </div>
       </div>
+
+      <WalletIssuerCertificates key={orgId} orgId={orgId} />
 
       {/* New offer result banner */}
       {newOffer && (

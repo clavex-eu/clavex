@@ -179,6 +179,10 @@ auth:
 # that issuer, and any registration required by their ecosystem.
 #
 # oid4vci:
+  # Optional operator-owned JSON allowlist of per-tenant mdoc Transit keys.
+  # The tenant UI receives only authorised profile IDs/labels, never tokens.
+  # See docs/wallet-issuer-signing.md. No Vault provisioning is performed.
+  wallet_vault_profiles_file: ""
 #   metadata_cert_file: "/etc/clavex/issuer/metadata-chain.pem"
 #   metadata_key_file: "/etc/clavex/issuer/metadata-key.pem"
 #   credential_cert_file: "/etc/clavex/issuer/sdjwt-chain.pem"

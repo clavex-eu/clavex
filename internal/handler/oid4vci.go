@@ -19,6 +19,7 @@ import (
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
+	secretcrypto "github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/federation"
 	"github.com/clavex-eu/clavex/internal/mailer"
 	"github.com/clavex-eu/clavex/internal/mdoc"
@@ -28,6 +29,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/clavex-eu/clavex/internal/sms"
 	"github.com/clavex-eu/clavex/internal/ssf"
+	"github.com/clavex-eu/clavex/internal/walletsigning"
 	"github.com/fxamacker/cbor/v2"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
@@ -70,9 +72,18 @@ type OID4VCIHandler struct {
 	smtp                 *repository.SMTPRepository
 	rdb                  redis.UniversalClient
 	mdocIssuers          *repository.MdocIssuerRepository
+	mdocEncryptor        *secretcrypto.Encryptor
+	mdocVault            *walletsigning.Registry
 	statusDispatcher     *oid4w.CredStatusDispatcher
 	ssfDisp              *ssf.Dispatcher
 	revnet               *federation.RevNetDispatcher
+}
+
+// WithMdocSigningStorage resolves encrypted local and authorised Vault DS keys.
+func (h *OID4VCIHandler) WithMdocSigningStorage(enc *secretcrypto.Encryptor, vault *walletsigning.Registry) *OID4VCIHandler {
+	h.mdocEncryptor = enc
+	h.mdocVault = vault
+	return h
 }
 
 type baseURLProvider interface {
@@ -2435,9 +2446,13 @@ func (h *OID4VCIHandler) issueMdocCredential(
 		return "", fmt.Errorf("mdoc: no active DS issuer configured for docType %q — upload a DS key via POST /mdoc/issuers", docType)
 	}
 
-	dsKey, err := repository.ParseDSKey(issuerRec)
+	dsKey, dsChain, err := walletsigning.ResolveMdoc(issuerRec, h.mdocEncryptor, h.mdocVault)
 	if err != nil {
 		return "", fmt.Errorf("mdoc: parse DS key: %w", err)
+	}
+	dsExpiry, err := walletsigning.MdocExpiry(issuerRec)
+	if err != nil {
+		return "", fmt.Errorf("mdoc: invalid certificate validity: %w", err)
 	}
 	dsCertDER, err := repository.ParseDSCert(issuerRec)
 	if err != nil {
@@ -2464,14 +2479,16 @@ func (h *OID4VCIHandler) issueMdocCredential(
 		return "", err
 	}
 	issuerSignedCBOR, err := mdoc.IssueMdoc(mdoc.IssuanceParams{
-		DocType:         docType,
-		StatusList:      statusCBOR,
-		Namespace:       namespace,
-		Attributes:      attrs,
-		DSKey:           dsKey,
-		DSCertDER:       dsCertDER,
-		DevicePublicKey: devicePub,
-		ValidityHours:   issuerRec.ValidityHours,
+		DocType:                 docType,
+		StatusList:              statusCBOR,
+		Namespace:               namespace,
+		Attributes:              attrs,
+		DSKey:                   dsKey,
+		DSChainDER:              dsChain,
+		DSCertificateValidUntil: dsExpiry,
+		DSCertDER:               dsCertDER,
+		DevicePublicKey:         devicePub,
+		ValidityHours:           issuerRec.ValidityHours,
 	})
 	if err != nil {
 		return "", fmt.Errorf("mdoc: IssueMdoc: %w", err)
