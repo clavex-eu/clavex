@@ -20,7 +20,7 @@ it against a production tenant database. Configure the same test database and
 Redis for migration, seed and backend commands.
 
 ```sh
-make conformance-tools
+make conformance-tools  # reproduction environment: Python 3.12
 make conformance-fixtures ARGS="--backend-origin https://issuer.example --suite-origin https://localhost.emobix.co.uk:8443"
 ```
 

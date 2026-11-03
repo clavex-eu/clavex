@@ -87,5 +87,5 @@ Validation completed locally:
   configurations and 27 certificates with distinct FAPI keys and consistent
   key-attestation trust.
 
-The checked Python tool versions are pinned in `requirements.txt`. Resolved
+The checked Python tool versions are pinned in `requirements.lock` (Python 3.12). Resolved
 plans, private fixture material and test database state are excluded from Git.

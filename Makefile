@@ -387,5 +387,5 @@ clean:
 .PHONY: conformance-tools conformance-fixtures
 conformance-tools:
 	python3 -m venv conformance/.venv
-	conformance/.venv/bin/pip install -r conformance/requirements.txt
+	conformance/.venv/bin/pip install -r conformance/requirements.lock
 	conformance/.venv/bin/playwright install chromium
