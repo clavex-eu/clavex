@@ -192,10 +192,12 @@ def render_md(results, op_base, suite_url, run_ts):
         f"**Suite:** [{suite_url}]({suite_url})\n"
     )
     lines.append(
-        "_Results are updated automatically by the nightly CI job "
-        "(`.github/workflows/conformance.yml`). "
-        "🔍 REVIEW tests require a manual screenshot upload on the suite UI — "
-        "they are functionally correct._\n"
+        "_Results are derived from suite records. "
+        "REVIEW requires case-specific human evidence and validation; "
+        "it is not automatically passed. Skipped and incomplete cases are not passes. "
+        "See the reproduction guide at `conformance/REPRODUCIBILITY.md` for "
+        "version scope, reporting limitations and tooling availability. "
+        "Suite results are not certification._\n"
     )
 
     # Summary table

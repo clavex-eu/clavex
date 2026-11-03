@@ -1,6 +1,7 @@
 # Clavex
 
 <!-- Conformance badges — auto-updated by nightly CI from CONFORMANCE.md -->
+<!-- Version-scoped reproduction and sanitized evidence are linked below. -->
 [![FAPI 2.0](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fclavex-eu%2Fclavex%2Fmain%2Fconformance-fapi-badge.json)](CONFORMANCE.md)
 [![JARM](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fclavex-eu%2Fclavex%2Fmain%2Fconformance-jarm-badge.json)](CONFORMANCE.md)
 [![mTLS](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fclavex-eu%2Fclavex%2Fmain%2Fconformance-mtls-badge.json)](CONFORMANCE.md)
@@ -13,6 +14,8 @@
 [![Auth uptime](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fclavex-eu%2Fupptime%2FHEAD%2Fapi%2Fauth%2Fuptime.json)](https://status.clavex.eu)
 [![Auth response time](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fclavex-eu%2Fupptime%2FHEAD%2Fapi%2Fauth%2Fresponse-time.json)](https://status.clavex.eu)
 [![Discord](https://img.shields.io/discord/1522651912183480533?label=Discord&logo=discord&logoColor=white&color=5865F2)](https://discord.gg/WT8pRXHgjC)
+
+**Reproduce and inspect conformance results:** [versioned procedure and evidence](conformance/REPRODUCIBILITY.md).
 
 **Clavex** is a self-hosted, open-core Identity & Access Management platform built for modern infrastructure. It speaks OIDC/OAuth 2.0, SAML 2.0, SCIM 2.0, FAPI 2.0, and the EU Digital Identity Wallet stack (eIDAS 2.0).
 

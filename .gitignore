@@ -74,3 +74,9 @@ regulatory-monitor
 .agents/
 .claude/
 skills-lock.json
+
+# Local conformance evidence/tool caches
+conformance/.local/
+
+# Local conformance evidence/tool caches
+__pycache__/

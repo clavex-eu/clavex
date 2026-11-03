@@ -1,0 +1,50 @@
+{
+  "description": "Recorded interaction and deferral configuration; not an expectation override or proof of manual review.",
+  "browser_behaviors": {
+    "fapi2-security-profile-id2-user-rejects-authentication": {
+      "action": "cancel",
+      "reason": "The module expects access_denied after the user cancels authentication."
+    },
+    "fapi2-security-profile-id2-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": {
+      "action": "visit_then_login",
+      "reason": "Open the first queued request without authenticating; authenticate only when the suite queues its second visit."
+    },
+    "fapi2-security-profile-final-user-rejects-authentication": {
+      "action": "cancel",
+      "reason": "The module expects access_denied after the user cancels authentication."
+    },
+    "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": {
+      "action": "visit_then_login",
+      "reason": "Open the first queued request without authenticating; authenticate only when the suite queues its second visit."
+    },
+    "fapi-ciba-id1-auth-req-id-expired": {
+      "action": "no_interaction",
+      "reason": "The suite tests an unauthorised request expiring after 10 seconds; browser login would change the scenario."
+    }
+  },
+  "manual_evidence_deferrals": {
+    "fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request": "Manual visual evidence required: ExpectRedirectUriMissingErrorPage",
+    "fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails": "Manual visual evidence required: ExpectRequestObjectMissingRedirectUriErrorPage",
+    "fapi2-security-profile-final-par-attempt-reuse-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+    "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+    "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": "Manual visual evidence required: ExpectLoginPage",
+    "fapi2-security-profile-final-plain-fapi-tolerate-unregistered-redirect-uri": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+    "fapi2-security-profile-id2-ensure-redirect-uri-in-authorization-request": "Manual visual evidence required: ExpectRedirectUriMissingErrorPage",
+    "fapi2-security-profile-id2-ensure-request-object-without-redirect-uri-fails": "Manual visual evidence required: ExpectRequestObjectMissingRedirectUriErrorPage",
+    "fapi2-security-profile-id2-par-attempt-reuse-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+    "fapi2-security-profile-id2-par-attempt-to-use-expired-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+    "fapi2-security-profile-id2-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": "Manual visual evidence required: ExpectLoginPage",
+    "fapi2-security-profile-id2-plain-fapi-ensure-registered-redirect-uri": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+    "oidcc-ensure-redirect-uri-in-authorization-request": "Manual visual evidence required: ExpectRedirectUriMissingErrorPage",
+    "oidcc-ensure-registered-redirect-uri": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+    "oidcc-max-age-1": "Manual visual evidence required: ExpectSecondLoginPage",
+    "oidcc-prompt-login": "Manual visual evidence required: ExpectSecondLoginPage",
+    "oidcc-redirect-uri-query-added": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+    "oidcc-redirect-uri-query-mismatch": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+    "oidcc-registration-logo-uri": "Manual visual evidence required: ExpectLoginPageWithLogo",
+    "oidcc-registration-policy-uri": "Manual visual evidence required: ExpectLoginPageWithPolicyLink",
+    "oidcc-registration-tos-uri": "Manual visual evidence required: ExpectLoginPageWithTosLink"
+  },
+  "key_rotation_behavior": "When execution is requested, return local MANUAL_REQUIRED before creating a module; historical failed instances stay in the raw index.",
+  "verdict_mapping": "Identity: raw result is retained; raw status is the fallback if no verdict exists. Browser navigation is not a pass."
+}

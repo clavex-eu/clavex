@@ -1,0 +1,227 @@
+{
+  "snapshot_date_utc": "2026-11-03",
+  "scope": "Combined latest-instance snapshot of 20 plans; not a single continuous run or a certification claim.",
+  "suite": {
+    "official_repository": "https://gitlab.com/openid/conformance-suite.git",
+    "suite_commit": "23353b36957d6466010de767c812d2c91ed37638",
+    "source_worktree_clean": true,
+    "jar_recorded_commit": "23353b36957d6466010de767c812d2c91ed37638",
+    "jar_recorded_dirty": false,
+    "jar_sha256": "1bb3eeb4d7c7f0637438ff99a18e149d38c931d628bd1ce547f1d21ceb7b0883",
+    "scope": "Source checkout and JAR-recorded metadata checked; not a bytecode attestation or a conformance verdict.",
+    "runtime_mounted_jar_sha256": "1bb3eeb4d7c7f0637438ff99a18e149d38c931d628bd1ce547f1d21ceb7b0883"
+  },
+  "backend": {
+    "repository_visibility": "private",
+    "source_commit": "cd9f16cbf42052f794e5f0f7c58135c18df610c3",
+    "image": "ghcr.io/fcraviolatti/clavex_private:conformance-cd9f16cb",
+    "image_digest": "sha256:7cf71a12b2c3e81428fe287cd8fe4a5476cc418ad386a5d3f35a5c70cfee2bd9",
+    "anonymous_registry_access": "not available in the read-only check"
+  },
+  "public_checkout_reviewed": "a641dda",
+  "public_baseline_alignment": "pending; current public checkout lacks matching backend/tooling",
+  "tooling_revision": "8deee7311bc297ecdf337e53e4f48f89869dd5b1",
+  "runner_packages": {
+    "playwright": "1.64.1",
+    "requests": "2.34.2",
+    "browser": "Chrome for Testing 156.0.8078.4"
+  },
+  "actual_historical_runner_command": null,
+  "command_note": "Aggregate includes targeted reruns. Exact invocations were not captured in this manifest; guide commands are reproduction instructions, not claimed historical command logs.",
+  "raw_outcomes": {
+    "PASSED": 594,
+    "SKIPPED": 30,
+    "INTERRUPTED": 49,
+    "WARNING": 15,
+    "FAILED": 2,
+    "NOT_RUN": 27
+  },
+  "operational_summary": {
+    "PASSED": 594,
+    "active_FAILED": 0,
+    "SKIPPED": 30,
+    "OTHER_PENDING": 93
+  },
+  "operational_summary_basis": "Derived from operator summaries with the latest Federation rerun; deferred historical rotations remain FAILED in the raw index.",
+  "deferred_historical_failures": [
+    {
+      "plan_alias": "clavex-basic-post",
+      "module": "oidcc-server-rotate-keys",
+      "instance_id": "fmPEnKKlv7zJNHX",
+      "raw_result": "FAILED",
+      "operational_classification": "deferred historical key rotation; not counted as passed"
+    },
+    {
+      "plan_alias": "clavex-dynamic",
+      "module": "oidcc-server-rotate-keys",
+      "instance_id": "y50gH2aMu1GKX8B",
+      "raw_result": "FAILED",
+      "operational_classification": "deferred historical key rotation; not counted as passed"
+    }
+  ],
+  "manual_evidence_completed_in_this_snapshot": false,
+  "plans": [
+    {
+      "alias": "clavex-basic",
+      "plan_id": "7FjuD18NyUN8e",
+      "started": "2026-11-02T10:29:18.660889114Z",
+      "module_count": 35
+    },
+    {
+      "alias": "clavex-basic-post",
+      "plan_id": "iFSTvLVJqt862",
+      "started": "2026-11-02T10:29:19.064888867Z",
+      "module_count": 36
+    },
+    {
+      "alias": "clavex-config",
+      "plan_id": "ElJc5DW6M2BUM",
+      "started": "2026-11-02T10:29:19.266211205Z",
+      "module_count": 1
+    },
+    {
+      "alias": "clavex-dynamic",
+      "plan_id": "C2tO9oFce395N",
+      "started": "2026-11-02T10:29:19.510960777Z",
+      "module_count": 23
+    },
+    {
+      "alias": "clavex-form-post",
+      "plan_id": "Ira9Mipxva2UC",
+      "started": "2026-11-02T10:29:19.833259063Z",
+      "module_count": 36
+    },
+    {
+      "alias": "clavex-hybrid",
+      "plan_id": "DcwqdsRj6ElUa",
+      "started": "2026-11-02T10:29:20.056896980Z",
+      "module_count": 36
+    },
+    {
+      "alias": "clavex-par",
+      "plan_id": "ghvEaXNUxcPUC",
+      "started": "2026-11-02T10:29:20.270195287Z",
+      "module_count": 36
+    },
+    {
+      "alias": "clavex-fapi",
+      "plan_id": "mgiY82vx2R4av",
+      "started": "2026-11-02T10:29:20.505419692Z",
+      "module_count": 58
+    },
+    {
+      "alias": "clavex-fapi-mtls",
+      "plan_id": "GtEWxfDuEMIWd",
+      "started": "2026-11-02T10:29:20.771049955Z",
+      "module_count": 49
+    },
+    {
+      "alias": "clavex-fapi-jarm",
+      "plan_id": "f1kU5f93QOfHe",
+      "started": "2026-11-02T10:29:21.031081709Z",
+      "module_count": 71
+    },
+    {
+      "alias": "clavex-oid4vci-issuer",
+      "plan_id": "EEQRKHppFTxlo",
+      "started": "2026-11-02T10:29:21.328238317Z",
+      "module_count": 14
+    },
+    {
+      "alias": "clavex-oid4vci-issuer-encrypted",
+      "plan_id": "fhRVBq89wOq3V",
+      "started": "2026-11-02T10:29:21.586679550Z",
+      "module_count": 15
+    },
+    {
+      "alias": "clavex-haip",
+      "plan_id": "6gkUG2LimmaTH",
+      "started": "2026-11-03T08:50:31.312551547Z",
+      "module_count": 63
+    },
+    {
+      "alias": "clavex-fapi2-ciba-poll",
+      "plan_id": "hGaeorG4d0VxD",
+      "started": "2026-11-02T10:29:22.447966607Z",
+      "module_count": 34
+    },
+    {
+      "alias": "clavex-oid4vci-issuer-mso-mdoc",
+      "plan_id": "ud5gX0NqvSD7C",
+      "started": "2026-11-03T11:05:56.717340343Z",
+      "module_count": 14
+    },
+    {
+      "alias": "clavex-oid4vci-issuer-mso-mdoc-encrypted",
+      "plan_id": "1ISj3EqT8xnK0",
+      "started": "2026-11-03T11:06:00.027178889Z",
+      "module_count": 15
+    },
+    {
+      "alias": "clavex-openid-federation-op",
+      "plan_id": "MmECZwnCa63e4",
+      "started": "2026-11-03T11:06:03.913584305Z",
+      "module_count": 20
+    },
+    {
+      "alias": "clavex-fapi-final-dpop",
+      "plan_id": "Ypjg9bDehhIPT",
+      "started": "2026-11-02T19:38:43.194625166Z",
+      "module_count": 52
+    },
+    {
+      "alias": "clavex-fapi-final-mtls",
+      "plan_id": "fYU12clxu4JnR",
+      "started": "2026-11-02T19:38:43.601292934Z",
+      "module_count": 43
+    },
+    {
+      "alias": "clavex-fapi-jarm-final",
+      "plan_id": "lrBEcykPZMFFD",
+      "started": "2026-11-02T19:38:43.926639731Z",
+      "module_count": 66
+    }
+  ],
+  "configuration_file_sha256": {
+    "conformance/authzen-plan.json": "e2c6b640204ad8bc7583fcdec184514369c260676f464f24a51187b00d1f9f89",
+    "conformance/device-flow-plan.json": "b7d47b4ff0ea7d4f026666dddbc8d27e3d596ec00920c24485ea677f723e0632",
+    "conformance/fapi2-baseline-dpop-plan.json": "2e2efd46cd67f20ab2382fcd69a26a14d8ea5ff458602ab7fdc55dc3c89b6d85",
+    "conformance/fapi2-baseline-mtls-plan.json": "aea8cb0d2d8f67a242bef383a26b59d935597b457d0f1a77a28740ccf64721b7",
+    "conformance/fapi2-ciba-poll-plan.json": "db415028e40658f56fb9b104ad7f9fec363773b54981ddf8f14ede3d86310162",
+    "conformance/fapi2-final-dpop-plan.json": "9c382d6255f644da50872f164a9a2f81d9694a5bf8b9ca7dfd391182f73849d1",
+    "conformance/fapi2-final-mtls-plan.json": "acafe30bb5f4d23b323244cb1be25e3440f301fe6b4c570729fabdb2be988027",
+    "conformance/fapi2-message-signing-final-plan.json": "fc65252c80c6dccd53e3f00f2b189ad120820489fd759c02f30f374808378f09",
+    "conformance/fapi2-message-signing-plan.json": "dcf9a993803da769680a5515d95b97cc23a47b8134b9b66b1447413cdf4f6386",
+    "conformance/haip-plan.json": "03a12bfe56432fbb6cfd1c00aafebc515f25d12a674a41cee51c7673a3653501",
+    "conformance/introspection-test-plan.json": "bd8d3597dc83d1c570cc0b3ae2f2bb2d809f556658474745057eca436d090df5",
+    "conformance/oid4vci-issuer-encrypted-plan.json": "d3ddd0e6b4d9c4ea577c6effe06886db81caf9ad463720841b679cdfdf6213f4",
+    "conformance/oid4vci-issuer-mso-mdoc-encrypted-plan.json": "0154fc8ee25c52d3f00f13c443baeccaabbe29159f88942ee8a33b0fe715d002",
+    "conformance/oid4vci-issuer-mso-mdoc-plan.json": "5743fdad2a08d0be283c6a121d7dd16d8292ed43dfc590ed2b57988ddc03ec30",
+    "conformance/oid4vci-issuer-plan.json": "d629fe3775470986d9d21ea9598e1bce854e04f5a6f4ad7a11feeb9b8899b6ea",
+    "conformance/oid4vci-issuer-pre-auth-encrypted-plan.json": "3d1dcaf7bc2d4e7750002ef7a0389aa006e55ca795c2c408198a9d9f2ad9ee45",
+    "conformance/oid4vci-issuer-pre-auth-plan.json": "0172cc22dc063a48592e80727986f73d6979c3a58fccaa0722ba7858987f1f4a",
+    "conformance/oid4vp-verifier-mdoc-plan.json": "92a3ccf6c49c024a192f80f5566dffbc7d2e70f7885c596367b50ece9e0e12da",
+    "conformance/oid4vp-verifier-mdoc-signed-encrypted-plan.json": "edb2d45dde4ad59b65ab8268f130651b40d81c1fd3f6ff0193d9ce9e2a1a439d",
+    "conformance/oid4vp-verifier-plan.json": "9e5c995affa0302c31c8db05890399fbee2a56f1481f412a222b6235a3cff1f4",
+    "conformance/oid4vp-verifier-signed-encrypted-plan.json": "9a03e20509c7728aaea71d65c7a7ee6f056df0368e467d0aadd35630fe35c9d3",
+    "conformance/oidcc-basic-plan.json": "5b893b3975e58e32fa3b980bee92742ce567fb695cb83730e2129f72cf5081f1",
+    "conformance/oidcc-basic-post-plan.json": "45d35a0da85e2eb290e1b6cb333cd84515a81782efb8596aaebf1672ae130fe9",
+    "conformance/oidcc-config-plan.json": "85a5823dffb5d9d46b37901a3fe561c0b5676815b07441a7c01bcd2963d07b20",
+    "conformance/oidcc-dynamic-plan.json": "4a22d6d5dd4d4469ffd0294b703e1fcb80a88c56fae80a56247ad17ed5ae7447",
+    "conformance/oidcc-form-post-plan.json": "d5c8bdeb305df4d447ad38e5009bc0fbe7bc44f50a1a13c4c22f73e648df7b16",
+    "conformance/oidcc-hybrid-plan.json": "fb3523fe44f1e439c0c0e9036229426cd1be7c0a11a82bb5b968240b978355a0",
+    "conformance/openid-federation-plan.json": "7773b0168fe3cbdaeb4b995538fd48605cffb8414d1268f50c5feefb6eb10fda",
+    "conformance/par-test-plan.json": "099cb865307197fe35c568b08d725136d010cce8f98d6b59ae8428fa208a0cdd"
+  },
+  "runner_policy_sha256": {
+    "conformance/run-tests.py": "e0e47dcefed4da98c785c435f20635cc2ed37d8858137cdf7d51ba71a129c85e",
+    "conformance/browser-behaviors.json": "65ac23520d43bc82eeda2d81eba11b132e3155a9c09ce56e52e98c41f0ff2e0a",
+    "conformance/manual-evidence.json": "57cfd86cf8746a5a46b4ef2e52852cec8752286cce7c2e85d854bdbf51285c09",
+    "conformance/screenshot-required.txt": "f5ea91ff81f809f23c24c4a52145c195ee6ca34dbc0cd0c0f75784c8a38a65cb",
+    "conformance/plan_selection.py": "8ccd936ebf4173156c2461f8824f01f45deb285e09a2a5994a93faab830a773b",
+    "conformance/plan_scheduler.py": "ddd3dc9d9296995e76b98299b5adc2fc686fb419dcbc4083e759f219fd8db19b",
+    "conformance/create-plans.sh": "97ef3bc7f76f2fdeb204160df61e6b6b73d52d5e9f0207067bc872d506495685",
+    "conformance/docker-compose.local.yml": "4d231780a46cebd8234873e03e3138d8c4d63f460ac0458da9ef7ff59f3e0224"
+  },
+  "redaction_policy": "Only allowlisted module IDs, names, timestamps, states and results exported. No raw configs/logs, tokens, credentials, private keys or owner details."
+}

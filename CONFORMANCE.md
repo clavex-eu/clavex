@@ -1,9 +1,11 @@
 # Clavex — OIDF Conformance Results
 
+> **Reproduction and evidence:** See the [November 2026 guide](conformance/REPRODUCIBILITY.md) for exact version scope, raw outcomes, manual evidence and public-build availability. The table below is historical and has not been rewritten as current results.
+
 > **Build status — 29 October 2026:** The historical full-suite results below
 > predate the wallet security changes. Selected cases have now been rerun with
 > the official suite: **17 PASSED, 1 REVIEW, 2 FAILED**. See the
-> [current verification report](docs/reviews/WALLET_VERIFICATION_2026-10-29.md)
+> [October verification report](docs/reviews/WALLET_VERIFICATION_2026-10-29.md)
 > for exact scope, suite version and remaining gates. No formal OIDC certification
 > application has been submitted; suite execution and certification are distinct.
 
@@ -12,7 +14,7 @@
 
 > **Last run:** 2026-06-27 09:42 UTC |  **OP:** `https://id.clavex.eu`  |  **Suite:** [certification.openid.net](https://www.certification.openid.net)
 
-_Results are produced by the OIDF conformance suite run in the private development repository and committed here. 🔍 REVIEW tests require a manual screenshot upload on the suite UI — they are functionally correct._
+_Results are produced by the OIDF conformance suite run in the private development repository and committed here. 🔍 REVIEW requires case-specific human evidence and validation; it does not automatically mean a screenshot alone will resolve the case, and is not a pass._
 
 ## Summary
 
@@ -37,15 +39,15 @@ _Results are produced by the OIDF conformance suite run in the private developme
 | clavex-oid4vci-issuer-mso-mdoc-encrypted | 15 | 15 | 0 | 0 | 100% |
 | clavex-openid-federation-op | 20 | 20 | 0 | 0 | 100% |
 
-> Run `make conformance-run-tests` to populate this file.
+> For current tooling prerequisites and execution/report commands, follow the [reproduction guide](conformance/REPRODUCIBILITY.md). The historical table above is retained unchanged.
 
-> **Note on OID4VCI mso_mdoc plans:** `clavex-oid4vci-issuer-mso-mdoc`
+> **Historical note on OID4VCI mso_mdoc plans:** `clavex-oid4vci-issuer-mso-mdoc`
 > reports 93% (1 skipped) because the credential response encryption test
 > is intentionally excluded from this plan — encryption is covered in full
 > by the dedicated `clavex-oid4vci-issuer-mso-mdoc-encrypted` plan (100%).
 > The two plans are complementary, not overlapping.
 
-> **Note on OID4VCI issuer plans:** `clavex-oid4vci-issuer`
+> **Historical note on OID4VCI issuer plans:** `clavex-oid4vci-issuer`
 > reports 93% (1 skipped) because the credential response encryption test
 > is intentionally excluded from this plan — encryption is covered in full
 > by the dedicated `clavex-oid4vci-issuer-encrypted` plan (100%).
