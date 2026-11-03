@@ -1,22 +1,24 @@
 # Clavex — OIDF conformance evaluation
 
-Snapshot: **3 November 2026, before the subsequent manual key-rotation run**.
+Snapshot: **3 November 2026, after the five manual server-key rotation scenarios**. Collected at `2026-11-03T22:47:07.700464+00:00`.
 
-These are the latest instances of 20 plans evaluated in the private laboratory, including targeted reruns on private revision `805e1af3`. They are not a new complete suite run against the public port. See the [reproduction guide](conformance/REPRODUCIBILITY.md) and [original provenance](conformance/HISTORICAL-BASELINE-2026-11-03.md).
+Latest-instance composite of **20 selected plans / 717 configured plan-module records**, including repeated modules across profile variants and targeted reruns. These are not 717 unique test definitions and not a single uninterrupted run. The laboratory backend is private revision `805e1af3`; this is not a complete official-suite execution against the public tag. Suite: `release-v5.3.4`, commit `23353b36957d6466010de767c812d2c91ed37638`.
 
-There are **604 automatic PASSED**, **72 matching manual approvals**, **6 WARNING**, **30 upstream SKIPPED** and **5 deferred key-rotation cases** (two historical FAILED, three NOT_RUN), across **717 modules**. Raw REVIEW/UNKNOWN verdicts remain unchanged by manual approval. No certification is claimed.
+**609 automatic PASSED**, **72 matching manual visual-evidence approvals**, **6 WARNING**, **30 upstream SKIPPED**, **0 FAILED**, **0 NOT_RUN**. All five formerly outstanding server-key rotation scenarios are now `FINISHED / PASSED`. Their required manual operations did not turn them into screenshot approvals: their assertions passed in the suite. No official certification is claimed.
 
 ## Summary
 
-| Plan | Tests | Passed | Manual approvals | Warning | Skipped | Failed | Not run |
+The “Tests / records” column counts configured plan/module slots. Manual approvals are separate from the Passed column and do not increase automatic badge counts.
+
+| Plan | Tests / records | Passed | Manual approvals | Warning | Skipped | Failed | Not run |
 |---|---:|---:|---:|---:|---:|---:|---:|
 | clavex-basic | 35 | 27 | 3 | 0 | 5 | 0 | 0 |
-| clavex-basic-post | 36 | 26 | 4 | 0 | 5 | 1 | 0 |
+| clavex-basic-post | 36 | 27 | 4 | 0 | 5 | 0 | 0 |
 | clavex-config | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
-| clavex-dynamic | 23 | 11 | 6 | 0 | 5 | 1 | 0 |
-| clavex-form-post | 36 | 26 | 4 | 0 | 5 | 0 | 1 |
-| clavex-hybrid | 36 | 26 | 4 | 0 | 5 | 0 | 1 |
-| clavex-par | 36 | 26 | 4 | 0 | 5 | 0 | 1 |
+| clavex-dynamic | 23 | 12 | 6 | 0 | 5 | 0 | 0 |
+| clavex-form-post | 36 | 27 | 4 | 0 | 5 | 0 | 0 |
+| clavex-hybrid | 36 | 27 | 4 | 0 | 5 | 0 | 0 |
+| clavex-par | 36 | 27 | 4 | 0 | 5 | 0 | 0 |
 | clavex-fapi | 58 | 51 | 6 | 1 | 0 | 0 | 0 |
 | clavex-fapi-mtls | 49 | 42 | 6 | 1 | 0 | 0 | 0 |
 | clavex-fapi-jarm | 71 | 64 | 6 | 1 | 0 | 0 | 0 |
@@ -31,10 +33,16 @@ There are **604 automatic PASSED**, **72 matching manual approvals**, **6 WARNIN
 | clavex-oid4vci-issuer-mso-mdoc-encrypted | 15 | 15 | 0 | 0 | 0 | 0 | 0 |
 | clavex-openid-federation-op | 20 | 15 | 5 | 0 | 0 | 0 | 0 |
 
-The 72 approvals cover 62 raw REVIEW and 10 UNKNOWN cases with uploaded evidence. They are local operator decisions, not additional automatic PASSED results. The six warnings concern the intentional UserInfo extension claims `groups` and `roles`.
+The 72 maintainer approvals cover 62 raw REVIEW and 10 UNKNOWN records with matching uploaded visual evidence. They are expected visual-review scenarios, not waived failures; raw verdicts remain unchanged. The six warnings concern the intentional UserInfo extension claims `groups` and `roles`.
 
-The 30 skips are upstream applicability decisions, including unadvertised address/phone scopes, unsigned variants and pairwise-subject configuration; they are not manually relabelled successes. All five deferred cases require a real key rotation between configuration/JWKS snapshot and Start.
+The 30 skips are upstream applicability decisions, including unadvertised scopes, unsigned variants and pairwise-subject configuration. They are not manually relabelled successes. Applicability remains profile-specific.
 
-Public tooling contains no laboratory private keys or copied manual-approval registry. Evaluators generate their own fixture material and record their own decisions. Automatic badge counts exclude manual approvals.
+## Server-key rotations
 
-[Machine-readable snapshot](conformance/evidence/2026-11-03/pre-rotation-summary.json). The historical June table remains available in Git history.
+All five `oidcc-server-rotate-keys` records now pass in basic-post, dynamic, form-post, hybrid and PAR. The operator rotated the issuer tenant’s OIDC key between the test’s initial JWKS snapshot and Start. Rotation in a different tenant correctly leaves the observed issuer's JWKS unchanged.
+
+See the [rotation follow-up](conformance/ROTATION-RESULTS-2026-11-03.md) for instance IDs and the [current machine-readable summary](conformance/evidence/2026-11-03/post-rotation-summary.json). The [sanitised instance index](conformance/evidence/2026-11-03/post-rotation-instances.json) records all selected latest instances. The [604-pass pre-rotation summary](conformance/evidence/2026-11-03/pre-rotation-summary.json) is retained unchanged; old failed instances were not deleted or reclassified.
+
+The separate October VP/pre-authorised issuance evaluations are not added to this aggregate. HAIP results here cover the configured SD-JWT issuer; generic mdoc issuer successes do not establish every HAIP/ISO mdoc requirement. The Federation OP plan is alpha/non-certifiable. No later suite-master or SD-JWT VC draft-23 validation is implied.
+
+Use the [reproduction guide](conformance/REPRODUCIBILITY.md) for the applicable environment and version scope. Equivalent implementation and configuration enable an independent evaluation; they do not manufacture identical verdicts.

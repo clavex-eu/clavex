@@ -15,3 +15,5 @@ per-instance decisions. Neither uploads nor local approvals rewrite official
 suite verdicts or increase automatic pass counts. [Historical provenance](HISTORICAL-BASELINE-2026-11-03.md)
 retains the original build and suite records. See [porting notes](PUBLIC-PORT-2026-11.md)
 for scope, migration requirements and public/private differences.
+
+Latest local reporting follow-up: [all five server-key rotations passed](ROTATION-RESULTS-2026-11-03.md). The [post-rotation summary](evidence/2026-11-03/post-rotation-summary.json) records 609 automatic PASSED plus 72 separate visual approvals, six warnings and 30 skips. The pre-rotation snapshot remains unchanged.

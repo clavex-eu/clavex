@@ -1,5 +1,7 @@
 # Reproducing Clavex conformance evaluations
 
+Current reporting follow-up: [all five server-key rotations passed](ROTATION-RESULTS-2026-11-03.md); [609 automatic passes and 72 separate visual approvals](evidence/2026-11-03/post-rotation-summary.json). Historical pre-rotation evidence remains unchanged.
+
 The public implementation includes the product and runner corrections evaluated
 in the private November 2026 laboratory. Reproduction requires the same protocol
 profiles and equivalent configuration on your own test installation. Fresh runs
