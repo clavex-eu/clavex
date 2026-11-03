@@ -134,6 +134,7 @@ class ScriptSafetyTests(unittest.TestCase):
                     with patch.object(subprocess, 'run', side_effect=[types.SimpleNamespace(stdout=b'public PEM'), types.SimpleNamespace(stdout=b'public SPKI')]):
                         args = ns['_suite_browser_args']('https://suite.example:8443')
                     create.assert_called_once_with(cafile='/test/ca.pem')
+                    self.assertEqual(ctx.minimum_version, ssl.TLSVersion.TLSv1_2)
                     connect.assert_called_once_with(('suite.example', 8443), timeout=10)
                     self.assertEqual(args, ['--ignore-certificate-errors-spki-list=' + base64.b64encode(hashlib.sha256(b'public SPKI').digest()).decode()])
                     self.assertNotIn('--ignore-certificate-errors', args)

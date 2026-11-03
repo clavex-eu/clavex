@@ -148,6 +148,7 @@ def _suite_browser_args(suite_url: str) -> list[str]:
     if parsed.scheme != "https" or not parsed.hostname:
         raise ValueError("SUITE_CA_FILE requires an HTTPS suite URL")
     context = ssl.create_default_context(cafile=ca_file)
+    context.minimum_version = ssl.TLSVersion.TLSv1_2
     with socket.create_connection((parsed.hostname, parsed.port or 443), timeout=10) as sock:
         with context.wrap_socket(sock, server_hostname=parsed.hostname) as tls:
             der = tls.getpeercert(binary_form=True)
