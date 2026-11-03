@@ -216,18 +216,22 @@ eidas-test-url:
 
 CONFORMANCE_DIR  := .conformance-suite
 CONFORMANCE_REPO := https://gitlab.com/openid/conformance-suite.git
+CONFORMANCE_REV := 23353b36957d6466010de767c812d2c91ed37638
+CONFORMANCE_PYTHON := $(if $(wildcard conformance/.venv/bin/python),conformance/.venv/bin/python,python3)
+CONFORMANCE_COMPOSE := docker compose --project-name clavex-conformance-public -f $(CONFORMANCE_DIR)/docker-compose.yml -f conformance/docker-compose.local.yml
 
 .PHONY: conformance-build conformance-up conformance-down conformance-setup conformance-create-plans conformance-delete-plans conformance-run-tests conformance-status conformance-logs conformance-clean
 
 # Step 1: clone and build the JAR using the suite's own Docker builder (no Java needed)
 conformance-build:
-	@if [ ! -d "$(CONFORMANCE_DIR)" ]; then \
-		echo "Cloning OIDF conformance suite…"; \
-		git clone --depth=1 $(CONFORMANCE_REPO) $(CONFORMANCE_DIR); \
+	@if [ ! -f "$(CONFORMANCE_DIR)/pom.xml" ]; then \
+		echo "Initialising pinned OIDF conformance suite…"; \
+		git clone --no-checkout $(CONFORMANCE_REPO) $(CONFORMANCE_DIR) && git -C $(CONFORMANCE_DIR) checkout --detach $(CONFORMANCE_REV); \
 	fi
+	@test "$$(git -C $(CONFORMANCE_DIR) rev-parse HEAD)" = "$(CONFORMANCE_REV)" || { echo "Suite checkout differs from the pinned revision"; exit 1; }
 	@if [ ! -f "$(CONFORMANCE_DIR)/target/fapi-test-suite.jar" ]; then \
 		echo "Building conformance suite JAR (first run ~10 min)…"; \
-		cd $(CONFORMANCE_DIR) && MAVEN_CACHE=./m2 docker compose -f builder-compose.yml run builder; \
+		MAVEN_CACHE="$(abspath $(CONFORMANCE_DIR)/m2)" docker compose -f $(CONFORMANCE_DIR)/builder-compose.yml -f conformance/docker-compose.build.yml run --rm builder; \
 	else \
 		echo "JAR already built — skipping (run 'make conformance-clean' to rebuild)"; \
 	fi
@@ -236,25 +240,26 @@ conformance-build:
 conformance-up:
 	@[ -f "$(CONFORMANCE_DIR)/target/fapi-test-suite.jar" ] || \
 		(echo "Run 'make conformance-build' first"; exit 1)
-	@# Linux: host.docker.internal is not automatic — inject host-gateway mapping.
-	@printf 'services:\n  mongodb:\n    extra_hosts:\n      - "host.docker.internal:host-gateway"\n  nginx:\n    extra_hosts:\n      - "host.docker.internal:host-gateway"\n  server:\n    extra_hosts:\n      - "host.docker.internal:host-gateway"\n' \
-		> $(CONFORMANCE_DIR)/docker-compose.override.yml
-	cd $(CONFORMANCE_DIR) && docker compose up -d
+	bash conformance/setup-local-tls.sh
+	$(CONFORMANCE_COMPOSE) up -d --build
 	@echo ""
 	@echo "Suite available at https://localhost.emobix.co.uk:8443 (wait ~30s for startup)"
-	@echo "Run: make conformance-setup   (requires postgres running — docker compose up postgres redis -d)"
+	@echo "See conformance/README.md for explicit backend trust and seed prerequisites."
 
 conformance-down:
-	-cd $(CONFORMANCE_DIR) && docker compose down
+	-$(CONFORMANCE_COMPOSE) down
 
 conformance-logs:
-	cd $(CONFORMANCE_DIR) && docker compose logs -f server
+	$(CONFORMANCE_COMPOSE) logs -f server
 
 # Remove clone entirely — next conformance-build will re-clone and rebuild
 conformance-clean:
 	rm -rf $(CONFORMANCE_DIR)
 
 # Seed test org + client into a running clavex instance
+conformance-fixtures:
+	go run ./cmd/conformance-fixtures $(ARGS)
+
 conformance-setup:
 	@bash conformance/setup.sh
 
@@ -263,6 +268,16 @@ conformance-setup:
 #
 # Local suite:   make conformance-create-plans
 # Online suite:  SUITE_URL=https://www.certification.openid.net SUITE_TOKEN=<token> make conformance-create-plans
+# Read-only: validate local plans, signing material and certificate validity.
+.PHONY: conformance-check-config
+conformance-check-config:
+	@python3 conformance/check-config.py
+
+# Preview every upload without contacting the suite:
+#   bash conformance/create-plans.sh --dry-run
+# HTTPS is verified by default. For a local self-signed suite explicitly set
+# SUITE_INSECURE=1, or provide a CA bundle through SUITE_CA_FILE.
+
 conformance-create-plans:
 	@bash conformance/create-plans.sh
 
@@ -273,7 +288,7 @@ conformance-delete-plans:
 	@bash conformance/delete-plans.sh
 
 # Run all conformance tests automatically (requires conformance-up + conformance-create-plans)
-# Playwright drives the clavex login form; no manual interaction needed.
+# Playwright drives login; verifier and pre-authorized plans require manual preparation.
 #
 # Pass extra args:
 #   make conformance-run-tests ARGS="--plan clavex-basic --headful"
@@ -285,15 +300,10 @@ conformance-delete-plans:
 #     SUITE_URL=https://www.certification.openid.net \
 #     ARGS="--suite-token <your-api-token>"
 conformance-run-tests:
-	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
-	@python3 -c "import playwright" 2>/dev/null || { \
-		echo "Installing Python dependencies…"; \
-		pip install -q -r conformance/requirements.txt; \
-		playwright install chromium; \
-	}
+	@$(CONFORMANCE_PYTHON) -c "import requests, playwright" 2>/dev/null || { echo "Run make conformance-tools first"; exit 1; }
 	@SUITE_URL_ARG=""; \
 	if [ -n "$(SUITE_URL)" ]; then SUITE_URL_ARG="--suite-url $(SUITE_URL)"; fi; \
-	python3 conformance/run-tests.py $$SUITE_URL_ARG $(ARGS)
+	$(CONFORMANCE_PYTHON) conformance/run-tests.py $$SUITE_URL_ARG $(ARGS)
 
 # conformance-status: reads current plan results (no test execution), prints
 # the summary table and updates CONFORMANCE.md.
@@ -303,10 +313,10 @@ conformance-run-tests:
 #     ARGS="--suite-token <your-api-token>"
 conformance-status:
 	@command -v python3 >/dev/null 2>&1 || { echo "python3 is required"; exit 1; }
-	@python3 -c "import requests" 2>/dev/null || pip install -q -r conformance/requirements.txt
+	@$(CONFORMANCE_PYTHON) -c "import requests, playwright" 2>/dev/null || { echo "Run make conformance-tools first"; exit 1; }
 	@SUITE_URL_ARG=""; \
 	if [ -n "$(SUITE_URL)" ]; then SUITE_URL_ARG="--suite-url $(SUITE_URL)"; fi; \
-	python3 conformance/run-tests.py $$SUITE_URL_ARG --status $(ARGS)
+	$(CONFORMANCE_PYTHON) conformance/run-tests.py $$SUITE_URL_ARG --status $(ARGS)
 
 # ── Quality ───────────────────────────────────────────────────────────────────
 
@@ -373,3 +383,9 @@ tidy:
 
 clean:
 	rm -rf bin/ coverage.out coverage.html
+
+.PHONY: conformance-tools conformance-fixtures
+conformance-tools:
+	python3 -m venv conformance/.venv
+	conformance/.venv/bin/pip install -r conformance/requirements.txt
+	conformance/.venv/bin/playwright install chromium

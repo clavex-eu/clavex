@@ -1,0 +1,27 @@
+{
+  "description": "clavex \u2014 OIDC Basic OP certification test plan",
+  "alias": "clavex-basic",
+  "variant": {
+    "server_metadata": "discovery",
+    "client_registration": "static_client"
+  },
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client",
+    "client_secret": "conformance-secret-12345"
+  },
+  "client_secret_post": {
+    "client_id": "conformance-client-post",
+    "client_secret": "conformance-secret-post-abcde"
+  },
+  "client2": {
+    "client_id": "conformance-client-2",
+    "client_secret": "conformance-secret-2-67890"
+  },
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "waitTimeoutSeconds": 60
+}

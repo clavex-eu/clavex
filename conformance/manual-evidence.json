@@ -1,0 +1,23 @@
+{
+  "fapi2-security-profile-final-ensure-redirect-uri-in-authorization-request": "Manual visual evidence required: ExpectRedirectUriMissingErrorPage",
+  "fapi2-security-profile-final-ensure-request-object-without-redirect-uri-fails": "Manual visual evidence required: ExpectRequestObjectMissingRedirectUriErrorPage",
+  "fapi2-security-profile-final-par-attempt-reuse-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+  "fapi2-security-profile-final-par-attempt-to-use-expired-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+  "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": "Manual visual evidence required: ExpectLoginPage",
+  "fapi2-security-profile-final-plain-fapi-tolerate-unregistered-redirect-uri": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+  "fapi2-security-profile-id2-ensure-redirect-uri-in-authorization-request": "Manual visual evidence required: ExpectRedirectUriMissingErrorPage",
+  "fapi2-security-profile-id2-ensure-request-object-without-redirect-uri-fails": "Manual visual evidence required: ExpectRequestObjectMissingRedirectUriErrorPage",
+  "fapi2-security-profile-id2-par-attempt-reuse-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+  "fapi2-security-profile-id2-par-attempt-to-use-expired-request_uri": "Manual visual evidence required: ExpectInvalidRequestUriErrorPage",
+  "fapi2-security-profile-id2-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": "Manual visual evidence required: ExpectLoginPage",
+  "fapi2-security-profile-id2-plain-fapi-ensure-registered-redirect-uri": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+  "oidcc-ensure-redirect-uri-in-authorization-request": "Manual visual evidence required: ExpectRedirectUriMissingErrorPage",
+  "oidcc-ensure-registered-redirect-uri": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+  "oidcc-max-age-1": "Manual visual evidence required: ExpectSecondLoginPage",
+  "oidcc-prompt-login": "Manual visual evidence required: ExpectSecondLoginPage",
+  "oidcc-redirect-uri-query-added": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+  "oidcc-redirect-uri-query-mismatch": "Manual visual evidence required: ExpectRedirectUriErrorPage",
+  "oidcc-registration-logo-uri": "Manual visual evidence required: ExpectLoginPageWithLogo",
+  "oidcc-registration-policy-uri": "Manual visual evidence required: ExpectLoginPageWithPolicyLink",
+  "oidcc-registration-tos-uri": "Manual visual evidence required: ExpectLoginPageWithTosLink"
+}

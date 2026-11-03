@@ -1,0 +1,24 @@
+{
+  "description": "clavex \u2014 PAR (RFC 9126) standalone test plan (Pushed Authorization Requests)",
+  "alias": "clavex-par",
+  "variant": {
+    "client_auth_type": "client_secret_basic",
+    "client_registration": "static_client",
+    "response_type": "code"
+  },
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client",
+    "client_secret": "conformance-secret-12345"
+  },
+  "client2": {
+    "client_id": "conformance-client-2",
+    "client_secret": "conformance-secret-2-67890"
+  },
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "waitTimeoutSeconds": 60
+}

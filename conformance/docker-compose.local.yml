@@ -1,0 +1,19 @@
+# Default development UI: loopback only. Remote backend reachability is explicit.
+services:
+  nginx:
+    networks:
+      default:
+        aliases:
+          - localhost.emobix.co.uk
+    volumes:
+      - ../conformance/.local/tls/tls.crt:/etc/ssl/certs/nginx-selfsigned.crt:ro
+      - ../conformance/.local/tls/tls.key:/etc/ssl/private/nginx-selfsigned.key:ro
+    ports: !override
+      - "127.0.0.1:8443:8443"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+  server:
+    ports: !override
+      - "127.0.0.1:8080:8080"
+    extra_hosts:
+      - "host.docker.internal:host-gateway"

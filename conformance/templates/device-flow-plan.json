@@ -1,0 +1,23 @@
+{
+  "description": "clavex \u2014 OAuth 2.0 Device Authorization Grant (RFC 8628) test plan",
+  "alias": "clavex-device",
+  "variant": {
+    "server_metadata": "discovery",
+    "client_registration": "static_client"
+  },
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client",
+    "client_secret": "conformance-secret-12345"
+  },
+  "userSimulation": {
+    "verificationUri": "${BACKEND_ORIGIN}/conformance/activate",
+    "loginHint": "testuser@conformance.local"
+  },
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "waitTimeoutSeconds": 120
+}

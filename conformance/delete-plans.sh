@@ -16,6 +16,12 @@ set -euo pipefail
 
 SUITE_URL="${SUITE_URL:-https://localhost.emobix.co.uk:8443}"
 SUITE_TOKEN="${SUITE_TOKEN:-}"
+CURL_TLS=()
+if [[ -n "${SUITE_CA_FILE:-}" ]]; then
+  CURL_TLS=(--cacert "${SUITE_CA_FILE}")
+elif [[ "${SUITE_INSECURE:-0}" == "1" ]]; then
+  CURL_TLS=(-k)
+fi
 
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
 
@@ -34,7 +40,7 @@ echo ""
 total=0
 
 while true; do
-  IDS=$(curl -sk "${CURL_AUTH[@]}" "${SUITE_URL}/api/plan" \
+  IDS=$(curl -sS "${CURL_TLS[@]}" "${CURL_AUTH[@]}" "${SUITE_URL}/api/plan" \
     | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
@@ -48,14 +54,14 @@ for p in plans:
   [[ -z "${IDS}" ]] && break
 
   while IFS= read -r id; do
-    alias=$(curl -sk "${CURL_AUTH[@]}" "${SUITE_URL}/api/plan/${id}" \
+    alias=$(curl -sS "${CURL_TLS[@]}" "${CURL_AUTH[@]}" "${SUITE_URL}/api/plan/${id}" \
       | python3 -c "
 import json, sys
 d = json.load(sys.stdin)
 print((d.get('config') or {}).get('alias') or d.get('alias') or d.get('name') or '?')
 " 2>/dev/null || echo "?")
 
-    code=$(curl -sk -o /dev/null -w "%{http_code}" -X DELETE \
+    code=$(curl -sS "${CURL_TLS[@]}" -o /dev/null -w "%{http_code}" -X DELETE \
       "${CURL_AUTH[@]}" "${SUITE_URL}/api/plan/${id}")
 
     if [[ "${code}" == "204" || "${code}" == "200" ]]; then

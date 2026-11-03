@@ -1,7 +1,7 @@
-# Historical manual-review module list; membership alone does not prove a pass.
-# Preserve suite verdicts and attach case-specific evidence before claiming success.
-# The current private runner does not map these entries to PASSED.
-# See REPRODUCIBILITY.md for version scope and manual evidence requirements.
+# Historical list of modules the operator reviewed manually and may need
+# screenshot evidence on the suite UI. Entries are retained as review records.
+# Membership does not prove the current implementation passes the module.
+# The runner preserves official results and never converts these to PASSED.
 #
 # Format: one test module name per line (exact match, case-sensitive).
 # Lines starting with # and blank lines are ignored.

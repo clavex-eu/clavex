@@ -1,0 +1,33 @@
+{
+  "description": "clavex \u2014 FAPI 2.0 Security Profile Baseline (MTLS) certification test plan",
+  "alias": "clavex-fapi-mtls",
+  "variant": {
+    "openid": "openid_connect",
+    "fapi_profile": "plain_fapi",
+    "sender_constrain": "mtls",
+    "client_auth_type": "private_key_jwt"
+  },
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client-fapi",
+    "scope": "openid profile email"
+  },
+  "client2": {
+    "client_id": "conformance-client-fapi-2",
+    "scope": "openid profile email"
+  },
+  "mtls": {
+    "cert": "${PEM:mtls1-cert}",
+    "key": "${PEM:mtls1-key}"
+  },
+  "mtls2": {
+    "cert": "${PEM:mtls2-cert}",
+    "key": "${PEM:mtls2-key}"
+  },
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "waitTimeoutSeconds": 60
+}

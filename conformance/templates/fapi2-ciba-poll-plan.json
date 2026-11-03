@@ -1,0 +1,42 @@
+{
+  "description": "clavex \u2014 FAPI 2.0 CIBA Profile (poll delivery mode) certification test plan",
+  "alias": "clavex-fapi2-ciba-poll",
+  "variant": {
+    "fapi_ciba_profile": "plain_fapi",
+    "ciba_mode": "poll",
+    "client_auth_type": "private_key_jwt",
+    "client_registration": "static_client"
+  },
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client-ciba",
+    "scope": "openid profile",
+    "hint_type": "login_hint",
+    "hint_value": "testuser@conformance.local"
+  },
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "userSimulation": {
+    "loginHint": "testuser@conformance.local",
+    "bindingMessage": "Clavex FAPI2 CIBA conformance test"
+  },
+  "waitTimeoutSeconds": 120,
+  "client2": {
+    "client_id": "conformance-client-ciba-2",
+    "scope": "openid profile",
+    "hint_type": "login_hint",
+    "hint_value": "testuser@conformance.local"
+  },
+  "mtls": {
+    "cert": "${PEM:mtls1-cert}",
+    "key": "${PEM:mtls1-key}"
+  },
+  "mtls2": {
+    "cert": "${PEM:mtls2-cert}",
+    "key": "${PEM:mtls2-key}"
+  },
+  "automated_ciba_approval_url": "${BACKEND_ORIGIN}/conformance/ciba/automate?auth_req_id={auth_req_id}&action={action}"
+}

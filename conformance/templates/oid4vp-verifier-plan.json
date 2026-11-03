@@ -1,0 +1,15 @@
+{
+  "description": "clavex \u2014 OID4VP 1.0 Final Verifier test plan (sd-jwt-vc + url_query + redirect_uri)",
+  "alias": "clavex-oid4vp-verifier",
+  "variant": {
+    "vp_profile": "plain_vp",
+    "credential_format": "sd_jwt_vc",
+    "client_id_prefix": "redirect_uri",
+    "response_mode": "direct_post",
+    "request_method": "url_query"
+  },
+  "credential": {
+    "signing_jwk": "${JWK:wallet1}"
+  },
+  "waitTimeoutSeconds": 60
+}

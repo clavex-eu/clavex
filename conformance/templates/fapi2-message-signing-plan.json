@@ -1,0 +1,27 @@
+{
+  "description": "clavex \u2014 FAPI 2.0 Message Signing (JARM) certification test plan",
+  "alias": "clavex-fapi-jarm",
+  "variant": {
+    "openid": "openid_connect",
+    "fapi_profile": "plain_fapi",
+    "sender_constrain": "dpop",
+    "client_auth_type": "private_key_jwt",
+    "fapi_request_method": "signed_non_repudiation",
+    "fapi_response_mode": "jarm"
+  },
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client-fapi-dpop-jar",
+    "scope": "openid profile email"
+  },
+  "client2": {
+    "client_id": "conformance-client-fapi-dpop-jar-2",
+    "scope": "openid profile email"
+  },
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "waitTimeoutSeconds": 60
+}

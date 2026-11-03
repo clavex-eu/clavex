@@ -1,0 +1,46 @@
+{
+  "description": "clavex \u2014 HAIP 1.0 (High Assurance Interoperability Profile, eIDAS 2.0) certification test plan",
+  "alias": "clavex-haip",
+  "variant": {
+    "credential_format": "sd_jwt_vc",
+    "vci_authorization_code_flow_variant": "wallet_initiated"
+  },
+  "vci": {
+    "credential_issuer_url": "${BACKEND_ORIGIN}/conformance",
+    "credential_configuration_id": "vct_conformance-identity",
+    "client_attestation_issuer": "${BACKEND_ORIGIN}/conformance",
+    "client_attester_keys_jwks": {
+      "keys": [
+        "${JWK:wallet1}"
+      ]
+    },
+    "key_attestation_jwks": {
+      "keys": [
+        "${JWK:key-attestation}"
+      ]
+    }
+  },
+  "server": {
+    "credentialIssuer": "${BACKEND_ORIGIN}/conformance",
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-credential-issuer?conformance=1"
+  },
+  "client": {
+    "client_id": "conformance-haip-wallet"
+  },
+  "client2": {
+    "client_id": "conformance-haip-wallet-2"
+  },
+  "client_attestation": {
+    "issuer": "${BACKEND_ORIGIN}/conformance",
+    "attester_jwks": {
+      "keys": [
+        "${JWK:wallet1}"
+      ]
+    }
+  },
+  "credential": {
+    "trust_anchor_pem": "${PEM:issuer-root-cert}",
+    "status_list_trust_anchor_pem": "${PEM:issuer-root-cert}"
+  },
+  "waitTimeoutSeconds": 60
+}

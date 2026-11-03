@@ -1,0 +1,37 @@
+{
+  "description": "clavex \u2014 Token Introspection (RFC 7662) local test plan. NOT an OIDF conformance suite plan. Use as a reference for manual or script-based smoke tests against the introspection endpoint.",
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration",
+    "introspectionEndpoint": "${BACKEND_ORIGIN}/conformance/introspect"
+  },
+  "client": {
+    "client_id": "conformance-client",
+    "client_secret": "conformance-secret-12345"
+  },
+  "testScenarios": [
+    {
+      "id": "introspect-active-access-token",
+      "description": "Introspect a valid, non-expired access token \u2014 must return active:true with sub, iat, exp, scope"
+    },
+    {
+      "id": "introspect-active-refresh-token",
+      "description": "Introspect a valid refresh token \u2014 must return active:true"
+    },
+    {
+      "id": "introspect-revoked-token",
+      "description": "Introspect a revoked token \u2014 must return active:false"
+    },
+    {
+      "id": "introspect-expired-token",
+      "description": "Introspect an expired access token \u2014 must return active:false"
+    },
+    {
+      "id": "introspect-unknown-token",
+      "description": "Introspect a random string not matching any token \u2014 must return active:false"
+    },
+    {
+      "id": "introspect-unauthorized",
+      "description": "Introspect without client credentials \u2014 must return 401"
+    }
+  ]
+}

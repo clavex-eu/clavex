@@ -24,6 +24,11 @@ echo ""
 
 cd "$REPO_ROOT"
 
+if [[ ! -f conformance/oid4vci-issuer-plan.json ]]; then
+  echo "Run make conformance-fixtures first (local plans and fresh test material)." >&2
+  exit 1
+fi
+
 # Auto-select a config file if --config was not already supplied.
 # Precedence: config.yaml → config.dev.yaml
 if [[ "$*" != *"--config"* ]]; then

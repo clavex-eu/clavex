@@ -1,0 +1,22 @@
+{
+  "fapi2-security-profile-id2-user-rejects-authentication": {
+    "action": "cancel",
+    "reason": "The module expects access_denied after the user cancels authentication."
+  },
+  "fapi2-security-profile-id2-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": {
+    "action": "visit_then_login",
+    "reason": "Open the first queued request without authenticating; authenticate only when the suite queues its second visit."
+  },
+  "fapi2-security-profile-final-user-rejects-authentication": {
+    "action": "cancel",
+    "reason": "The module expects access_denied after the user cancels authentication."
+  },
+  "fapi2-security-profile-final-par-ensure-reused-request-uri-prior-to-auth-completion-succeeds": {
+    "action": "visit_then_login",
+    "reason": "Open the first queued request without authenticating; authenticate only when the suite queues its second visit."
+  },
+  "fapi-ciba-id1-auth-req-id-expired": {
+    "action": "no_interaction",
+    "reason": "The suite tests an unauthorised request expiring after 10 seconds; browser login would change the scenario."
+  }
+}

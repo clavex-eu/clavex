@@ -1,0 +1,4 @@
+services:
+  builder:
+    environment:
+      MAVEN_OPTS: -Xmx2g

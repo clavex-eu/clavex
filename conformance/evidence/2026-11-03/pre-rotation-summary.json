@@ -1,0 +1,213 @@
+{
+  "scope": "Latest-instance private evaluation snapshot before the subsequent manual key-rotation execution; not a complete suite execution against the public port.",
+  "backend_private_revision": "805e1af3",
+  "suite_commit": "23353b36957d6466010de767c812d2c91ed37638",
+  "raw": {
+    "PASSED": 604,
+    "SKIPPED": 30,
+    "UNKNOWN": 10,
+    "REVIEW": 62,
+    "FAILED": 2,
+    "NOT_RUN": 3,
+    "WARNING": 6
+  },
+  "manual_approvals": 72,
+  "plans": [
+    {
+      "alias": "clavex-basic",
+      "total": 35,
+      "raw": {
+        "PASSED": 27,
+        "SKIPPED": 5,
+        "UNKNOWN": 2,
+        "REVIEW": 1
+      },
+      "manual_approvals": 3
+    },
+    {
+      "alias": "clavex-basic-post",
+      "total": 36,
+      "raw": {
+        "PASSED": 26,
+        "SKIPPED": 5,
+        "UNKNOWN": 2,
+        "FAILED": 1,
+        "REVIEW": 2
+      },
+      "manual_approvals": 4
+    },
+    {
+      "alias": "clavex-config",
+      "total": 1,
+      "raw": {
+        "PASSED": 1
+      },
+      "manual_approvals": 0
+    },
+    {
+      "alias": "clavex-dynamic",
+      "total": 23,
+      "raw": {
+        "PASSED": 11,
+        "SKIPPED": 5,
+        "REVIEW": 6,
+        "FAILED": 1
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-form-post",
+      "total": 36,
+      "raw": {
+        "PASSED": 26,
+        "SKIPPED": 5,
+        "UNKNOWN": 2,
+        "NOT_RUN": 1,
+        "REVIEW": 2
+      },
+      "manual_approvals": 4
+    },
+    {
+      "alias": "clavex-hybrid",
+      "total": 36,
+      "raw": {
+        "PASSED": 26,
+        "SKIPPED": 5,
+        "UNKNOWN": 2,
+        "NOT_RUN": 1,
+        "REVIEW": 2
+      },
+      "manual_approvals": 4
+    },
+    {
+      "alias": "clavex-par",
+      "total": 36,
+      "raw": {
+        "PASSED": 26,
+        "SKIPPED": 5,
+        "UNKNOWN": 2,
+        "NOT_RUN": 1,
+        "REVIEW": 2
+      },
+      "manual_approvals": 4
+    },
+    {
+      "alias": "clavex-fapi",
+      "total": 58,
+      "raw": {
+        "PASSED": 51,
+        "WARNING": 1,
+        "REVIEW": 6
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-fapi-mtls",
+      "total": 49,
+      "raw": {
+        "PASSED": 42,
+        "WARNING": 1,
+        "REVIEW": 6
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-fapi-jarm",
+      "total": 71,
+      "raw": {
+        "PASSED": 64,
+        "WARNING": 1,
+        "REVIEW": 6
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-oid4vci-issuer",
+      "total": 14,
+      "raw": {
+        "PASSED": 14
+      },
+      "manual_approvals": 0
+    },
+    {
+      "alias": "clavex-oid4vci-issuer-encrypted",
+      "total": 15,
+      "raw": {
+        "PASSED": 15
+      },
+      "manual_approvals": 0
+    },
+    {
+      "alias": "clavex-fapi2-ciba-poll",
+      "total": 34,
+      "raw": {
+        "PASSED": 34
+      },
+      "manual_approvals": 0
+    },
+    {
+      "alias": "clavex-fapi-final-dpop",
+      "total": 52,
+      "raw": {
+        "PASSED": 45,
+        "WARNING": 1,
+        "REVIEW": 6
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-fapi-final-mtls",
+      "total": 43,
+      "raw": {
+        "PASSED": 36,
+        "WARNING": 1,
+        "REVIEW": 6
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-fapi-jarm-final",
+      "total": 66,
+      "raw": {
+        "PASSED": 59,
+        "WARNING": 1,
+        "REVIEW": 6
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-haip",
+      "total": 63,
+      "raw": {
+        "PASSED": 57,
+        "REVIEW": 6
+      },
+      "manual_approvals": 6
+    },
+    {
+      "alias": "clavex-oid4vci-issuer-mso-mdoc",
+      "total": 14,
+      "raw": {
+        "PASSED": 14
+      },
+      "manual_approvals": 0
+    },
+    {
+      "alias": "clavex-oid4vci-issuer-mso-mdoc-encrypted",
+      "total": 15,
+      "raw": {
+        "PASSED": 15
+      },
+      "manual_approvals": 0
+    },
+    {
+      "alias": "clavex-openid-federation-op",
+      "total": 20,
+      "raw": {
+        "PASSED": 15,
+        "REVIEW": 5
+      },
+      "manual_approvals": 5
+    }
+  ]
+}
