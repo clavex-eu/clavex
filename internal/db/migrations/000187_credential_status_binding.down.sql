@@ -1,0 +1,6 @@
+ALTER TABLE identity.issued_credentials DROP CONSTRAINT issued_credential_status_slot_check;
+ALTER TABLE identity.issued_credentials DROP CONSTRAINT issued_credential_status_org_fk;
+DROP INDEX identity.credential_status_list_org_idx;
+DROP INDEX identity.issued_credential_status_slot_idx;
+DROP INDEX identity.issued_credential_issuer_jwt_idx;
+ALTER TABLE identity.issued_credentials DROP COLUMN issuer_jwt_hash;

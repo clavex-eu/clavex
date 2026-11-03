@@ -1,0 +1,10 @@
+{
+  "official_repository": "https://gitlab.com/openid/conformance-suite.git",
+  "suite_commit": "23353b36957d6466010de767c812d2c91ed37638",
+  "source_worktree_clean": true,
+  "jar_recorded_commit": "23353b36957d6466010de767c812d2c91ed37638",
+  "jar_recorded_dirty": false,
+  "jar_sha256": "1bb3eeb4d7c7f0637438ff99a18e149d38c931d628bd1ce547f1d21ceb7b0883",
+  "scope": "Source checkout and JAR-recorded metadata checked; not a bytecode attestation or a conformance verdict.",
+  "runtime_mounted_jar_sha256": "1bb3eeb4d7c7f0637438ff99a18e149d38c931d628bd1ce547f1d21ceb7b0883"
+}

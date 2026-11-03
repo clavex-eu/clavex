@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
 	"github.com/clavex-eu/clavex/internal/models"
@@ -36,6 +35,7 @@ func IssueVerifiedCredential(
 	keys oidc.Signer,
 	baseURL string,
 	holderKey jwk.Key,
+	status ...StatusClaim,
 ) (string, []Disclosure, error) {
 	if len(payload) == 0 {
 		return "", nil, fmt.Errorf("IssueVerifiedCredential: payload must not be empty")
@@ -60,7 +60,7 @@ func IssueVerifiedCredential(
 		},
 		TTL:       ttl,
 		Signer:    keys.CryptoSigner(),
-		Alg:       jwa.PS256,
+		Alg:       keys.Algorithm(),
 		KID:       keys.KID(),
 		X5C:       buildX5C(keys),
 		HolderKey: holderKey,
@@ -75,5 +75,8 @@ func IssueVerifiedCredential(
 		}
 	}
 
+	if err := withCredentialStatus(&params, status); err != nil {
+		return "", nil, err
+	}
 	return IssueSDJWT(params)
 }

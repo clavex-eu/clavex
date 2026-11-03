@@ -8,6 +8,7 @@ import (
 
 	"github.com/google/uuid"
 	"github.com/lestrrat-go/jwx/v2/jwa"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
@@ -39,7 +40,7 @@ type UserClaims struct {
 	// CHash is the code_hash for hybrid flow ID tokens (OIDC Core §3.3.2.11).
 	// Computed as base64url(left half of SHA-256 of the authorization code).
 	// Set only when response_type includes id_token in the authorization response.
-	CHash         string
+	CHash string
 	// AuthorizationDetails carries the RFC 9396 RAR array to be embedded in the
 	// access token as the "authorization_details" claim (RFC 9396 §9).
 	AuthorizationDetails []map[string]any
@@ -197,11 +198,7 @@ func (tc *TokenConfig) IssueIDToken(clientID, nonce string, user UserClaims, alg
 // VerifyAccessToken parses and validates a signed access token.
 // Returns the parsed token, its JTI, and its expiry.
 func (tc *TokenConfig) VerifyAccessToken(raw string) (jwt.Token, string, time.Time, error) {
-	tok, err := jwt.Parse([]byte(raw),
-		jwt.WithKey(jwa.PS256, tc.Keys.PublicKey()),
-		jwt.WithIssuer(tc.Issuer),
-		jwt.WithValidate(true),
-	)
+	tok, err := tc.parseSignedToken(raw, true)
 	if err != nil {
 		return nil, "", time.Time{}, fmt.Errorf("verify access token: %w", err)
 	}
@@ -216,14 +213,11 @@ func (tc *TokenConfig) VerifyAccessToken(raw string) (jwt.Token, string, time.Ti
 // resolution) so a client cannot select an arbitrary victim by forging the hint.
 // Expiry is not enforced: an id_token_hint legitimately refers to a past login.
 func (tc *TokenConfig) ParseTrustedIDToken(raw string) (jwt.Token, error) {
-	// WithKey verifies the signature; WithValidate(false) skips claim validation
+	// Trusted signing keys verify the signature; validation skips claim expiry
 	// so an expired hint (referring to a past login) is still accepted. The
 	// issuer is therefore checked explicitly below rather than via WithIssuer
 	// (which only takes effect during validation).
-	tok, err := jwt.Parse([]byte(raw),
-		jwt.WithKey(jwa.PS256, tc.Keys.PublicKey()),
-		jwt.WithValidate(false),
-	)
+	tok, err := tc.parseSignedToken(raw, false)
 	if err != nil {
 		return nil, fmt.Errorf("verify id_token_hint: %w", err)
 	}
@@ -238,9 +232,10 @@ func signToken(tok jwt.Token, ks Signer) (string, error) {
 }
 
 func signTokenWithAlg(tok jwt.Token, ks Signer, alg jwa.SignatureAlgorithm) (string, error) {
+	key, kid := activeSigningKey(ks)
 	hdrs := jws.NewHeaders()
-	_ = hdrs.Set(jws.KeyIDKey, ks.KID())
-	signed, err := jwt.Sign(tok, jwt.WithKey(alg, ks.CryptoSigner(), jws.WithProtectedHeaders(hdrs)))
+	_ = hdrs.Set(jws.KeyIDKey, kid)
+	signed, err := jwt.Sign(tok, jwt.WithKey(alg, key, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
 		return "", fmt.Errorf("sign token: %w", err)
 	}
@@ -288,4 +283,45 @@ func (tc *TokenConfig) SignUserInfoClaims(clientID string, claims map[string]any
 		return "", fmt.Errorf("build userinfo JWT: %w", err)
 	}
 	return signTokenWithAlg(tok, tc.Keys, alg)
+}
+
+// parseSignedToken accepts active and retired-within-grace signing keys from
+// the trusted signer. It never follows token-supplied jku/x5u URLs or chooses a
+// tenant from unverified claims. Access tokens remain restricted to PS256.
+func (tc *TokenConfig) parseSignedToken(raw string, validate bool) (jwt.Token, error) {
+	data := tc.Keys.JWKS()
+	if provider, ok := tc.Keys.(interface{ VerificationJWKS() []byte }); ok {
+		data = provider.VerificationJWKS()
+	}
+	set, err := jwk.Parse(data)
+	if err != nil {
+		return nil, err
+	}
+	keys := jwk.NewSet()
+	for i := 0; i < set.Len(); i++ {
+		key, ok := set.Key(i)
+		if !ok || key.KeyType() != jwa.RSA || (key.KeyUsage() != "" && key.KeyUsage() != "sig") {
+			continue
+		}
+		if alg := key.Algorithm().String(); alg != "" && alg != "PS256" {
+			continue
+		}
+		if err := key.Set(jwk.AlgorithmKey, jwa.PS256); err != nil {
+			return nil, err
+		}
+		if err := keys.AddKey(key); err != nil {
+			return nil, err
+		}
+	}
+	if keys.Len() == 0 {
+		return nil, fmt.Errorf("no eligible signing keys")
+	}
+	tok, err := jwt.Parse([]byte(raw), jwt.WithKeySet(keys, jws.WithUseDefault(true)), jwt.WithValidate(validate))
+	if err != nil {
+		return nil, err
+	}
+	if tok.Issuer() != tc.Issuer {
+		return nil, fmt.Errorf("issuer mismatch")
+	}
+	return tok, nil
 }

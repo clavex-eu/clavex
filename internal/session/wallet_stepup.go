@@ -3,6 +3,8 @@ package session
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"github.com/redis/go-redis/v9"
 	"time"
 )
 
@@ -91,22 +93,59 @@ func (s *Store) FailWalletStepUpChallenge(ctx context.Context, id string) error 
 	return s.updateWalletStepUpStatus(ctx, id, "failed")
 }
 
+// ErrWalletStepUpConsumed also covers expired/missing challenges: none may be
+// resurrected or have a successful terminal state overwritten by a late failure.
+var ErrWalletStepUpConsumed = errors.New("wallet step-up challenge is expired or already consumed")
+
+var walletStepUpCAS = redis.NewScript(`
+local current=redis.call('GET',KEYS[1])
+if not current or current~=ARGV[1] then return 0 end
+local ttl=redis.call('PTTL',KEYS[1])
+local now=redis.call('TIME')
+if ttl<=0 or tonumber(ARGV[3])<=tonumber(now[1])*1000+math.floor(tonumber(now[2])/1000) then return 0 end
+redis.call('SET',KEYS[1],ARGV[2],'PX',ttl)
+return 1
+`)
+
+func (s *Store) CompleteWalletStepUpForSubject(ctx context.Context, id, org, user, nonce string) error {
+	return s.transitionWalletStepUp(ctx, id, "completed", org, user, nonce)
+}
+
 func (s *Store) updateWalletStepUpStatus(ctx context.Context, id, status string) error {
-	challenge, err := s.GetWalletStepUpChallenge(ctx, id)
+	return s.transitionWalletStepUp(ctx, id, status, "", "", "")
+}
+
+func (s *Store) transitionWalletStepUp(ctx context.Context, id, status, org, user, nonce string) error {
+	if status != "completed" && status != "failed" {
+		return ErrWalletStepUpConsumed
+	}
+	raw, err := s.rdb.Get(ctx, prefixWalletStepup+id).Bytes()
 	if err != nil {
 		return err
+	}
+	var challenge WalletStepUpChallenge
+	if err := json.Unmarshal(raw, &challenge); err != nil {
+		return err
+	}
+	if challenge.ID != id || challenge.Status != "pending" || !time.Now().Before(challenge.ExpiresAt) {
+		return ErrWalletStepUpConsumed
+	}
+	if org != "" && (challenge.OrgID != org || challenge.UserID != user || challenge.Nonce != nonce) {
+		return ErrWalletStepUpConsumed
 	}
 	challenge.Status = status
-	now := time.Now()
+	now := time.Now().UTC()
 	challenge.CompletedAt = &now
-	b, err := json.Marshal(challenge)
+	updated, err := json.Marshal(challenge)
 	if err != nil {
 		return err
 	}
-	// Preserve the remaining TTL (or give a 1-minute tombstone if already expired).
-	remaining := time.Until(challenge.ExpiresAt)
-	if remaining <= 0 {
-		remaining = time.Minute
+	result, err := walletStepUpCAS.Run(ctx, s.rdb, []string{prefixWalletStepup + id}, string(raw), string(updated), challenge.ExpiresAt.UnixMilli()).Int()
+	if err != nil {
+		return err
 	}
-	return s.rdb.SetEx(ctx, prefixWalletStepup+id, b, remaining).Err()
+	if result != 1 {
+		return ErrWalletStepUpConsumed
+	}
+	return nil
 }

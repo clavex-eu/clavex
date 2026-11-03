@@ -382,7 +382,6 @@ function QRModal({ offerId, orgId, onClose }: { offerId: string; orgId: string; 
       .then((blob) => setQrSrc(URL.createObjectURL(blob)))
       .catch(() => setQrError(true))
     return () => { if (qrSrc) URL.revokeObjectURL(qrSrc) }
-  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [offerId, orgId])
   return (
     <div className="fixed inset-0 z-50 flex items-center justify-center" style={{ background: 'rgba(0,0,0,0.55)' }}>
@@ -570,7 +569,7 @@ export default function CredentialOffersPage() {
             <p className="font-semibold text-sm" style={{ color: 'var(--clavex-ink)' }}>No identity credential types configured</p>
           </div>
           <p className="text-sm mb-5" style={{ color: 'var(--clavex-neutral)' }}>
-            Set up one-click presets for eIDAS 2.0 identity credentials issued via OID4VCI.
+            Set up credential templates for OID4VCI issuance. Templates do not establish issuer accreditation.
           </p>
           <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
             <button
@@ -597,8 +596,8 @@ export default function CredentialOffersPage() {
                 {seeding === 'seed-it-wallet' ? <RefreshCw size={16} className="animate-spin" style={{ color: '#b45309' }} /> : <AlertCircle size={16} style={{ color: '#b45309' }} />}
               </div>
               <div>
-                <p className="text-sm font-semibold" style={{ color: 'var(--clavex-ink)' }}>EU PID / IT-Wallet</p>
-                <p className="text-xs mt-0.5" style={{ color: 'var(--clavex-neutral)' }}>EUDIW · eu.europa.ec.eudi.pid.1 · SPID auto-offer</p>
+                <p className="text-sm font-semibold" style={{ color: 'var(--clavex-ink)' }}>PID SD-JWT template</p>
+                <p className="text-xs mt-0.5" style={{ color: 'var(--clavex-neutral)' }}>SD-JWT · urn:eudi:pid:1 · SPID attribute mapping</p>
               </div>
             </button>
           </div>

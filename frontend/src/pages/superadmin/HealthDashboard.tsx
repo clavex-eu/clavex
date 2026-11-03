@@ -572,8 +572,8 @@ export default function HealthDashboardPage() {
       {/* ── Rotate signing key confirmation modal ────────────────────────── */}
       <Modal
         open={confirmRotate}
-        title="Rotate Signing Key"
-        description="A new RSA-2048 key will be generated and immediately used for token signing. The current key stays in JWKS for 24 hours so existing tokens remain verifiable."
+        title="Rotate Installation Signing Key"
+        description="Generate a new installation signing key. Tenant signing keys are managed separately and are not rotated by this action. The retired installation key remains published during its 24-hour grace period."
         onClose={() => setConfirmRotate(false)}
       >
         <div style={{ display: 'flex', justifyContent: 'flex-end', gap: 8, paddingTop: 4 }}>

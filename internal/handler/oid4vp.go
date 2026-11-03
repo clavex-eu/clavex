@@ -12,6 +12,7 @@ import (
 	"crypto/x509/pkix"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"image/png"
 	"math/big"
@@ -22,12 +23,14 @@ import (
 
 	"github.com/boombuler/barcode"
 	"github.com/boombuler/barcode/qr"
+	secretcrypto "github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/mdoc"
 	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/oid4w"
 	"github.com/clavex-eu/clavex/internal/oidc"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/google/uuid"
+	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 	"github.com/labstack/echo/v4"
 	"github.com/lestrrat-go/jwx/v2/cert"
@@ -43,25 +46,30 @@ import (
 //
 // cibaVPACR is the ACR value set in CIBA tokens when the user authenticated
 // by presenting a verifiable credential (e.g. CIE mdoc) via OID4VP.
-// This value satisfies PSD2 RTS Article 9 Level 2 Strong Customer Authentication
-// requirements: it combines possession (wallet device) + inherence (biometric
-// binding inside the mdoc) at the highest assurance level.
+// This marker alone does not attest biometrics, a regulated assurance level,
+// or compliance with a particular strong-authentication framework.
 const cibaVPACR = "urn:clavex:acr:oid4vp-credential"
+
+// Public tenant endpoints:
 //
-//	Public tenant endpoints:
-//	  POST /:org_slug/wallet/request          → create presentation request (returns request_uri)
-//	  GET  /:org_slug/wallet/request/:req_id  → return the request object
-//	  POST /:org_slug/wallet/response         → wallet submits vp_token
+//	POST /:org_slug/wallet/request          → create presentation request (returns request_uri)
+//	GET  /:org_slug/wallet/request/:req_id  → return the request object
+//	POST /:org_slug/wallet/response         → wallet submits vp_token
 //
-//	Admin endpoints (org-scoped):
-//	  GET  /api/v1/organizations/:org_id/oid4vp/sessions       → list sessions
-//	  GET  /api/v1/organizations/:org_id/oid4vp/sessions/:id   → get session status
+// Admin endpoints (org-scoped):
+//
+//	GET  /api/v1/organizations/:org_id/oid4vp/sessions       → list sessions
+//	GET  /api/v1/organizations/:org_id/oid4vp/sessions/:id   → get session status
 type OID4VPHandler struct {
-	repo           *repository.OID4WRepository
-	orgs           *repository.OrgRepository
-	keys           oidc.Signer
-	cfg            baseURLProvider
-	trustedIssuers map[string]crypto.PublicKey
+	responseEncryption         *secretcrypto.Encryptor
+	repo                       *repository.OID4WRepository
+	orgs                       *repository.OrgRepository
+	keys                       oidc.Signer
+	cfg                        baseURLProvider
+	trustedIssuers             map[string]crypto.PublicKey
+	credentialSigningPublicKey crypto.PublicKey
+	credentialKeyNotBefore     time.Time
+	credentialKeyNotAfter      time.Time
 	// requireTrustedIssuer rejects DCQL presentations from issuers not in
 	// trustedIssuers (default true; false only for the conformance suite).
 	requireTrustedIssuer bool
@@ -69,12 +77,13 @@ type OID4VPHandler struct {
 	// A P-256 EC key + self-signed cert (SAN = base URL hostname) are generated at
 	// startup. The cert is included in the x5c JWS header so the wallet can verify
 	// the signature without prior RP registration.
-	jarKey          crypto.PrivateKey  // *ecdsa.PrivateKey (ES256) or *rsa.PrivateKey (RS256)
-	jarCert         *x509.Certificate
-	jarCertChain    [][]byte // DER-encoded chain: leaf first, then intermediates
+	jarKey       crypto.PrivateKey // *ecdsa.PrivateKey (ES256) or *rsa.PrivateKey (RS256)
+	jarCert      *x509.Certificate
+	jarCertChain [][]byte // DER-encoded chain: leaf first, then intermediates
 	// cibaRequests is used to auto-approve a linked CIBA request when a
 	// CIBA+OID4VP SCA flow completes successfully (credential presentation verified).
-	cibaRequests   *repository.CIBARepository
+	cibaRequests *repository.CIBARepository
+	iacaRepo     *repository.IACARepository
 }
 
 func NewOID4VPHandler(pool *pgxpool.Pool, keys oidc.Signer, cfg baseURLProvider, trustedIssuers map[string]crypto.PublicKey, requireTrustedIssuer bool, cibaRequests *repository.CIBARepository, jarCertFile, jarKeyFile string) *OID4VPHandler {
@@ -93,6 +102,7 @@ func NewOID4VPHandler(pool *pgxpool.Pool, keys oidc.Signer, cfg baseURLProvider,
 		jarCert:              jarCert,
 		jarCertChain:         jarCertChain,
 		cibaRequests:         cibaRequests,
+		iacaRepo:             repository.NewIACARepository(pool),
 	}
 }
 
@@ -174,19 +184,18 @@ func loadOrGenerateJARCert(baseURL, certFile, keyFile string) (crypto.PrivateKey
 var defaultClientMetadata = map[string]interface{}{
 	"vp_formats_supported": map[string]interface{}{
 		"dc+sd-jwt": map[string]interface{}{
-			"sd-jwt_alg_values": []string{"ES256", "PS256"},
+			"sd-jwt_alg_values": []string{"ES256", "PS256", "RS256"},
 			"kb-jwt_alg_values": []string{"ES256", "PS256"},
 		},
-		"jwt_vp_json": map[string]interface{}{
-			"alg_values_supported": []string{"ES256", "PS256"},
-		},
 		"mso_mdoc": map[string]interface{}{
-			"alg_values_supported": []string{"ES256"},
+			"issuerauth_alg_values": []int{-7, -35, -36},
+			"deviceauth_alg_values": []int{-7, -35, -36},
 		},
 	},
 }
 
 type createVPRequestBody struct {
+	ResponseMode string `json:"response_mode"`
 	// DCQLQuery is the OID4VP 1.0 Final DCQL credential query (§6).
 	// Preferred over PresentationDefinition for new integrations.
 	DCQLQuery map[string]interface{} `json:"dcql_query"`
@@ -214,10 +223,31 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 	if err := c.Bind(&req); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid request body")
 	}
+	mode := req.ResponseMode
+	if mode == "" {
+		mode = "direct_post.jwt"
+		if req.WalletAuthorizationEndpoint != nil && *req.WalletAuthorizationEndpoint != "" {
+			mode = "direct_post"
+		}
+	}
+	if mode == "direct_post.jwt" && req.State != nil && *req.State == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "state must not be empty")
+	}
+	if mode != "direct_post" && mode != "direct_post.jwt" {
+		return echo.NewHTTPError(http.StatusBadRequest, "unsupported response_mode")
+	}
+	if mode == "direct_post.jwt" && h.responseEncryption == nil {
+		return echo.NewHTTPError(http.StatusServiceUnavailable, "response encryption not configured")
+	}
 	if req.DCQLQuery == nil && req.PresentationDefinition == nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "dcql_query or presentation_definition is required")
 	}
 
+	if req.DCQLQuery != nil {
+		if _, err := oid4w.ParseDCQL(req.DCQLQuery); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
+	}
 	requestID, err := generateRequestID()
 	if err != nil {
 		return echo.ErrInternalServerError
@@ -257,12 +287,16 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 		nonce,
 		time.Now().Add(10*time.Minute),
 		nil, // cibaAuthReqID — nil for standalone VP sessions
-		clientID,
+		clientID, mode,
 	)
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
 
+	metadata, err := h.responseClientMetadata(c.Request().Context(), session)
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
 	resp := map[string]any{
 		"request_uri": requestURI,
 		"request_id":  session.RequestID,
@@ -291,7 +325,7 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 		// For url_query requests use redirect_uri prefix so client_id is
 		// self-verifiable without a certificate (client_id == "redirect_uri:" + response_uri).
 		params.Set("client_id", clientID)
-		params.Set("response_mode", "direct_post")
+		params.Set("response_mode", mode)
 		params.Set("response_uri", responseURI)
 		params.Set("nonce", nonce)
 		params.Set("state", requestID)
@@ -308,8 +342,8 @@ func (h *OID4VPHandler) CreateRequest(c echo.Context) error {
 			}
 		}
 
-		// client_metadata with vp_formats is MANDATORY per OID4VP 1.0 Final §5.1.
-		if cmJSON, jsonErr := json.Marshal(defaultClientMetadata); jsonErr == nil {
+		// client_metadata with vp_formats_supported is MANDATORY per OID4VP 1.0 Final §5.1.
+		if cmJSON, jsonErr := json.Marshal(metadata); jsonErr == nil {
 			params.Set("client_metadata", string(cmJSON))
 		}
 
@@ -345,21 +379,34 @@ func (h *OID4VPHandler) GetRequest(c echo.Context) error {
 		})
 	}
 
-	if _, err := h.resolveOrgVP(c); err != nil {
+	org, err := h.resolveOrgVP(c)
+	if err != nil {
 		return err
+	}
+	if session.OrgID != org.ID {
+		return echo.ErrNotFound
+	}
+	if session.DCQLQuery != nil {
+		if _, err := oid4w.ParseDCQL(session.DCQLQuery); err != nil {
+			return echo.NewHTTPError(http.StatusBadRequest, err.Error())
+		}
 	}
 
 	// OID4VP 1.0 Final §5.7.1 / x509_san_dns scheme:
 	// client_id = "x509_san_dns:<hostname>"; public key verified from x5c cert SAN.
+	metadata, err := h.responseClientMetadata(ctx, session)
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
 	hostname := h.jarCert.DNSNames[0]
 	authReq := oid4w.AuthorizationRequest{
 		ResponseType:   "vp_token",
 		ClientID:       "x509_san_dns:" + hostname,
 		ClientIDScheme: "x509_san_dns",
-		ResponseMode:   "direct_post",
+		ResponseMode:   session.ResponseMode,
 		ResponseURI:    session.ResponseURI,
 		Nonce:          session.Nonce,
-		ClientMetadata: defaultClientMetadata,
+		ClientMetadata: metadata,
 	}
 	// state must round-trip back to us so Response() can look up the session
 	// via GetPresentationSession(ctx, state) which queries WHERE request_id = $1.
@@ -393,27 +440,79 @@ func (h *OID4VPHandler) GetRequest(c echo.Context) error {
 // Per OID4VP §7.3 the wallet may also POST an error instead of a vp_token; in that
 // case we mark the session as failed and return 200 so the wallet does not retry.
 func (h *OID4VPHandler) Response(c echo.Context) error {
+	c.Request().Body = http.MaxBytesReader(c.Response(), c.Request().Body, 2*1024*1024)
+	if strings.HasPrefix(c.Request().Header.Get(echo.HeaderContentType), "application/x-www-form-urlencoded") {
+		if err := c.Request().ParseForm(); err != nil {
+			return echo.ErrBadRequest
+		}
+	}
+	var encryptedSession *models.PresentationSession
+	var decrypted *encryptedVPResponse
+	if compact := c.FormValue("response"); compact != "" {
+		form := c.Request().PostForm
+		if len(form["response"]) != 1 || c.FormValue("state") != "" || c.FormValue("vp_token") != "" || c.FormValue("error") != "" {
+			return echo.ErrBadRequest
+		}
+		var err error
+		encryptedSession, decrypted, err = h.decryptVPResponse(c, compact)
+		if err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_encrypted_response"})
+		}
+	}
 	// OID4VP §7.3: wallet error response — form-encoded error parameter.
-	if walletErr := c.FormValue("error"); walletErr != "" {
+	walletErr := c.FormValue("error")
+	if decrypted != nil {
+		walletErr = decrypted.Error
+	}
+	if walletErr != "" {
 		state := c.FormValue("state")
 		desc := c.FormValue("error_description")
-		if state != "" {
-			_ = h.repo.FailPresentationSession(c.Request().Context(), state)
+		if decrypted != nil {
+			state = encryptedSession.RequestID
+			desc = decrypted.ErrorDescription
 		}
+		org, err := h.resolveOrgVP(c)
+		if err != nil {
+			return err
+		}
+		session, err := h.repo.GetPresentationSession(c.Request().Context(), state)
+		if err != nil || session.OrgID != org.ID {
+			return echo.ErrBadRequest
+		}
+		_ = h.repo.FailPresentationSession(c.Request().Context(), state)
 		log.Warn().Str("error", walletErr).Str("description", desc).Str("state", state).
 			Msg("oid4vp: wallet reported error on response endpoint")
 		return c.JSON(http.StatusOK, map[string]string{"status": "error_acknowledged"})
 	}
 
 	// Accept either JSON body or form-encoded.
+	state := c.FormValue("state")
 	vpToken := c.FormValue("vp_token")
-	if vpToken == "" {
+	if decrypted != nil {
+		state = encryptedSession.RequestID
+		if len(decrypted.VPToken) > 0 && string(decrypted.VPToken) != "null" {
+			if decrypted.VPToken[0] == '"' {
+				if json.Unmarshal(decrypted.VPToken, &vpToken) != nil {
+					return echo.ErrBadRequest
+				}
+			} else {
+				vpToken = string(decrypted.VPToken)
+			}
+		}
+	}
+	if vpToken == "" && decrypted == nil {
 		var body struct {
 			VPToken string `json:"vp_token"`
 			State   string `json:"state"`
 		}
 		if err := c.Bind(&body); err == nil {
 			vpToken = body.VPToken
+			if state != "" && body.State != "" && state != body.State {
+				return echo.ErrBadRequest
+			}
+			if state == "" {
+				state = body.State
+			}
 		}
 	}
 
@@ -424,7 +523,6 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 		})
 	}
 
-	state := c.FormValue("state")
 	ctx := c.Request().Context()
 
 	// Find the session by state or by looking at the session for this org.
@@ -438,12 +536,24 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 	}
 
 	// Derive the request_id from the state (we store them together).
-	session, err := h.repo.GetPresentationSession(ctx, state)
+	session := encryptedSession
+	var err error
+	if session == nil {
+		session, err = h.repo.GetPresentationSession(ctx, state)
+	}
 	if err != nil {
 		return c.JSON(http.StatusBadRequest, map[string]string{
 			"error":             "invalid_request",
 			"error_description": "presentation session not found",
 		})
+	}
+
+	org, orgErr := h.resolveOrgVP(c)
+	if orgErr != nil {
+		return orgErr
+	}
+	if session.OrgID != org.ID {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_request"})
 	}
 
 	if session.Status != "pending" || time.Now().After(session.ExpiresAt) {
@@ -452,6 +562,9 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 		})
 	}
 
+	if session.ResponseMode == "direct_post.jwt" && decrypted == nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "encrypted_response_required"})
+	}
 	// Resolve the effective client_id for KB-JWT aud verification.
 	// New sessions store client_id at creation time; older sessions (pre-migration
 	// 000165) fall back to the x509_san_dns scheme if a JAR cert is configured.
@@ -462,22 +575,12 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 
 	// Verify the vp_token.
 	// For DCQL sessions (OID4VP 1.0 Final), credentials come from third-party
-	// issuers; use issuer JWKS discovery instead of the local signing key.
+	// issuers; use configured issuer trust instead of the local signing key.
 	// OID4VP 1.0 Final §8.3: vp_token in DCQL mode is a JSON object
 	// {"<credential_id>": ["<presentation>", ...]}; dispatch on credential format.
 	var result *oid4w.VerificationResult
 	if session.DCQLQuery != nil {
-		credFmt := dcqlCredentialFormat(session.DCQLQuery)
-		if credFmt == "mso_mdoc" {
-			result, err = verifyMdocDCQLVPToken(vpToken)
-		} else {
-			sdJWT := extractDCQLVPToken(vpToken)
-			// OID4VP 1.0 Final §11.4: KB-JWT aud MUST equal the client_id
-			// (not response_uri as in older drafts). Use the client_id that
-			// was stored on the session at request creation time so the correct
-			// scheme (redirect_uri vs x509_san_dns) is used for verification.
-			result, err = oid4w.VerifyDCQLPresentation(ctx, sdJWT, session.DCQLQuery, session.Nonce, effectiveClientID, h.trustedIssuers, h.requireTrustedIssuer, h.keys.PublicKey())
-		}
+		result, err = h.verifyDCQLResponse(ctx, vpToken, session, effectiveClientID)
 	} else {
 		def := unmarshalPresentationDef(session.PresentationDefinition)
 		result, err = oid4w.VerifyPresentation(
@@ -486,7 +589,7 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 			session.Nonce,
 			effectiveClientID,
 			nil, // no additional trusted issuers beyond local key
-			h.keys.PublicKey(),
+			h.localCredentialVerificationKey(vpToken, h.cfg.BaseURL()+"/"+org.Slug),
 		)
 	}
 	if err != nil {
@@ -497,26 +600,36 @@ func (h *OID4VPHandler) Response(c echo.Context) error {
 		})
 	}
 
-	// Persist verified claims and mark session complete.
-	_ = h.repo.CompletePresentationSession(ctx, state, result.Claims)
-
-	// If this VP session was linked to a CIBA request (CIBA+OID4VP SCA flow),
-	// auto-approve the CIBA request with the verified credential claims.
-	// The polling client will receive tokens on the next /token poll, with
-	// acr="urn:clavex:acr:oid4vp-credential" and verified_claims in the ID token.
-	if session.CIBAAuthReqID != nil && h.cibaRequests != nil {
-		cibaReq, cibaGetErr := h.cibaRequests.Get(ctx, *session.CIBAAuthReqID)
-		if cibaGetErr == nil && cibaReq != nil && cibaReq.Status == "pending" && cibaReq.UserID != nil {
-			if approveErr := h.cibaRequests.ApproveWithVPClaims(
-				ctx,
-				*session.CIBAAuthReqID,
-				*cibaReq.UserID,
-				result.Claims,
-				cibaVPACR,
-			); approveErr != nil {
-				// Log but don't fail — the VP is verified, auto-approval failure is non-fatal.
-				c.Logger().Errorf("ciba+oid4vp: auto-approve failed for %s: %v", *session.CIBAAuthReqID, approveErr)
+	if session.CIBAAuthReqID != nil {
+		if err := h.completeBoundCIBA(ctx, state, org.ID, result); err != nil {
+			if errors.Is(err, errWalletStatusRejected) {
+				_ = h.repo.FailPresentationSession(ctx, state)
+				return walletStatusError(c, err)
 			}
+			if errors.Is(err, errWalletIdentityMismatch) || errors.Is(err, pgx.ErrNoRows) {
+				_ = h.repo.FailPresentationSession(ctx, state)
+				return c.JSON(http.StatusBadRequest, map[string]string{"error": "credential_subject_mismatch"})
+			}
+			return echo.ErrServiceUnavailable
+		}
+	} else {
+		scoped, tx, err := h.repo.BeginIssuance(ctx)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		defer tx.Rollback(ctx)
+		slug, settings, err := repository.NewWalletIdentityRepository(tx).LockActiveOrg(ctx, org.ID)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		if err := checkWalletStatus(ctx, scoped, org.ID, h.cfg.BaseURL()+"/"+slug, settings, result, false); err != nil {
+			return walletStatusError(c, err)
+		}
+		if err := scoped.CompletePresentationSession(ctx, state, result.Claims); err != nil {
+			return c.JSON(http.StatusBadRequest, map[string]string{"error": "expired_or_used"})
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return echo.ErrServiceUnavailable
 		}
 	}
 
@@ -576,6 +689,11 @@ func (h *OID4VPHandler) CreateLoginChallengeSession(
 	dcqlQuery map[string]any,
 	pdQuery map[string]any,
 ) (*models.PresentationSession, error) {
+	if dcqlQuery != nil {
+		if _, err := oid4w.ParseDCQL(dcqlQuery); err != nil {
+			return nil, err
+		}
+	}
 	requestID, err := generateRequestID()
 	if err != nil {
 		return nil, err
@@ -604,7 +722,7 @@ func (h *OID4VPHandler) CreateLoginChallengeSession(
 		nonce,
 		time.Now().Add(10*time.Minute),
 		nil, // not a CIBA flow
-		loginClientID,
+		loginClientID, h.defaultResponseMode(),
 	)
 }
 
@@ -723,90 +841,55 @@ func generateRequestID() (string, error) {
 	return base64.RawURLEncoding.EncodeToString(b), nil
 }
 
-// dcqlCredentialFormat returns the format of the first credential in a DCQL query,
-// or empty string if the query is malformed or has no credentials.
-func dcqlCredentialFormat(dcqlQuery map[string]interface{}) string {
-	creds, _ := dcqlQuery["credentials"].([]interface{})
-	if len(creds) == 0 {
-		return ""
-	}
-	first, _ := creds[0].(map[string]interface{})
-	fmt, _ := first["format"].(string)
-	return fmt
-}
-
 // verifyMdocDCQLVPToken verifies a DCQL vp_token containing an mso_mdoc credential.
 // The vp_token is a JSON object {"<id>": ["<base64url-DeviceResponse-CBOR>", ...]}.
-// Issuer signature verification is intentionally skipped for external issuers
-// (same policy as VerifyDCQLPresentation for SD-JWT).
-func verifyMdocDCQLVPToken(vpToken string) (*oid4w.VerificationResult, error) {
-	// Extract the first presentation bytes from {"<id>": ["<cbor>", ...]}.
-	var obj map[string][]string
-	if err := json.Unmarshal([]byte(vpToken), &obj); err != nil {
-		return nil, fmt.Errorf("mdoc dcql: parse vp_token envelope: %w", err)
-	}
-	var raw string
-	for _, vals := range obj {
-		if len(vals) > 0 {
-			raw = vals[0]
-			break
-		}
-	}
-	if raw == "" {
-		return nil, fmt.Errorf("mdoc dcql: no presentation found in vp_token")
-	}
-
-	der, err := base64.RawURLEncoding.DecodeString(raw)
+// Issuer trust, device authentication, query constraints and session binding
+// are mandatory. Certificates supplied in the response do not establish trust.
+func (h *OID4VPHandler) verifyMdocDCQLVPToken(ctx context.Context, vpToken string, session *models.PresentationSession, clientID string) (*oid4w.VerificationResult, error) {
+	query, err := oid4w.ParseMDOCQuery(session.DCQLQuery)
 	if err != nil {
-		// Try standard base64 as fallback.
-		der, err = base64.StdEncoding.DecodeString(raw)
-		if err != nil {
-			return nil, fmt.Errorf("mdoc dcql: base64 decode: %w", err)
-		}
+		return nil, err
 	}
-
-	dr, err := mdoc.ParseDeviceResponse(der)
+	raw, err := query.Extract(vpToken)
 	if err != nil {
-		return nil, fmt.Errorf("mdoc dcql: parse DeviceResponse: %w", err)
+		return nil, err
 	}
-	if len(dr.Documents) == 0 {
-		return nil, fmt.Errorf("mdoc dcql: DeviceResponse contains no documents")
+	data, err := base64.RawURLEncoding.DecodeString(raw)
+	if err != nil {
+		return nil, err
 	}
-
-	// VerifyDeviceResponse checks MSO/issuer signature and digest bindings.
-	// TrustedRoots left nil → skip issuer cert chain validation for external issuers.
-	vdocs, errs := mdoc.VerifyDeviceResponse(dr, mdoc.VerificationOptions{})
-	if len(vdocs) == 0 && len(errs) > 0 {
-		return nil, fmt.Errorf("mdoc dcql: verify DeviceResponse: %v", errs[0])
+	dr, err := mdoc.ParseDeviceResponse(data)
+	if err != nil {
+		return nil, err
 	}
-	if len(vdocs) == 0 {
-		return nil, fmt.Errorf("mdoc dcql: no verified documents")
+	if len(dr.Documents) != 1 {
+		return nil, fmt.Errorf("mdoc profile requires exactly one document")
 	}
-
-	vd := vdocs[0]
-	claims := mdoc.ToOIDCClaims(mdoc.ExtractAttributes(vd, ""), vd.DocType)
-	return &oid4w.VerificationResult{Claims: claims}, nil
-}
-
-// extractDCQLVPToken handles the OID4VP 1.0 Final §8.3 vp_token format for DCQL.
-// In DCQL mode the wallet sends vp_token as a JSON object:
-//
-//	{"<credential_id>": ["<sd-jwt-presentation>", ...], ...}
-//
-// This function returns the first SD-JWT string found inside that object.
-// If the input is already a plain SD-JWT string (legacy PEv2 flow), it is
-// returned unchanged.
-func extractDCQLVPToken(vpToken string) string {
-	var obj map[string][]string
-	if err := json.Unmarshal([]byte(vpToken), &obj); err != nil {
-		return vpToken
+	if dr.Documents[0].DocType != query.Meta.DocType {
+		return nil, fmt.Errorf("mdoc doctype does not match query")
 	}
-	for _, presentations := range obj {
-		if len(presentations) > 0 {
-			return presentations[0]
-		}
+	roots, err := h.iacaRepo.GetCertPoolForDocType(ctx, session.OrgID, query.Meta.DocType)
+	if err != nil {
+		return nil, err
 	}
-	return vpToken
+	transcript, err := mdoc.BuildRedirectSessionTranscript(clientID, session.ResponseURI, session.Nonce, session.ResponseKeyThumbprint)
+	if err != nil {
+		return nil, err
+	}
+	verified, errs := mdoc.VerifyDeviceResponse(dr, mdoc.VerificationOptions{TrustedRoots: roots, RequireTrustedIssuer: true, RequireDeviceAuth: true, SessionTranscript: transcript})
+	if len(errs) > 0 {
+		return nil, errs[0]
+	}
+	if len(verified) != 1 {
+		return nil, fmt.Errorf("mdoc document not verified")
+	}
+	vd := verified[0]
+	if err := query.Match(vd.DocType, vd.Attributes); err != nil {
+		return nil, err
+	}
+	claims := mdoc.ToOIDCClaims(mdoc.ExtractAttributes(vd, primaryNamespace(vd.DocType)), vd.DocType)
+	claims["_mdoc_namespaces"] = vd.Attributes
+	return &oid4w.VerificationResult{Claims: claims, Identity: &oid4w.VerifiedCredentialIdentity{Format: "mso_mdoc", Issuer: oid4w.MDOCIssuerIdentity(vd.IssuerCert), CredentialType: vd.DocType, ExpiresAt: vd.ValidUntil, IssuerTrusted: true, HolderBound: true, Status: vd.Status, CertificateChains: vd.VerifiedChains, IssuerCOSEHash: vd.IssuerAuthHash}}, nil
 }
 
 // unmarshalPresentationDef deserialises a map[string]interface{} (from the DB
@@ -882,20 +965,10 @@ func (h *OID4VPHandler) RPMetadata(c echo.Context) error {
 	now := time.Now().UTC()
 	exp := now.Add(365 * 24 * time.Hour)
 
+	// Retain the federation profile's legacy field separately from Final metadata.
 	vpFormats := map[string]interface{}{
-		"jwt_vc_json": map[string]interface{}{
-			"alg_values_supported": []string{"ES256", "RS256"},
-		},
-		"jwt_vp_json": map[string]interface{}{
-			"alg_values_supported": []string{"ES256", "RS256"},
-		},
-		"mso_mdoc": map[string]interface{}{
-			"alg_values_supported": []string{"ES256"},
-		},
-		"dc+sd-jwt": map[string]interface{}{
-			"sd-jwt_alg_values":    []string{"ES256", "RS256"},
-			"kb-jwt_alg_values":    []string{"ES256", "RS256"},
-		},
+		"mso_mdoc":  map[string]interface{}{"alg_values_supported": []string{"ES256", "ES384", "ES512"}},
+		"dc+sd-jwt": map[string]interface{}{"sd-jwt_alg_values": []string{"ES256", "PS256", "RS256"}, "kb-jwt_alg_values": []string{"ES256", "PS256"}},
 	}
 
 	claims := make([]map[string]interface{}, 0, len(dataCategories))
@@ -911,33 +984,34 @@ func (h *OID4VPHandler) RPMetadata(c echo.Context) error {
 	}
 
 	rpMetadata := map[string]interface{}{
-		"application_type":              "web",
-		"client_id":                     entityID,
-		"client_name":                   org.Name,
-		"redirect_uris":                 redirectURIs,
-		"response_types":                []string{"vp_token", "id_token"},
-		"vp_formats":                    vpFormats,
-		"subject_type":                  "pairwise",
-		"id_token_signed_response_alg":  "RS256",
-		"request_object_signing_alg":    "RS256",
-		"purpose":                       purpose,
-		"claims":                        claims,
-		"retention_period_years":        retentionYears,
-		"data_categories":               dataCategories,
-		"contacts":                      contacts,
-		"trust_anchor_id":               "https://registry.servizicie.interno.gov.it",
+		"application_type":             "web",
+		"client_id":                    entityID,
+		"client_name":                  org.Name,
+		"redirect_uris":                redirectURIs,
+		"response_types":               []string{"vp_token", "id_token"},
+		"vp_formats":                   vpFormats,
+		"vp_formats_supported":         defaultClientMetadata["vp_formats_supported"],
+		"subject_type":                 "pairwise",
+		"id_token_signed_response_alg": "RS256",
+		"request_object_signing_alg":   "RS256",
+		"purpose":                      purpose,
+		"claims":                       claims,
+		"retention_period_years":       retentionYears,
+		"data_categories":              dataCategories,
+		"contacts":                     contacts,
+		"trust_anchor_id":              "https://registry.servizicie.interno.gov.it",
 	}
 
 	// Public JWKS from the org's signing key
 	jwksRaw := json.RawMessage(h.keys.JWKS())
 
 	entityConfig := map[string]interface{}{
-		"iss":      entityID,
-		"sub":      entityID,
-		"iat":      now.Unix(),
-		"exp":      exp.Unix(),
+		"iss":         entityID,
+		"sub":         entityID,
+		"iat":         now.Unix(),
+		"exp":         exp.Unix(),
 		"entity_type": []string{"openid_relying_party"},
-		"jwks":     jwksRaw,
+		"jwks":        jwksRaw,
 		"metadata": map[string]interface{}{
 			"openid_relying_party": rpMetadata,
 			"federation_entity": map[string]interface{}{
@@ -949,9 +1023,9 @@ func (h *OID4VPHandler) RPMetadata(c echo.Context) error {
 			},
 		},
 		"_clavex": map[string]interface{}{
-			"generated_at":           now.Format(time.RFC3339),
-			"agid_registration_url":  "https://registry.servizicie.interno.gov.it/federation/enrollment",
-			"spec_version":           "eIDAS 2.0 / OpenID Federation 1.0",
+			"generated_at":          now.Format(time.RFC3339),
+			"agid_registration_url": "https://registry.servizicie.interno.gov.it/federation/enrollment",
+			"spec_version":          "eIDAS 2.0 / OpenID Federation 1.0",
 		},
 	}
 
@@ -990,9 +1064,9 @@ func (h *OID4VPHandler) RPMetadata(c echo.Context) error {
 // batchVerifyRequest is a single item in the batch-verify body.
 type batchVerifyRequest struct {
 	// ID is a caller-supplied correlation identifier returned unchanged in each result.
-	ID                     string                 `json:"id" validate:"required"`
-	VPToken                string                 `json:"vp_token" validate:"required"`
-	Nonce                  string                 `json:"nonce" validate:"required"`
+	ID      string `json:"id" validate:"required"`
+	VPToken string `json:"vp_token" validate:"required"`
+	Nonce   string `json:"nonce" validate:"required"`
 	// Audience is the expected KB-JWT aud (client_id / response_uri the holder
 	// targeted). Required when the presentation carries a holder-binding KB-JWT;
 	// ignored for presentations without one.
@@ -1019,8 +1093,13 @@ type batchVerifyRequest struct {
 //	  ]
 //	}
 func (h *OID4VPHandler) BatchVerify(c echo.Context) error {
-	if _, err := uuid.Parse(c.Param("org_id")); err != nil {
+	orgID, err := uuid.Parse(c.Param("org_id"))
+	if err != nil {
 		return echo.ErrBadRequest
+	}
+	org, err := h.orgs.GetByID(c.Request().Context(), orgID)
+	if err != nil {
+		return echo.ErrNotFound
 	}
 
 	var body struct {
@@ -1046,7 +1125,16 @@ func (h *OID4VPHandler) BatchVerify(c echo.Context) error {
 	results := make([]itemResult, len(body.Items))
 	for i, item := range body.Items {
 		def := unmarshalPresentationDef(item.PresentationDefinition)
-		vr, err := oid4w.VerifyPresentation(item.VPToken, def, item.Nonce, item.Audience, nil, h.keys.PublicKey())
+		vr, err := oid4w.VerifyPresentation(item.VPToken, def, item.Nonce, item.Audience, nil, h.localCredentialVerificationKey(item.VPToken, h.cfg.BaseURL()+"/"+org.Slug))
+		if err == nil {
+			scoped, tx, txErr := h.repo.BeginIssuance(c.Request().Context())
+			if txErr != nil {
+				err = errWalletStatusUnavailable
+			} else {
+				err = checkWalletStatus(c.Request().Context(), scoped, orgID, h.cfg.BaseURL()+"/"+org.Slug, org.Settings, vr, false)
+				_ = tx.Rollback(c.Request().Context())
+			}
+		}
 		if err != nil {
 			msg := err.Error()
 			results[i] = itemResult{ID: item.ID, Verified: false, Error: &msg}

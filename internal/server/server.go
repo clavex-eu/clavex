@@ -40,6 +40,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/session"
 	"github.com/clavex-eu/clavex/internal/shield"
 	"github.com/clavex-eu/clavex/internal/ssf"
+	"github.com/clavex-eu/clavex/internal/walletsigning"
 	"github.com/clavex-eu/clavex/internal/webhook"
 	"github.com/clavex-eu/clavex/internal/worker"
 	"github.com/google/uuid"
@@ -55,27 +56,28 @@ import (
 
 // Server wraps the Echo instance and holds shared dependencies.
 type Server struct {
-	echo           *echo.Echo
-	cfg            *config.Config
-	pool           *pgxpool.Pool
-	enc            *crypto.Encryptor
-	dispatcher     *audit.Dispatcher
-	retention      *audit.RetentionWorker
-	gdprWorker     *gdprpkg.RetentionWorker
-	webhookDisp    *webhook.Dispatcher
-	webhookRepo    *repository.WebhookRepository
-	licenseChecker *license.Checker
-	ssfDisp        *ssf.Dispatcher
-	pamNotifier    *alerting.PAMNotifier
-	feedClient     *shield.FeedClient      // nil when distributed threat feed disabled
-	merkleSealer   *merkle.Sealer          // nil when signing key is not configured
-	oidcH          *handler.OIDCHandler    // kept for post-New wiring (e.g. WithPQCSigner)
-	fedH           *federation.Handler     // kept for post-New wiring (WithEncKeys)
-	dbSigner       *oidc.DBSigner          // nil unless key_backend=db; target of scheduled global OIDC rotation
-	pqcSigner      *oidc.PQCSigner         // nil unless PQC enabled; target of scheduled global PQC rotation
-	orgSigners     *oidc.OrgSignerCache    // nil unless key_backend=db; target of scheduled per-org OIDC rotation
-	orgPQCSigners  *oidc.OrgPQCSignerCache // nil unless PQC enabled+key_backend=db; target of scheduled per-org PQC rotation
-	deviceMTLSSrv  *http.Server            // nil unless HTTP.DeviceMTLSAddr is configured
+	tenantKeyRotationH *handler.KeyRotationHandler
+	echo               *echo.Echo
+	cfg                *config.Config
+	pool               *pgxpool.Pool
+	enc                *crypto.Encryptor
+	dispatcher         *audit.Dispatcher
+	retention          *audit.RetentionWorker
+	gdprWorker         *gdprpkg.RetentionWorker
+	webhookDisp        *webhook.Dispatcher
+	webhookRepo        *repository.WebhookRepository
+	licenseChecker     *license.Checker
+	ssfDisp            *ssf.Dispatcher
+	pamNotifier        *alerting.PAMNotifier
+	feedClient         *shield.FeedClient      // nil when distributed threat feed disabled
+	merkleSealer       *merkle.Sealer          // nil when signing key is not configured
+	oidcH              *handler.OIDCHandler    // kept for post-New wiring (e.g. WithPQCSigner)
+	fedH               *federation.Handler     // kept for post-New wiring (WithEncKeys)
+	dbSigner           *oidc.DBSigner          // nil unless key_backend=db; target of scheduled global OIDC rotation
+	pqcSigner          *oidc.PQCSigner         // nil unless PQC enabled; target of scheduled global PQC rotation
+	orgSigners         *oidc.OrgSignerCache    // nil unless key_backend=db; target of scheduled per-org OIDC rotation
+	orgPQCSigners      *oidc.OrgPQCSignerCache // nil unless PQC enabled+key_backend=db; target of scheduled per-org PQC rotation
+	deviceMTLSSrv      *http.Server            // nil unless HTTP.DeviceMTLSAddr is configured
 }
 
 // SSFDispatcher returns the SSF event dispatcher. Used by workers that need
@@ -104,6 +106,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	// (e.g. the license Checker, wired via WithLicense) reads it lazily through
 	// this pointer, which is non-nil by the time any request is served.
 	var srvRef *Server
+	var tenantKeyRotationH *handler.KeyRotationHandler
 
 	// ── Trusted-proxy IP extraction ───────────────────────────────────────────
 	// When running behind a reverse proxy or Kubernetes ingress, RemoteAddr is the
@@ -315,12 +318,18 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	eidasH := handler.NewEidasHandler(pool, store)
 
 	// ── eIDAS 2.0 / OID4VCI / OID4VP / Compliance handlers ──────────────────
+	walletVaultProfiles := walletsigning.LoadRegistry(cfg.OID4VCI.WalletVaultProfilesFile)
 	oid4vciH := handler.NewOID4VCIHandler(pool, keys, walletBaseURL).
+		WithMdocSigningStorage(enc, walletVaultProfiles).
+		WithMetadataSigningFiles(cfg.OID4VCI.MetadataCertFile, cfg.OID4VCI.MetadataKeyFile).
+		WithCredentialSigningFiles(cfg.OID4VCI.CredentialCertFile, cfg.OID4VCI.CredentialKeyFile).
 		WithRedis(rdb).
 		WithStatusDispatcher(oid4w.NewCredStatusDispatcher())
 	analyticsH := handler.NewCredentialAnalyticsHandler(pool)
-	oid4vpH := handler.NewOID4VPHandler(pool, keys, walletBaseURL, parseTrustedIssuers(cfg.OID4VP.TrustedCredentialIssuers), cfg.OID4VP.RequireTrustedIssuer, repository.NewCIBARepository(pool), cfg.OID4VP.JARCertFile, cfg.OID4VP.JARKeyFile)
+	oid4vpH := handler.NewOID4VPHandler(pool, keys, walletBaseURL, parseTrustedIssuers(cfg.OID4VP.TrustedCredentialIssuers), cfg.OID4VP.RequireTrustedIssuer, repository.NewCIBARepository(pool), cfg.OID4VP.JARCertFile, cfg.OID4VP.JARKeyFile).WithResponseEncryption(enc)
 	walletH := handler.NewWalletHandler(repository.NewOID4WRepository(pool))
+	credentialKeyStart, credentialKeyEnd := oid4vciH.CredentialSigningKeyValidity()
+	oid4vpH.WithCredentialSigningPublicKey(oid4vciH.CredentialSigningPublicKey(), credentialKeyStart, credentialKeyEnd)
 	mdocProximityH := handler.NewMdocProximityHandler(pool, keys, walletBaseURL)
 	complianceH := handler.NewComplianceHandler(pool, keys)
 	loginHistoryH := handler.NewLoginHistoryHandler(pool).WithAuditor(entityAuditor)
@@ -350,6 +359,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	oidcH.WithOID4VCIHandler(oid4vciH)
 	walletStepUpH := handler.NewWalletStepUpHandler(pool, store, keys, walletBaseURL).
 		WithSSFDispatcher(ssfDisp)
+	walletIdentityH := handler.NewWalletIdentityHandler(pool, walletBaseURL)
 	oidcH.WithWalletStepUp(walletStepUpH)
 	// Opt-in: score agent-token usage for anomalies on introspection and reuse
 	// the wallet step-up above for the delegating user when a token is anomalous.
@@ -759,6 +769,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		tenant.POST("/oid4vci/notification", oid4vciH.Notification)
 		// Status list (Token Status List — IETF draft-ietf-oauth-status-list)
 		tenant.GET("/oid4vci/status-list/:list_id", oid4vciH.StatusList)
+		tenant.GET("/oid4vci/iaca-crl/:fingerprint", oid4vciH.MdocIACACRL)
 		// SSE push for credential lifecycle events (revoked / restored).
 		// Wallet subscribes by presenting its SD-JWT as a Bearer token.
 		tenant.GET("/oid4vci/status-updates", oid4vciH.StatusUpdates)
@@ -921,13 +932,6 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		adminOrgs.GET("/:id/feature-flags/:key/overrides", orgs.ListFlagOverrides)
 		adminOrgs.PUT("/:id/feature-flags/:key/overrides", orgs.SetFlagOverride)
 		adminOrgs.DELETE("/:id/feature-flags/:key/overrides", orgs.DeleteFlagOverride)
-		// BYOK: per-org signing key management (only available with key_backend=db)
-		if len(orgSigners) > 0 && orgSigners[0] != nil {
-			orgKeyH := handler.NewOrgSigningKeyHandler(pool, orgSigners[0])
-			adminOrgs.GET("/:id/signing-key", orgKeyH.Get)
-			adminOrgs.PUT("/:id/signing-key", orgKeyH.Upsert)
-			adminOrgs.DELETE("/:id/signing-key", orgKeyH.Delete)
-		}
 
 		// Admin API keys — superadmin only
 		adminAPIKeys := admin.Group("/superadmin/api-keys", middleware.RequireSuperAdmin())
@@ -1042,6 +1046,9 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Wallet step-up — Continuous Adaptive Authentication (CAA):
 		// admin/RS creates a step-up challenge; backend/RS polls for completion.
 		adminUsers.POST("/:user_id/wallet-stepup", walletStepUpH.CreateChallenge)
+		adminUsers.POST("/:user_id/wallet-identities", walletIdentityH.Create)
+		adminUsers.GET("/:user_id/wallet-identities", walletIdentityH.List)
+		adminUsers.DELETE("/:user_id/wallet-identities/:link_id", walletIdentityH.Revoke)
 		orgScoped.GET("/wallet-stepup/:challenge_id", walletStepUpH.GetChallengeStatus,
 			middleware.RequireResourcePermission("users"))
 
@@ -1490,6 +1497,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		adminVCI.GET("/analytics/summary", analyticsH.Summary)
 		adminVCI.GET("/issued", oid4vciH.ListIssued)
 		adminVCI.POST("/issued/:cred_id/revoke", oid4vciH.RevokeCredential)
+		adminVCI.POST("/issued/:cred_id/suspend", oid4vciH.SuspendCredential)
 		adminVCI.POST("/issued/:cred_id/restore", oid4vciH.RestoreCredential)
 		// /offers is rate-limited per-endpoint (configurable via endpoint_limits)
 		adminVCIOffers := adminVCI.Group("/offers")
@@ -1532,15 +1540,26 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// IACA trust anchors — upload / list / remove per-org CA certs for
 		// IssuerAuth chain validation (ISO 18013-5 §9.3.3).
 		iacaH := handler.NewIACAHandler(pool)
+		adminMdoc.GET("/iaca-catalog", iacaH.Catalog)
 		adminMdoc.POST("/iaca-roots", iacaH.Upload)
 		adminMdoc.GET("/iaca-roots", iacaH.List)
 		adminMdoc.DELETE("/iaca-roots/:root_id", iacaH.Delete)
 		// mdoc issuer DS keys — manage DS keypairs used for OID4VCI mso_mdoc issuance.
-		mdocIssuerH := handler.NewMdocIssuerHandler(pool)
-		adminMdoc.POST("/issuers/generate", mdocIssuerH.Generate)
-		adminMdoc.POST("/issuers", mdocIssuerH.Create)
-		adminMdoc.GET("/issuers", mdocIssuerH.List)
-		adminMdoc.DELETE("/issuers/:issuer_id", mdocIssuerH.Delete)
+		mdocIssuerH := handler.NewMdocIssuerHandler(pool).WithSigningStorage(enc, walletVaultProfiles)
+		// Signing-key custody is an installation-superadmin operation. Preserve
+		// existing endpoint URLs, but deny ordinary tenant admins at the server.
+		mdocSigning := adminMdoc.Group("", middleware.RequireSuperAdmin())
+		mdocSigning.GET("/vault-signers", mdocIssuerH.VaultProfiles)
+		mdocSigning.POST("/issuers/generate", mdocIssuerH.Generate, echomw.BodyLimit("4K"))
+		mdocSigning.POST("/issuers", mdocIssuerH.Create, echomw.BodyLimit("640K"))
+		mdocSigning.GET("/issuers", mdocIssuerH.List)
+		mdocSigning.DELETE("/issuers/:issuer_id", mdocIssuerH.Delete)
+		superMdoc := adminSuperadmin.Group("/organizations/:org_id/mdoc")
+		superMdoc.GET("/vault-signers", mdocIssuerH.VaultProfiles)
+		superMdoc.POST("/issuers/generate", mdocIssuerH.Generate, echomw.BodyLimit("4K"))
+		superMdoc.POST("/issuers", mdocIssuerH.Create, echomw.BodyLimit("640K"))
+		superMdoc.GET("/issuers", mdocIssuerH.List)
+		superMdoc.DELETE("/issuers/:issuer_id", mdocIssuerH.Delete)
 
 		// ── CIBA admin — approve/deny backchannel auth requests ──────────────
 		cibaG := orgScoped.Group("/ciba", middleware.RequireResourcePermission("sessions"))
@@ -1644,14 +1663,27 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Public scope-discovery endpoint (no auth guard — safe, read-only, no PII).
 		orgScoped.GET("/agent-tokens/mcp-scopes", agentTokenH.MCPScopes)
 
-		// ── Signing-key rotation policy (global OIDC/PQC keys) ────────────────
+		// Tenant security administrators manage tenant keys; installation
+		// superadmins manage global keys through the separate endpoints above.
 		keyRotationH := handler.NewKeyRotationHandler(cfg, pool)
-		keyRotation := orgScoped.Group("/key-rotation", middleware.RequireResourcePermission("security"))
+		tenantKeyRotationH = keyRotationH
+		var tenantRSA *oidc.OrgSignerCache
+		if len(orgSigners) > 0 {
+			tenantRSA = orgSigners[0]
+		}
+		// Avoid putting a typed nil into the rotator interface.
+		if tenantRSA != nil {
+			keyRotationH.WithOrgRotators(tenantRSA, nil)
+			orgKeyH := handler.NewOrgSigningKeyHandler(pool, tenantRSA, audit.NewEmitter(cfg.Auth.IssuerBase, repository.NewAuditRepository(pool)))
+			orgKeys := orgScoped.Group("/signing-key", middleware.RequireTenantKeyAdministrator(), middleware.RequireResourcePermission("security"))
+			orgKeys.GET("", orgKeyH.Get)
+			orgKeys.PUT("", orgKeyH.Upsert)
+			orgKeys.DELETE("", orgKeyH.Delete)
+		}
+		keyRotation := orgScoped.Group("/key-rotation", middleware.RequireTenantKeyAdministrator(), middleware.RequireResourcePermission("security"))
 		keyRotation.GET("", keyRotationH.Status)
-		// OIDC keys are now per-org, so an org's security admin manages their own
-		// OIDC rotation policy here. PQC is still a process-global singleton, so
-		// SetPolicy enforces superadmin-only for kind=pqc internally.
 		keyRotation.PUT("/:kind", keyRotationH.SetPolicy)
+		keyRotation.POST("/:kind/rotate", keyRotationH.Rotate)
 
 		// ── Fine-Grained Authorization (OpenFGA ReBAC) ────────────────────────
 		var fgaClient *fga.Client
@@ -1992,21 +2024,22 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		Msg("routes registered")
 
 	srvRef = &Server{
-		echo:         e,
-		cfg:          cfg,
-		pool:         pool,
-		enc:          enc,
-		dispatcher:   dispatcher,
-		retention:    retentionWorker,
-		gdprWorker:   gdprWorker,
-		webhookDisp:  webhooks.Dispatcher(),
-		webhookRepo:  webhookRepo,
-		ssfDisp:      ssfDisp,
-		pamNotifier:  pamNotifier,
-		feedClient:   feedClient,
-		merkleSealer: merkleSealer,
-		oidcH:        oidcH,
-		fedH:         fedH,
+		tenantKeyRotationH: tenantKeyRotationH,
+		echo:               e,
+		cfg:                cfg,
+		pool:               pool,
+		enc:                enc,
+		dispatcher:         dispatcher,
+		retention:          retentionWorker,
+		gdprWorker:         gdprWorker,
+		webhookDisp:        webhooks.Dispatcher(),
+		webhookRepo:        webhookRepo,
+		ssfDisp:            ssfDisp,
+		pamNotifier:        pamNotifier,
+		feedClient:         feedClient,
+		merkleSealer:       merkleSealer,
+		oidcH:              oidcH,
+		fedH:               fedH,
 	}
 	// Keep a typed reference to the DB signer (if that is the active backend)
 	// so the scheduled key-rotation worker can call Rotate() on it.
@@ -2037,6 +2070,9 @@ func (s *Server) WithOrgPQCSigners(cache *oidc.OrgPQCSignerCache) *Server {
 		s.oidcH.WithOrgPQCSigners(cache)
 	}
 	s.orgPQCSigners = cache
+	if s.tenantKeyRotationH != nil && s.orgSigners != nil && cache != nil {
+		s.tenantKeyRotationH.WithOrgRotators(s.orgSigners, cache)
+	}
 	return s
 }
 
@@ -2106,6 +2142,7 @@ func (s *Server) Start() error {
 	if s.merkleSealer != nil {
 		go s.merkleSealer.RunAllOrgs(ctx, 5*time.Minute)
 	}
+	go worker.RunWalletStatusMonitor(ctx, s.pool)
 	go worker.RunEntityReviewWorker(ctx, s.pool, entityReviewBaseURL)
 	go worker.RunPAMRotationWorker(ctx, s.pool, s.enc, s.pamNotifier, s.webhookDisp)
 	go worker.RunDeviceCARotationWorker(ctx, s.pool, s.enc, s.webhookDisp)

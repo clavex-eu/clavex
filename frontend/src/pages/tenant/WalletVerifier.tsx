@@ -10,6 +10,7 @@ import {
 import { useAuthStore } from '@/stores/auth'
 import api from '@/lib/api'
 import { Button } from '@/components/ui'
+import WalletTrust from './WalletTrust'
 
 // ── Types ─────────────────────────────────────────────────────────────────────
 
@@ -45,7 +46,7 @@ interface GDPRWarning {
 const PRESETS = [
   {
     id: 'pid',
-    label: 'PID — Person Identification',
+    label: 'PID — SD-JWT VC',
     icon: '🪪',
     description: 'Name, date of birth, tax ID (codice fiscale), nationality',
     definition: {
@@ -78,8 +79,27 @@ const PRESETS = [
     },
   },
   {
+    id: 'pid-mdoc',
+    label: 'PID — MSO mdoc',
+    icon: '🪪',
+    description: 'Name and date of birth from an EUDI PID in MSO mdoc format',
+    definition: null,
+    dcqlQuery: {
+      credentials: [{
+        id: 'pid-mdoc',
+        format: 'mso_mdoc',
+        meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+        claims: [
+          { path: ['eu.europa.ec.eudi.pid.1', 'given_name'] },
+          { path: ['eu.europa.ec.eudi.pid.1', 'family_name'] },
+          { path: ['eu.europa.ec.eudi.pid.1', 'birth_date'] },
+        ],
+      }],
+    },
+  },
+  {
     id: 'mdl',
-    label: 'mDL — Driving Licence',
+    label: 'mDL — MSO mdoc',
     icon: '🚗',
     description: 'Name, birth date, driving privilege categories (ISO 18013-5)',
     definition: {
@@ -114,7 +134,7 @@ const PRESETS = [
   },
   {
     id: 'age',
-    label: 'Age Verification',
+    label: 'Age ≥ 18 — SD-JWT VC',
     icon: '🔞',
     description: 'age_over_18 boolean only — minimal data, GDPR-friendly',
     definition: {
@@ -131,14 +151,29 @@ const PRESETS = [
       credentials: [{
         id: 'age-check',
         format: 'dc+sd-jwt',
-        meta: { vct_values: ['eu.europa.ec.eudi.pid.1'] },
+        meta: { vct_values: ['urn:eudi:pid:1'] },
         claims: [{ path: ['age_over_18'] }],
       }],
     },
   },
   {
+    id: 'age-mdoc',
+    label: 'Age ≥ 18 — MSO mdoc',
+    icon: '🔞',
+    description: 'Request only age_over_18 from an EUDI PID in MSO mdoc format',
+    definition: null,
+    dcqlQuery: {
+      credentials: [{
+        id: 'age-check-mdoc',
+        format: 'mso_mdoc',
+        meta: { doctype_value: 'eu.europa.ec.eudi.pid.1' },
+        claims: [{ path: ['eu.europa.ec.eudi.pid.1', 'age_over_18'] }],
+      }],
+    },
+  },
+  {
     id: 'eidas',
-    label: 'eIDAS 2.0 EUDIW',
+    label: 'eIDAS 2.0 PID — SD-JWT VC',
     icon: '🇪🇺',
     description: 'Full eIDAS 2.0 PID bundle: name, address, birth place, nationality',
     definition: {
@@ -519,7 +554,7 @@ export default function WalletVerifier() {
   const [result,      setResult]      = useState<Session | null>(null)
   const [showHistory, setShowHistory] = useState(false)
   const [expandedSession, setExpandedSession] = useState<string | null>(null)
-  const [mainTab,     setMainTab]     = useState<'session' | 'batch'>('session')
+  const [mainTab,     setMainTab]     = useState<'session' | 'batch' | 'trust'>('session')
   const [conformanceEndpoint, setConformanceEndpoint] = useState('')
   const [showConformance, setShowConformance] = useState(false)
 
@@ -664,12 +699,13 @@ export default function WalletVerifier() {
       </div>
 
       {/* Tab bar */}
-      <div style={{ display: 'flex', gap: 0, borderBottom: '0.5px solid var(--clavex-border)', marginBottom: 24 }}>
+      <div role="group" aria-label="Wallet verifier views" style={{ display: 'flex', flexWrap: 'wrap', gap: 0, borderBottom: '0.5px solid var(--clavex-border)', marginBottom: 24 }}>
         {([
           { id: 'session', label: 'Session Verify', icon: <QrCode size={14} /> },
           { id: 'batch',   label: 'Batch Verify',   icon: <Layers size={14} /> },
+          { id: 'trust',   label: 'Issuer trust',   icon: <Shield size={14} /> },
         ] as const).map(t => (
-          <button key={t.id} onClick={() => setMainTab(t.id)}
+          <button key={t.id} type="button" aria-pressed={mainTab === t.id} onClick={() => setMainTab(t.id)}
             style={{ display: 'flex', alignItems: 'center', gap: 7, padding: '8px 18px',
               background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, fontWeight: 600,
               color: mainTab === t.id ? 'var(--clavex-primary)' : 'var(--clavex-neutral)',
@@ -681,9 +717,10 @@ export default function WalletVerifier() {
       </div>
 
       {mainTab === 'batch' && <BatchVerifyTab orgId={orgId ?? ''} />}
+      {mainTab === 'trust' && <WalletTrust orgId={orgId} />}
 
       {mainTab === 'session' && (
-      <div style={{ display: 'grid', gridTemplateColumns: '340px 1fr', gap: 24, alignItems: 'flex-start' }}>
+      <div className="grid grid-cols-1 xl:grid-cols-[340px_minmax(0,1fr)] gap-6 items-start">
 
         {/* ── Left: Configure + QR ─────────────────────────────────────────── */}
         <div style={{ display: 'flex', flexDirection: 'column', gap: 16 }}>
@@ -694,10 +731,15 @@ export default function WalletVerifier() {
               <p style={{ fontSize: 12, fontWeight: 700, color: 'var(--clavex-neutral)', textTransform: 'uppercase', letterSpacing: '0.1em', marginBottom: 14 }}>
                 Credential type
               </p>
+              <p style={{ fontSize: 12, color: 'var(--clavex-neutral)', marginBottom: 14, lineHeight: 1.5 }}>
+                Choose the format stored in the wallet. MSO mdoc and SD-JWT VC are separate credential formats.
+              </p>
               <div style={{ display: 'flex', flexDirection: 'column', gap: 8 }}>
                 {PRESETS.map(p => (
                   <button
                     key={p.id}
+                    type="button"
+                    aria-pressed={preset.id === p.id}
                     onClick={() => { setPreset(p); setJSONError('') }}
                     style={{
                       display: 'flex', alignItems: 'center', gap: 10,
@@ -1147,7 +1189,7 @@ function VerifiedResult({ claims, requestId }: { claims: Record<string, unknown>
         </div>
         <div>
           <div style={{ fontSize: 11, fontFamily: "'IBM Plex Mono', monospace", letterSpacing: '0.15em', textTransform: 'uppercase', color: '#16a34a', marginBottom: 4 }}>
-            ✓ Identità verificata
+            ✓ Presentazione verificata
           </div>
           <div style={{ fontSize: 22, fontWeight: 700, color: 'var(--clavex-ink)', letterSpacing: '-0.01em' }}>
             {name}
@@ -1180,7 +1222,17 @@ function VerifiedResult({ claims, requestId }: { claims: Record<string, unknown>
 
 // ── Claim grid ─────────────────────────────────────────────────────────────────
 
-function ClaimGrid({ claims }: { claims: Record<string, unknown> }) {
+function ClaimGrid({ claims, nested = false }: { claims: Record<string, unknown>; nested?: boolean }) {
+  const presentations = claims._clavex_presentations
+  if (!nested && Array.isArray(presentations)) {
+    return <div className="space-y-4">{presentations.map((entry: Record<string, unknown>, index: number) => (
+      <section key={`${String(entry.query_id)}-${index}`} className="rounded-lg p-4" style={{ border: '0.5px solid var(--clavex-border)' }} aria-label={`Credential ${index + 1}`}>
+        <h3 className="font-semibold text-sm mb-1">{String(entry.query_id)} · Credential {Number(entry.instance) + 1}</h3>
+        <p className="text-xs mb-3 break-all" style={{ color: 'var(--clavex-neutral)' }}>{String(entry.format)} · {String(entry.issuer)} · {String(entry.credential_status || 'Status not assessed')}</p>
+        <ClaimGrid claims={(entry.claims ?? {}) as Record<string, unknown>} nested />
+      </section>
+    ))}</div>
+  }
   const SKIP = ['iss', 'iat', 'exp', 'nbf', 'jti', 'aud', 'cnf', 'vct', 'status']
   const entries = Object.entries(claims).filter(([k]) => !SKIP.includes(k))
 
@@ -1225,6 +1277,7 @@ function StatusDot({ status }: { status: string }) {
 }
 
 function formatName(claims: Record<string, unknown>): string {
+  if (Array.isArray(claims._clavex_presentations)) return `${claims._clavex_presentations.length} verified credentials`
   const given  = claims.given_name  as string | undefined
   const family = claims.family_name as string | undefined
   if (given && family) return `${given} ${family}`

@@ -1,0 +1,217 @@
+{
+  "date": "2026-10-29",
+  "suite_repository": "https://gitlab.com/openid/conformance-suite.git",
+  "suite_commit": "23353b36957d6466010de767c812d2c91ed37638",
+  "suite_source_modified": false,
+  "execution": "Self-hosted, isolated loopback lab, synthetic data; selected cases, not certification",
+  "issuer_variant": {
+    "credential_format": "sd_jwt_vc",
+    "client_auth_type": "private_key_jwt",
+    "grant": "pre_authorization_code",
+    "flow": "issuer_initiated",
+    "sender_constrain": "dpop",
+    "encryption": "plain"
+  },
+  "verifier_variant": {
+    "credential_format": "sd_jwt_vc",
+    "response_type": "vp_token",
+    "response_mode": "direct_post",
+    "request": "url_query"
+  },
+  "totals": {
+    "PASSED": 17,
+    "FAILED": 2,
+    "REVIEW": 1
+  },
+  "results": [
+    {
+      "module": "oid4vci-1_0-issuer-metadata-test",
+      "id": "6guGhCfxUhJ93fA",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-metadata-test-signed",
+      "id": "ubSE07HAEfiUO4B",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-happy-flow",
+      "id": "GtiOCZHL1uk4mCV",
+      "status": "FINISHED",
+      "result": "FAILED",
+      "limitation": "Suite status-list verification cannot resolve kid: OAuth pre-authorized setup does not populate server_jwks; no embedded JWK. This blocks subsequent assertions in the access-token-in-query module."
+    },
+    {
+      "module": "oid4vp-1final-verifier-happy-flow",
+      "id": "LSnw5frnfmI27U0",
+      "status": "FINISHED",
+      "result": "REVIEW"
+    },
+    {
+      "module": "oid4vp-1final-verifier-invalid-kb-jwt-signature",
+      "id": "1FWghgmiJah9wwE",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-invalid-credential-signature",
+      "id": "NpqxICapklKBhOp",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-invalid-sd-hash",
+      "id": "t3MRD4SYyiJjhSf",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-invalid-kb-jwt-nonce",
+      "id": "6oQF44xux7lrZRR",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-invalid-kb-jwt-aud",
+      "id": "1zwhfnBDymNXbQs",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-kb-jwt-iat-in-past",
+      "id": "S3Ivk7fEKzzryiW",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-kb-jwt-iat-in-future",
+      "id": "TAPsgTa8NUO6q0i",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-present-revoked-credential",
+      "id": "9TRIor6N7Zbrv71",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vp-1final-verifier-wrong-vct",
+      "id": "dXhUcQJyPMj4bH6",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-fail-invalid-nonce",
+      "id": "hqntrzsdcQaea8c",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-fail-invalid-jwt-proof-signature",
+      "id": "hZ6IozXyDUqSyRn",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-fail-invalid-key-attestation-signature",
+      "id": "tG8v6zOC3E5FEBM",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-fail-missing-proof",
+      "id": "3vjpK1nTzb7skR3",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-fail-unknown-credential-configuration",
+      "id": "5qJpUXQf0fvF9hI",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-fail-unknown-credential-identifier",
+      "id": "nVPEIMtEbU1bbR0",
+      "status": "FINISHED",
+      "result": "PASSED"
+    },
+    {
+      "module": "oid4vci-1_0-issuer-fail-on-access-token-in-query",
+      "id": "UnLHPPzF39HvQXx",
+      "status": "FINISHED",
+      "result": "FAILED",
+      "limitation": "Suite status-list verification cannot resolve kid: OAuth pre-authorized setup does not populate server_jwks; no embedded JWK. This blocks subsequent assertions in the access-token-in-query module."
+    }
+  ],
+  "physical_wallet_test_executed": false,
+  "production_deployment": false,
+  "mobile_layout": {
+    "result": "PASSED_SELECTED_BROWSER_CHECKS",
+    "initial_finding": "Persistent sidebar clipped verifier; corrected with compact mobile navigation and responsive verifier grid",
+    "verification": {
+      "viewports": [
+        {
+          "width": 1440,
+          "mainWidth": 1216,
+          "mainScrollWidth": 1216,
+          "sidebarVisible": true,
+          "gridColumns": "340px 724px",
+          "documentOverflow": false
+        },
+        {
+          "width": 390,
+          "mainWidth": 390,
+          "mainScrollWidth": 390,
+          "sidebarVisible": false,
+          "gridColumns": "358px",
+          "documentOverflow": false
+        },
+        {
+          "width": 320,
+          "mainWidth": 320,
+          "mainScrollWidth": 320,
+          "sidebarVisible": false,
+          "gridColumns": "288px",
+          "documentOverflow": false
+        },
+        {
+          "width": 768,
+          "mainWidth": 768,
+          "mainScrollWidth": 768,
+          "sidebarVisible": false,
+          "gridColumns": "704px",
+          "documentOverflow": false
+        },
+        {
+          "width": 1024,
+          "mainWidth": 800,
+          "mainScrollWidth": 800,
+          "sidebarVisible": true,
+          "gridColumns": "736px",
+          "documentOverflow": false
+        }
+      ],
+      "navigation": "PASSED",
+      "javascript_errors": []
+    }
+  },
+  "implementation_files_sha256": {
+    "internal/handler/oid4vci.go": "b295be246a94e5ea13283ecebc1f937953b601b3b4a1768d114815b443d27533",
+    "internal/handler/oid4vci_attestation.go": "ff953adb1c362d0ca9f1553c85b6d820c75d3bbd324e6b04ea500a0a266d8861",
+    "internal/handler/oid4vci_client.go": "58eb333d10c42add8ccc874e45114906c02dbaefd048958758f9419236afff24",
+    "internal/handler/oid4vci_code_grant.go": "23a908624d7557ca8ce78f3d8bc128d8f5a2897f0977388931488783e9c297be",
+    "internal/handler/oid4vci_refresh.go": "3c1366e8b34ba0385989ded62e557db2831dbd1ba4a03cacac3bb3c0a1c28e8f",
+    "internal/handler/oid4vp.go": "539e67cb47db9092a009af684d0e1c4a00e4f89dd372bb561baaa8ee51fae789",
+    "internal/handler/oid4vp_dcql.go": "4c5d7a5f67d7784888909b9bc18aaedb4d2d637f25aadeba9565b2ce97b38362",
+    "internal/oid4w/status_resolver.go": "fc9999a6633181d4d8978fdeabe8a3befc3c99b409c143a7968612b8cc0462f2",
+    "internal/oid4w/status_validation.go": "ce7fc108e8f8e5f17776011c958e71a11153081c57d7cbd85ad73c7be5d81d8c",
+    "internal/oid4w/dcql_multi.go": "e00336fa9bbc7549c63b25e2104f00889d7bec1e10f47c475d2b5c5bc39f0032",
+    "internal/server/wallet_conformance_lab_test.go": "2878f10191bcd39cdff0dbf5bd9027791ea5d617833acbde993ec0240912fb37",
+    "frontend/src/layouts/TenantLayout.tsx": "6d9baa3b36383e374667dc66860e7573ce1d29bccfa012ab0db351a8820fad70",
+    "frontend/src/pages/tenant/WalletVerifier.tsx": "435d06cbe5c4b4f5cfab02ee5bac9dc146533e0aa94ec2d8d89b3e3133af210a"
+  }
+}

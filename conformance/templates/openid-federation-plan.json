@@ -1,0 +1,23 @@
+{
+  "alias": "clavex-openid-federation-op",
+  "description": "Laboratory OpenID Federation OP automatic-registration plan. Alpha suite plan; no external federation membership or certification is implied.",
+  "client": {
+    "scope": "openid profile email",
+    "redirect_uri": "${SUITE_ORIGIN}/test/a/clavex-openid-federation-op/callback"
+  },
+  "variant": {
+    "server_metadata": "discovery",
+    "client_registration": "automatic"
+  },
+  "_notes": [
+    "Plan: openid-federation-entity-joined-to-test-federation-op-test-plan (alpha, not certifiable).",
+    "Generate local private fixture keys using go run ./cmd/conformance-federation-keys; create-plans.sh injects them without committing them.",
+    "Explicit operator configuration required: federation.conformance_trust_anchor must match SUITE_URL + /test/a/clavex-openid-federation-op/trust-anchor.",
+    "This override applies only to the conformance tenant with conformance_mode=true. Production tenant trust remains unchanged.",
+    "The suite must be reachable from the backend with verified TLS. No real federation membership is assumed."
+  ],
+  "federation": {
+    "entity_identifier": "${BACKEND_ORIGIN}/conformance"
+  },
+  "federation_trust_anchor": {}
+}

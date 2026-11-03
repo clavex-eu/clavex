@@ -1,0 +1,54 @@
+{
+  "description": "clavex \u2014 OID4VCI Final (September 2025) Issuer \u2014 pre-authorized code flow, encrypted credential response / registered wallet; manual fresh credential offer required",
+  "alias": "clavex-oid4vci-issuer-pre-auth-encrypted",
+  "variant": {
+    "fapi_profile": "vci",
+    "credential_format": "sd_jwt_vc",
+    "client_auth_type": "private_key_jwt",
+    "vci_grant_type": "pre_authorization_code",
+    "sender_constrain": "dpop",
+    "vci_credential_encryption": "encrypted",
+    "fapi_request_method": "unsigned",
+    "fapi_response_mode": "plain_response",
+    "vci_authorization_code_flow_variant": "issuer_initiated"
+  },
+  "vci": {
+    "credential_issuer_url": "${BACKEND_ORIGIN}/conformance",
+    "credential_configuration_id": "vct_conformance-identity",
+    "client_attestation_issuer": "${BACKEND_ORIGIN}/conformance",
+    "client_attester_keys_jwks": {
+      "keys": [
+        "${JWK:wallet1}"
+      ]
+    },
+    "key_attestation_jwks": {
+      "keys": [
+        "${JWK:key-attestation}"
+      ]
+    }
+  },
+  "server": {
+    "credentialIssuer": "${BACKEND_ORIGIN}/conformance",
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-credential-issuer?conformance=1"
+  },
+  "credential": {
+    "trust_anchor_pem": "${PEM:issuer-root-cert}"
+  },
+  "waitTimeoutSeconds": 60,
+  "client": {
+    "client_id": "conformance-oid4vci-wallet",
+    "jwks": {
+      "keys": [
+        "${JWK:wallet1}"
+      ]
+    }
+  },
+  "client2": {
+    "client_id": "conformance-oid4vci-wallet-2",
+    "jwks": {
+      "keys": [
+        "${JWK:wallet2}"
+      ]
+    }
+  }
+}

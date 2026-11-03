@@ -734,6 +734,177 @@
         },
         "type": "object"
       },
+      "WalletDeferredPending": {
+        "description": "Initial or subsequent deferred response. Poll the same transaction with a valid access token; refresh at the token endpoint when needed.",
+        "properties": {
+          "interval": {
+            "minimum": 1,
+            "type": "integer"
+          },
+          "transaction_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "transaction_id",
+          "interval"
+        ],
+        "type": "object"
+      },
+      "WalletIdentityLink": {
+        "description": "Link metadata. Neither the external identifier nor its digest is returned.",
+        "properties": {
+          "claim_path": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "created_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "credential_type": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "format": {
+            "enum": [
+              "dc+sd-jwt",
+              "mso_mdoc"
+            ],
+            "type": "string"
+          },
+          "id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "is_active": {
+            "type": "boolean"
+          },
+          "issuer": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "org_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "revoked_at": {
+            "format": "date-time",
+            "type": "string"
+          },
+          "user_id": {
+            "format": "uuid",
+            "type": "string"
+          },
+          "verification_method": {
+            "enum": [
+              "administrative_review"
+            ],
+            "type": "string"
+          },
+          "verified_by": {
+            "format": "uuid",
+            "type": "string"
+          }
+        },
+        "type": "object"
+      },
+      "WalletIdentityRegistration": {
+        "description": "Administrative registration after independent identity review. Requires an exact organisation wallet_identity_profiles entry; never automatic matching by email or name.",
+        "properties": {
+          "administratively_reviewed": {
+            "enum": [
+              true
+            ],
+            "type": "boolean"
+          },
+          "claim_path": {
+            "items": {
+              "maxLength": 128,
+              "type": "string"
+            },
+            "maxItems": 8,
+            "minItems": 1,
+            "type": "array"
+          },
+          "credential_type": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "format": {
+            "enum": [
+              "dc+sd-jwt",
+              "mso_mdoc"
+            ],
+            "type": "string"
+          },
+          "issuer": {
+            "maxLength": 512,
+            "type": "string"
+          },
+          "verified_identifier": {
+            "maxLength": 1024,
+            "minLength": 1,
+            "type": "string",
+            "writeOnly": true
+          }
+        },
+        "required": [
+          "format",
+          "issuer",
+          "credential_type",
+          "claim_path",
+          "verified_identifier",
+          "administratively_reviewed"
+        ],
+        "type": "object"
+      },
+      "WalletIssuanceTokens": {
+        "properties": {
+          "access_token": {
+            "type": "string"
+          },
+          "c_nonce": {
+            "type": "string"
+          },
+          "c_nonce_expires_in": {
+            "type": "integer"
+          },
+          "credential_identifiers": {
+            "items": {
+              "type": "string"
+            },
+            "type": "array"
+          },
+          "expires_in": {
+            "maximum": 300,
+            "minimum": 0,
+            "type": "integer"
+          },
+          "refresh_token": {
+            "description": "Returned for deferred-enabled pre-authorized grants. Single-use rotation, fixed seven-day family deadline; reuse revokes the family.",
+            "type": "string"
+          },
+          "token_type": {
+            "enum": [
+              "Bearer",
+              "DPoP"
+            ],
+            "type": "string"
+          }
+        },
+        "required": [
+          "access_token",
+          "token_type",
+          "expires_in"
+        ],
+        "type": "object"
+      },
       "Webhook": {
         "properties": {
           "created_at": {
@@ -2257,6 +2428,16 @@
         "summary": "Revoke mine",
         "tags": [
           "Me Agent Token"
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ]
       }
     },
@@ -4117,6 +4298,196 @@
         ]
       }
     },
+    "/api/v1/organizations/{org_id}/users/{user_id}/wallet-identities": {
+      "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WalletIdentityLink"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Link metadata, including revoked links"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Organisation administrator and users permission required"
+          },
+          "404": {
+            "description": "Account or link not found in this organisation"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List wallet identity links for an account",
+        "tags": [
+          "Wallet Identity"
+        ]
+      },
+      "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalletIdentityRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "verification_method": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Link registered"
+          },
+          "400": {
+            "description": "Review missing, identifier invalid, or identity profile not configured"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Organisation administrator and users permission required"
+          },
+          "404": {
+            "description": "Account or link not found in this organisation"
+          },
+          "409": {
+            "description": "Identity already linked in this organisation"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Register a reviewed external wallet identity",
+        "tags": [
+          "Wallet Identity"
+        ]
+      }
+    },
+    "/api/v1/organizations/{org_id}/users/{user_id}/wallet-identities/{link_id}": {
+      "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "org_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "link_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Link revoked; future account binding is denied"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Organisation administrator and users permission required"
+          },
+          "404": {
+            "description": "Account or link not found in this organisation"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Revoke a wallet identity link",
+        "tags": [
+          "Wallet Identity"
+        ]
+      }
+    },
     "/api/v1/organizations/{org_id}/webhooks": {
       "get": {
         "operationId": "webhookList",
@@ -5288,6 +5659,16 @@
     },
     "/ca/rotation/{rotation_id}/abort": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rotation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -6409,6 +6790,16 @@
     },
     "/custom-domains/{domain_id}/certificate": {
       "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -6420,6 +6811,16 @@
         ]
       },
       "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "domain_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -7100,6 +7501,16 @@
     },
     "/enrollment-secrets/{secret_id}/revoke": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "secret_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -8404,6 +8815,7 @@
     },
     "/issued/{cred_id}/restore": {
       "post": {
+        "description": "Restore a suspended credential. Permanently revoked credentials cannot be restored.",
         "parameters": [
           {
             "in": "path",
@@ -8417,6 +8829,12 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "404": {
+            "description": "Credential absent or belongs to another organisation"
+          },
+          "409": {
+            "description": "Credential is not suspended or is permanently revoked"
           }
         },
         "summary": "Restore credential",
@@ -8427,6 +8845,7 @@
     },
     "/issued/{cred_id}/revoke": {
       "post": {
+        "description": "Organisation-scoped administrative mutation. The issued credential must belong to the route organisation; local record and list bit change transactionally.",
         "parameters": [
           {
             "in": "path",
@@ -8440,6 +8859,9 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "404": {
+            "description": "Credential absent or belongs to another organisation"
           }
         },
         "summary": "Revoke credential",
@@ -10045,11 +10467,52 @@
     },
     "/oid4vci/credential": {
       "post": {
+        "description": "Public tenant endpoint, requiring a valid issuance access token. Bearer or DPoP authorization and any bound TLS certificate are verified. Deferred success uses 202 with transaction_id and interval; ready credentials use 200. No paid license activation is involved.",
+        "parameters": [
+          {
+            "description": "Bearer <token> or DPoP <token> for a DPoP-bound grant",
+            "in": "header",
+            "name": "Authorization",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with ath for DPoP-bound access tokens",
+            "in": "header",
+            "name": "DPoP",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletDeferredPending"
+                }
+              }
+            },
+            "description": "Issuance remains pending"
+          },
+          "400": {
+            "description": "Invalid request/transaction or credential request denied"
+          },
+          "401": {
+            "description": "Invalid access token or sender binding"
+          },
+          "503": {
+            "description": "Storage unavailable or concurrent operation; retry with a fresh sender proof"
           }
         },
+        "security": [],
         "summary": "Credential",
         "tags": [
           "OID4VCI"
@@ -10058,6 +10521,27 @@
     },
     "/oid4vci/deferred-credential": {
       "post": {
+        "description": "Public tenant endpoint, requiring a valid issuance access token. Bearer or DPoP authorization and any bound TLS certificate are verified. Deferred success uses 202 with transaction_id and interval; ready credentials use 200. No paid license activation is involved.",
+        "parameters": [
+          {
+            "description": "Bearer <token> or DPoP <token> for a DPoP-bound grant",
+            "in": "header",
+            "name": "Authorization",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "description": "Required with ath for DPoP-bound access tokens",
+            "in": "header",
+            "name": "DPoP",
+            "required": false,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "requestBody": {
           "content": {
             "application/json": {
@@ -10067,7 +10551,16 @@
                     "type": "string"
                   }
                 },
+                "required": [
+                  "transaction_id"
+                ],
                 "type": "object"
+              }
+            },
+            "application/jwt": {
+              "description": "Encrypted request to the issuer. Required when providing credential_response_encryption; the response uses these freshly supplied parameters.",
+              "schema": {
+                "type": "string"
               }
             }
           },
@@ -10075,9 +10568,29 @@
         },
         "responses": {
           "200": {
-            "description": "OK"
+            "description": "Credential delivered; transaction ID is consumed atomically and cannot be replayed. A lost HTTP response requires a new issuance workflow."
+          },
+          "202": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletDeferredPending"
+                }
+              }
+            },
+            "description": "Issuance remains pending"
+          },
+          "400": {
+            "description": "Invalid request/transaction or credential request denied"
+          },
+          "401": {
+            "description": "Invalid access token or sender binding"
+          },
+          "503": {
+            "description": "Storage unavailable or concurrent operation; retry with a fresh sender proof"
           }
         },
+        "security": [],
         "summary": "Deferred credential",
         "tags": [
           "OID4VCI"
@@ -10158,6 +10671,7 @@
     },
     "/oid4vci/status-list/{list_id}": {
       "get": {
+        "description": "Public tenant endpoint /{org_slug}/oid4vci/status-list/{list_id}. A list must belong to the route organisation. Serves a Token Status List JWT with the stored list width, with URI-bound sub and protected typ; no W3C StatusList2021 compatibility is claimed.",
         "parameters": [
           {
             "in": "path",
@@ -10170,9 +10684,23 @@
         ],
         "responses": {
           "200": {
-            "description": "OK"
+            "content": {
+              "application/statuslist+jwt": {
+                "schema": {
+                  "type": "string"
+                }
+              }
+            },
+            "description": "Signed status token; max-age=60"
+          },
+          "404": {
+            "description": "List absent or belongs to another organisation"
+          },
+          "503": {
+            "description": "Status list or signer unavailable"
           }
         },
+        "security": [],
         "summary": "Status list",
         "tags": [
           "OID4VCI"
@@ -10194,12 +10722,65 @@
     },
     "/oid4vci/token": {
       "post": {
+        "description": "Tenant endpoint: /{org_slug}/oid4vci/token. Also served through the discovered /{org_slug}/token endpoint. Supports anonymous wallets or registered public clients; confidential client authentication is not supported for these wallet grants. A grant cannot gain scope, subject, client or sender-binding changes on refresh.",
+        "requestBody": {
+          "content": {
+            "application/x-www-form-urlencoded": {
+              "schema": {
+                "properties": {
+                  "client_id": {
+                    "type": "string"
+                  },
+                  "grant_type": {
+                    "enum": [
+                      "urn:ietf:params:oauth:grant-type:pre-authorized_code",
+                      "refresh_token"
+                    ],
+                    "type": "string"
+                  },
+                  "pre-authorized_code": {
+                    "type": "string"
+                  },
+                  "refresh_token": {
+                    "type": "string"
+                  },
+                  "scope": {
+                    "description": "If supplied, must equal the original credential configuration scope.",
+                    "type": "string"
+                  },
+                  "tx_code": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "grant_type"
+                ],
+                "type": "object"
+              }
+            }
+          },
+          "required": true
+        },
         "responses": {
           "200": {
-            "description": "OK"
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/WalletIssuanceTokens"
+                }
+              }
+            },
+            "description": "Short-lived access token and optional rotated refresh token"
+          },
+          "400": {
+            "description": "Invalid/expired/reused grant, unsupported scope or client, or invalid sender proof"
+          },
+          "503": {
+            "description": "Required storage unavailable"
           }
         },
-        "summary": "Token",
+        "security": [],
+        "summary": "Exchange a pre-authorized code or rotate a wallet refresh token",
         "tags": [
           "OID4VCI"
         ]
@@ -11097,6 +11678,18 @@
                   "jwks_uri": {
                     "type": "string"
                   },
+                  "logo_uri": {
+                    "description": "Client application logo URL; displayed separately from tenant branding.",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "type": "string"
+                  },
+                  "policy_uri": {
+                    "description": "Client privacy policy URL displayed on the login page.",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "type": "string"
+                  },
                   "post_logout_redirect_uris": {
                     "items": {
                       "type": "string"
@@ -11120,6 +11713,12 @@
                   },
                   "tls_client_certificate_bound_access_tokens": {
                     "type": "boolean"
+                  },
+                  "tos_uri": {
+                    "description": "Client terms of service URL displayed on the login page.",
+                    "format": "uri",
+                    "maxLength": 2048,
+                    "type": "string"
                   },
                   "token_endpoint_auth_method": {
                     "type": "string"
@@ -12136,6 +12735,16 @@
     },
     "/signing-keys/{kind}": {
       "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -12777,6 +13386,16 @@
     },
     "/ssh-ca/rotation/{rotation_id}/abort": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rotation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -13861,6 +14480,7 @@
     },
     "/wallet/response": {
       "post": {
+        "description": "CIBA approval requires both account binding and a permitted status decision. Local SD-JWT status is checked against authoritative tenant-scoped records. Remote status retrieval is not implemented in this increment. Missing status requires explicit compatibility policy for authentication.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -13882,6 +14502,12 @@
         "responses": {
           "200": {
             "description": "OK"
+          },
+          "400": {
+            "description": "Invalid presentation, subject mismatch, or rejected/missing-required credential status"
+          },
+          "503": {
+            "description": "Required status unavailable, including an unsupported nonlocal status resolver; CIBA is not approved"
           }
         },
         "summary": "Response",
@@ -14605,6 +15231,24 @@
     },
     "/{device_id}/certificates/{serial}/revoke": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "serial",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -14618,6 +15262,16 @@
     },
     "/{device_id}/enrollment-secrets": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -14631,6 +15285,16 @@
     },
     "/{device_id}/revoke": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "device_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -15106,6 +15770,16 @@
     },
     "/{id}/agent-token-audiences": {
       "get": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -15143,6 +15817,16 @@
         "summary": "Set agent token audience policy",
         "tags": [
           "Organizations"
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
         ]
       }
     },
@@ -15923,6 +16607,7 @@
     },
     "/{id}/signing-key": {
       "delete": {
+        "description": "Tenant security administration at /api/v1/organizations/{org_id}/signing-key. Requires an administrator belonging to the tenant; security:read permits GET, security:write permits changes. Installation accounts do not manage tenant keys through this endpoint. Replaces the custom RSA key with a generated tenant key while retaining retired keys during grace; does not delete key history or select an installation key.",
         "parameters": [
           {
             "in": "path",
@@ -15944,6 +16629,7 @@
         ]
       },
       "get": {
+        "description": "Tenant security administration at /api/v1/organizations/{org_id}/signing-key. Requires an administrator belonging to the tenant; security:read permits GET, security:write permits changes. Installation accounts do not manage tenant keys through this endpoint.",
         "parameters": [
           {
             "in": "path",
@@ -15965,6 +16651,7 @@
         ]
       },
       "put": {
+        "description": "Tenant security administration at /api/v1/organizations/{org_id}/signing-key. Requires an administrator belonging to the tenant; security:read permits GET, security:write permits changes. Installation accounts do not manage tenant keys through this endpoint.",
         "parameters": [
           {
             "in": "path",
@@ -16055,6 +16742,16 @@
     },
     "/{issuer_id}": {
       "delete": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "issuer_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -16068,6 +16765,16 @@
     },
     "/{kind}": {
       "put": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -16781,6 +17488,16 @@
     },
     "/{rotation_id}/complete": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rotation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -16794,6 +17511,16 @@
     },
     "/{rotation_id}/mark-ready": {
       "post": {
+        "parameters": [
+          {
+            "in": "path",
+            "name": "rotation_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
         "responses": {
           "200": {
             "description": "OK"
@@ -17642,6 +18369,172 @@
         ]
       }
     },
+    "/{user_id}/wallet-identities": {
+      "get": {
+        "description": "Echo group-relative documentation alias. Actual endpoint: /api/v1/organizations/{org_id}/users/{user_id}/wallet-identities. Requires users:write for mutations and users:read for listing.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "items": {
+                    "$ref": "#/components/schemas/WalletIdentityLink"
+                  },
+                  "type": "array"
+                }
+              }
+            },
+            "description": "Link metadata, including revoked links"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Organisation administrator and users permission required"
+          },
+          "404": {
+            "description": "Account or link not found in this organisation"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "List wallet identity links for an account",
+        "tags": [
+          "Wallet Identity"
+        ]
+      },
+      "post": {
+        "description": "Echo group-relative documentation alias. Actual endpoint: /api/v1/organizations/{org_id}/users/{user_id}/wallet-identities. Requires users:write for mutations and users:read for listing.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "requestBody": {
+          "content": {
+            "application/json": {
+              "schema": {
+                "$ref": "#/components/schemas/WalletIdentityRegistration"
+              }
+            }
+          },
+          "required": true
+        },
+        "responses": {
+          "201": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "id": {
+                      "format": "uuid",
+                      "type": "string"
+                    },
+                    "verification_method": {
+                      "type": "string"
+                    }
+                  },
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Link registered"
+          },
+          "400": {
+            "description": "Review missing, identifier invalid, or identity profile not configured"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Organisation administrator and users permission required"
+          },
+          "404": {
+            "description": "Account or link not found in this organisation"
+          },
+          "409": {
+            "description": "Identity already linked in this organisation"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Register a reviewed external wallet identity",
+        "tags": [
+          "Wallet Identity"
+        ]
+      }
+    },
+    "/{user_id}/wallet-identities/{link_id}": {
+      "delete": {
+        "description": "Echo group-relative documentation alias. Actual endpoint: /api/v1/organizations/{org_id}/users/{user_id}/wallet-identities/{link_id}. Requires users:write for mutations and users:read for listing.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "user_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          },
+          {
+            "in": "path",
+            "name": "link_id",
+            "required": true,
+            "schema": {
+              "format": "uuid",
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "204": {
+            "description": "Link revoked; future account binding is denied"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Organisation administrator and users permission required"
+          },
+          "404": {
+            "description": "Account or link not found in this organisation"
+          }
+        },
+        "security": [
+          {
+            "bearerAuth": []
+          }
+        ],
+        "summary": "Revoke a wallet identity link",
+        "tags": [
+          "Wallet Identity"
+        ]
+      }
+    },
     "/{user_id}/wallet-stepup": {
       "post": {
         "parameters": [
@@ -17662,6 +18555,167 @@
         "summary": "Create challenge",
         "tags": [
           "Wallet Step Up"
+        ]
+      }
+    },
+    "/issued/{cred_id}/suspend": {
+      "post": {
+        "description": "Organisation-scoped administrative mutation. The issued credential must belong to the route organisation; local record and list bit change transactionally.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "cred_id",
+            "required": true,
+            "schema": {
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "OK"
+          },
+          "404": {
+            "description": "Credential absent or belongs to another organisation"
+          },
+          "409": {
+            "description": "Credential already suspended, revoked, or missing a signed status reference"
+          }
+        },
+        "summary": "Suspend a credential until explicitly restored",
+        "tags": [
+          "OID4VCI"
+        ]
+      }
+    },
+    "/{kind}/rotate": {
+      "post": {
+        "description": "Tenant-scoped operation at POST /api/v1/organizations/{org_id}/key-rotation/{kind}/rotate. Requires an administrator account belonging to that tenant with security:write permission. Installation/superadmin accounts cannot perform routine tenant key management. Imported keys require explicit replacement and are not automatically regenerated. Keys are retained during the existing grace period.",
+        "parameters": [
+          {
+            "in": "path",
+            "name": "kind",
+            "required": true,
+            "schema": {
+              "enum": [
+                "oidc",
+                "pqc"
+              ],
+              "type": "string"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "content": {
+              "application/json": {
+                "schema": {
+                  "properties": {
+                    "key_kind": {
+                      "enum": [
+                        "oidc",
+                        "pqc"
+                      ],
+                      "type": "string"
+                    },
+                    "kid": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "kid",
+                    "key_kind"
+                  ],
+                  "type": "object"
+                }
+              }
+            },
+            "description": "Tenant key rotated"
+          },
+          "400": {
+            "description": "Invalid tenant ID or key kind"
+          },
+          "401": {
+            "description": "Authentication required"
+          },
+          "403": {
+            "description": "Wrong tenant, installation account or insufficient security permission"
+          },
+          "409": {
+            "description": "Imported key or unavailable tenant key backend"
+          },
+          "503": {
+            "description": "Signing key storage unavailable"
+          }
+        },
+        "summary": "Rotate a generated tenant signing key",
+        "tags": [
+          "Key Rotation"
+        ]
+      }
+    },
+    "/oid4vci/iaca-crl/{fingerprint}": {
+      "get": {
+        "summary": "Public IACA certificate revocation list",
+        "description": "Public tenant endpoint /{org_slug}/oid4vci/iaca-crl/{fingerprint}. Serves only a provisioned, signed, currently valid CRL. Does not sign or renew CRLs.",
+        "tags": [
+          "OID4VCI"
+        ],
+        "parameters": [
+          {
+            "in": "path",
+            "name": "fingerprint",
+            "required": true,
+            "schema": {
+              "type": "string",
+              "pattern": "^[0-9a-f]{64}$"
+            }
+          }
+        ],
+        "responses": {
+          "200": {
+            "description": "DER certificate revocation list",
+            "content": {
+              "application/pkix-crl": {
+                "schema": {
+                  "type": "string",
+                  "format": "binary"
+                }
+              }
+            }
+          },
+          "404": {
+            "description": "Unknown IACA or wrong tenant"
+          },
+          "503": {
+            "description": "CRL invalid, expired or unavailable"
+          }
+        }
+      }
+    },
+    "/iaca-catalog": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Catalog",
+        "tags": [
+          "Iaca"
+        ]
+      }
+    },
+    "/vault-signers": {
+      "get": {
+        "responses": {
+          "200": {
+            "description": "OK"
+          }
+        },
+        "summary": "Vault profiles",
+        "tags": [
+          "mdoc Issuer"
         ]
       }
     }

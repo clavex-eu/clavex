@@ -1,48 +1,40 @@
-# Clavex — OIDF Conformance Results
+# Clavex — OIDF conformance evaluation
 
-[![OIDC Conformance](https://img.shields.io/endpoint?url=https%3A%2F%2Fraw.githubusercontent.com%2Fclavex-eu%2Fclavex%2Fmain%2Fconformance-badge.json)](https://www.certification.openid.net)
+Snapshot: **3 November 2026, before the subsequent manual key-rotation run**.
 
-> **Last run:** 2026-06-27 09:42 UTC |  **OP:** `https://id.clavex.eu`  |  **Suite:** [certification.openid.net](https://www.certification.openid.net)
+These are the latest instances of 20 plans evaluated in the private laboratory, including targeted reruns on private revision `805e1af3`. They are not a new complete suite run against the public port. See the [reproduction guide](conformance/REPRODUCIBILITY.md) and [original provenance](conformance/HISTORICAL-BASELINE-2026-11-03.md).
 
-_Results are produced by the OIDF conformance suite run in the private development repository and committed here. 🔍 REVIEW tests require a manual screenshot upload on the suite UI — they are functionally correct._
+There are **604 automatic PASSED**, **72 matching manual approvals**, **6 WARNING**, **30 upstream SKIPPED** and **5 deferred key-rotation cases** (two historical FAILED, three NOT_RUN), across **717 modules**. Raw REVIEW/UNKNOWN verdicts remain unchanged by manual approval. No certification is claimed.
 
 ## Summary
 
-| Plan | Tests | ✅ Passed | 🔍 Review | ❌ Failed | Pass rate |
-|------|------:|----------:|----------:|----------:|----------:|
-| clavex-basic | 35 | 31 | 1 | 0 | 88% |
-| clavex-basic-post | 36 | 32 | 1 | 0 | 88% |
-| clavex-config | 1 | 1 | 0 | 0 | 100% |
-| clavex-dynamic | 23 | 20 | 0 | 0 | 86% |
-| clavex-form-post | 36 | 32 | 1 | 0 | 88% |
-| clavex-hybrid | 36 | 32 | 1 | 0 | 88% |
-| clavex-par | 36 | 32 | 1 | 0 | 88% |
-| clavex-fapi | 58 | 57 | 1 | 0 | 98% |
-| clavex-fapi-mtls | 49 | 48 | 1 | 0 | 97% |
-| clavex-fapi-jarm | 71 | 70 | 1 | 0 | 98% |
-| clavex-oid4vci-issuer | 15 | 14 | 0 | 0 | 93% |
-| clavex-oid4vci-issuer-encrypted | 15 | 15 | 0 | 0 | 100% |
-| clavex-haip | 63 | 62 | 1 | 0 | 98% |
-| clavex-oid4vp-verifier | 10 | 10 | 0 | 0 | 100% |
-| clavex-fapi2-ciba-poll | 35 | 35 | 0 | 0 | 100% |
-| clavex-oid4vci-issuer-mso-mdoc | 15 | 14 | 0 | 0 | 93% |
-| clavex-oid4vci-issuer-mso-mdoc-encrypted | 15 | 15 | 0 | 0 | 100% |
-| clavex-openid-federation-op | 20 | 20 | 0 | 0 | 100% |
+| Plan | Tests | Passed | Manual approvals | Warning | Skipped | Failed | Not run |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| clavex-basic | 35 | 27 | 3 | 0 | 5 | 0 | 0 |
+| clavex-basic-post | 36 | 26 | 4 | 0 | 5 | 1 | 0 |
+| clavex-config | 1 | 1 | 0 | 0 | 0 | 0 | 0 |
+| clavex-dynamic | 23 | 11 | 6 | 0 | 5 | 1 | 0 |
+| clavex-form-post | 36 | 26 | 4 | 0 | 5 | 0 | 1 |
+| clavex-hybrid | 36 | 26 | 4 | 0 | 5 | 0 | 1 |
+| clavex-par | 36 | 26 | 4 | 0 | 5 | 0 | 1 |
+| clavex-fapi | 58 | 51 | 6 | 1 | 0 | 0 | 0 |
+| clavex-fapi-mtls | 49 | 42 | 6 | 1 | 0 | 0 | 0 |
+| clavex-fapi-jarm | 71 | 64 | 6 | 1 | 0 | 0 | 0 |
+| clavex-oid4vci-issuer | 14 | 14 | 0 | 0 | 0 | 0 | 0 |
+| clavex-oid4vci-issuer-encrypted | 15 | 15 | 0 | 0 | 0 | 0 | 0 |
+| clavex-fapi2-ciba-poll | 34 | 34 | 0 | 0 | 0 | 0 | 0 |
+| clavex-fapi-final-dpop | 52 | 45 | 6 | 1 | 0 | 0 | 0 |
+| clavex-fapi-final-mtls | 43 | 36 | 6 | 1 | 0 | 0 | 0 |
+| clavex-fapi-jarm-final | 66 | 59 | 6 | 1 | 0 | 0 | 0 |
+| clavex-haip | 63 | 57 | 6 | 0 | 0 | 0 | 0 |
+| clavex-oid4vci-issuer-mso-mdoc | 14 | 14 | 0 | 0 | 0 | 0 | 0 |
+| clavex-oid4vci-issuer-mso-mdoc-encrypted | 15 | 15 | 0 | 0 | 0 | 0 | 0 |
+| clavex-openid-federation-op | 20 | 15 | 5 | 0 | 0 | 0 | 0 |
 
-> Run `make conformance-run-tests` to populate this file.
+The 72 approvals cover 62 raw REVIEW and 10 UNKNOWN cases with uploaded evidence. They are local operator decisions, not additional automatic PASSED results. The six warnings concern the intentional UserInfo extension claims `groups` and `roles`.
 
-> **Note on OID4VCI mso_mdoc plans:** `clavex-oid4vci-issuer-mso-mdoc`
-> reports 93% (1 skipped) because the credential response encryption test
-> is intentionally excluded from this plan — encryption is covered in full
-> by the dedicated `clavex-oid4vci-issuer-mso-mdoc-encrypted` plan (100%).
-> The two plans are complementary, not overlapping.
+The 30 skips are upstream applicability decisions, including unadvertised address/phone scopes, unsigned variants and pairwise-subject configuration; they are not manually relabelled successes. All five deferred cases require a real key rotation between configuration/JWKS snapshot and Start.
 
-> **Note on OID4VCI issuer plans:** `clavex-oid4vci-issuer`
-> reports 93% (1 skipped) because the credential response encryption test
-> is intentionally excluded from this plan — encryption is covered in full
-> by the dedicated `clavex-oid4vci-issuer-encrypted` plan (100%).
-> The two plans are complementary, not overlapping.
+Public tooling contains no laboratory private keys or copied manual-approval registry. Evaluators generate their own fixture material and record their own decisions. Automatic badge counts exclude manual approvals.
 
-
----
-_Auto-generated by `conformance/run-tests.py --status`. Last update: 2026-06-27 09:42 UTC_
+[Machine-readable snapshot](conformance/evidence/2026-11-03/pre-rotation-summary.json). The historical June table remains available in Git history.

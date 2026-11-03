@@ -254,14 +254,9 @@ func ExchangeCode(
 	// Store the access token JTI and refresh family_id on the auth code row so
 	// that if the code is replayed, only the specific tokens from this exchange
 	// can be revoked (RFC 6749 §4.1.2 — targeted revocation, not broad user+client).
-	capturedCodeHash := ac.CodeHash
-	capturedJTI := accessJTI
-	capturedFamilyID := familyID
-	go func() {
-		bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_ = codes.SetRevocationData(bgCtx, capturedCodeHash, capturedJTI, capturedFamilyID)
-	}()
+	if err := codes.SetRevocationData(ctx, ac.CodeHash, accessJTI, familyID); err != nil {
+		return nil, fmt.Errorf("persist code revocation data: %w", err)
+	}
 
 	// RFC 9396: persist the grant record so the consent management dashboard can
 	// display and allow revocation of authorization_details grants.

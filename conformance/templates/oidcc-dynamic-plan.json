@@ -1,0 +1,16 @@
+{
+  "description": "clavex \u2014 OIDC Dynamic OP certification test plan (RFC 7591 dynamic client registration)",
+  "alias": "clavex-dynamic",
+  "variant": {
+    "response_type": "code"
+  },
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {},
+  "client2": {},
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "waitTimeoutSeconds": 60
+}

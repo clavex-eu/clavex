@@ -10,19 +10,45 @@
 # Usage:
 #   bash conformance/create-plans.sh
 #   make conformance-create-plans
+#   bash conformance/create-plans.sh --final-only
 
 set -euo pipefail
 
-SUITE_URL="${SUITE_URL:-https://localhost:8443}"
+SUITE_URL="${SUITE_URL:-https://localhost.emobix.co.uk:8443}"
 SUITE_TOKEN="${SUITE_TOKEN:-}"
 DIR="$(cd "$(dirname "$0")" && pwd)"
+DRY_RUN=0
+FINAL_ONLY=0
+ONLY_ALIAS=""
+PLAN_SELECTED=0
+for option in "$@"; do
+  case "${option}" in
+    --dry-run) DRY_RUN=1 ;;
+    --final-only) FINAL_ONLY=1 ;;
+    --only-alias=) echo "--only-alias requires an exact alias" >&2; exit 2 ;;
+    --only-alias=*) ONLY_ALIAS="${option#*=}" ;;
+    --help) echo "Usage: $0 [--dry-run] [--final-only] [--only-alias=ALIAS] (SUITE_URL, SUITE_TOKEN, SUITE_CA_FILE, SUITE_INSECURE=1 for local self-signed suites)"; exit 0 ;;
+    *) echo "Unknown option: ${option}" >&2; exit 2 ;;
+  esac
+done
+# Read-only checks run before any upload; never seed or rotate keys here.
+python3 "${DIR}/check-config.py"
+PLAN_FAILURES=0
+CURL_TLS=()
+if [[ -n "${SUITE_CA_FILE:-}" ]]; then
+  CURL_TLS=(--cacert "${SUITE_CA_FILE}")
+elif [[ "${SUITE_INSECURE:-0}" == "1" ]]; then
+  CURL_TLS=(-k)
+fi
+
 
 # Path to the FAPI private keys written by conformance-seed.
 # create-plans.sh injects them into FAPI plan configs automatically.
 # client  → fapi-private-key.jwk   (conformance-client-fapi)
 # client2 → fapi2-private-key.jwk  (conformance-client-fapi-2, distinct keypair)
-FAPI_KEY_FILE="${DIR}/fapi-private-key.jwk"
-FAPI2_KEY_FILE="${DIR}/fapi2-private-key.jwk"
+FAPI_KEY_FILE="${FAPI_KEY_FILE:-${DIR}/fapi-private-key.jwk}"
+FAPI2_KEY_FILE="${FAPI2_KEY_FILE:-${DIR}/fapi2-private-key.jwk}"
+FEDERATION_KEY_FILE="${FEDERATION_KEY_FILE:-${DIR}/.local/federation/keys.json}"
 
 # colour helpers
 GREEN='\033[0;32m'; RED='\033[0;31m'; YELLOW='\033[1;33m'; NC='\033[0m'
@@ -56,8 +82,19 @@ create_plan() {
   local config_file="$2"
   local inject_key="${3:-}"
 
+  if [[ "${FINAL_ONLY}" == "1" ]]; then
+    case "${config_file##*/}" in
+      fapi2-final-dpop-plan.json|fapi2-final-mtls-plan.json|fapi2-message-signing-final-plan.json) ;;
+      *) return 0 ;;
+    esac
+  fi
+
   local alias
   alias=$(python3 -c "import json,sys; print(json.load(open('${config_file}'))['alias'])")
+  if [[ -n "${ONLY_ALIAS}" && "${alias}" != "${ONLY_ALIAS}" ]]; then
+    return 0
+  fi
+  PLAN_SELECTED=$((PLAN_SELECTED + 1))
 
   # Extract plan-level variant (may be empty object {})
   local variant_json
@@ -92,9 +129,9 @@ print(json.dumps(d))
       err "Run 'make conformance-setup' first to generate the keypair."
       return 1
     fi
-    body=$(python3 -c "
+    body=$(printf '%s' "${body}" | python3 -c "
 import json, sys
-body  = json.loads(sys.argv[1])
+body  = json.load(sys.stdin)
 key   = json.load(open('${FAPI_KEY_FILE}'))
 key2  = json.load(open('${FAPI2_KEY_FILE}'))
 # client  uses the primary key (conformance-client-fapi)
@@ -104,8 +141,21 @@ key2  = json.load(open('${FAPI2_KEY_FILE}'))
 body.setdefault('client', {})['jwks'] = {'keys': [key]}
 body.setdefault('client2', {})['jwks'] = {'keys': [key2]}
 print(json.dumps(body))
-" "${body}")
+")
     info "Injected FAPI keys: client=${FAPI_KEY_FILE} client2=${FAPI2_KEY_FILE}"
+  fi
+
+  if [[ "${inject_key}" == "federation" && "${DRY_RUN}" != "1" ]]; then
+    if [[ ! -f "${FEDERATION_KEY_FILE}" ]]; then
+      err "Missing local Federation keys; run: go run ./cmd/conformance-federation-keys"
+      PLAN_FAILURES=$((PLAN_FAILURES + 1))
+      return 1
+    fi
+    body=$(printf '%s' "${body}" | python3 "${DIR}/federation_config.py" --keys "${FEDERATION_KEY_FILE}" --suite-url "${SUITE_URL}") || {
+      PLAN_FAILURES=$((PLAN_FAILURES + 1))
+      return 1
+    }
+    info "Injected local Federation RP/TA identities; backend laboratory trust opt-in is required separately."
   fi
 
   # URL-encode the variant JSON string
@@ -114,18 +164,24 @@ print(json.dumps(body))
 
   info "Creating ${plan_name} (alias: ${alias}) …"
 
+  if [[ "${DRY_RUN}" == "1" ]]; then
+    info "DRY RUN: ${plan_name} / ${alias}; no upload"
+    return 0
+  fi
+
   local response
-  response=$(curl -sk -X POST \
+  response=$(printf '%s' "${body}" | curl -sS "${CURL_TLS[@]}" -X POST \
     "${SUITE_URL}/api/plan?planName=${plan_name}&variant=${variant_enc}" \
     -H "Content-Type: application/json" \
     "${CURL_AUTH[@]}" \
-    -d "${body}" 2>&1)
+    --data-binary @- 2>&1)
 
   if echo "${response}" | python3 -c "import json,sys; d=json.load(sys.stdin); print(d['id'])" 2>/dev/null; then
     local plan_id
     plan_id=$(echo "${response}" | python3 -c "import json,sys; print(json.load(sys.stdin)['id'])")
     ok "id=${plan_id}  →  ${SUITE_URL}/plan-detail.html?plan=${plan_id}"
   else
+    PLAN_FAILURES=$((PLAN_FAILURES + 1))
     err "Failed (response below)"
     echo "${response}" | python3 -m json.tool 2>/dev/null || echo "${response}"
     return 1
@@ -212,9 +268,7 @@ info "Plan 11 (Token Introspection) is a local test spec — see conformance/int
 # Known-wrong alias (suite may not include this plan in all builds):
 #   oauth2-device-authorization-grant-test-plan
 # Use || true so a wrong/missing plan name does not abort the remaining plans.
-create_plan \
-  "oauth2-device-authorization-grant-test-plan" \
-  "${DIR}/device-flow-plan.json" || true
+info "Device Grant: no published device test plan in suite 5.3.4; device-flow-plan.json remains a local test specification."
 
 # ── Plan 13: OID4VCI Final (September 2025) Issuer ───────────────────────────
 # Tests OID4VCI Final spec issuer compliance: credential_configuration_id,
@@ -281,8 +335,9 @@ create_plan \
 # ── Plan 17: OID4VCI Final Issuer — pre-authorized code flow (plain) ──────────
 # Clavex acts as the Credential Issuer; the suite acts as a wallet using a
 # credential offer obtained via the pre-authorized_code grant type.
-# client_auth_type=none (anonymous wallet): Clavex pre-auth token endpoint does
-# not require client authentication.
+# Suite 5.3.4 publishes private_key_jwt/client_attestation/mtls variants.
+# This plan covers a registered wallet and issuer_initiated offers; anonymous
+# pre-authorized issuance remains covered by Clavex tests, not this suite variant.
 # Manual step before running: create a credential offer via the Clavex admin API:
 #   POST /api/v1/organizations/<org_id>/oid4vci/offers
 #       {"vct":"vct_conformance-identity"}
@@ -318,7 +373,7 @@ create_plan \
 #   | grep -i fed
 create_plan \
   "openid-federation-entity-joined-to-test-federation-op-test-plan" \
-  "${DIR}/openid-federation-plan.json" || true
+  "${DIR}/openid-federation-plan.json" "federation" || true
 
 echo ""
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
@@ -326,3 +381,26 @@ echo " Open the suite UI to run the plans:"
 printf "   ${GREEN}%s${NC}\n" "${SUITE_URL}"
 echo "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
 echo ""
+
+# FAPI Final plans are additional runs; preserve the older ID2/ID1 results.
+create_plan "fapi2-security-profile-final-test-plan" "${DIR}/fapi2-final-dpop-plan.json" fapi
+create_plan "fapi2-security-profile-final-test-plan" "${DIR}/fapi2-final-mtls-plan.json" fapi
+create_plan "fapi2-message-signing-final-test-plan" "${DIR}/fapi2-message-signing-final-plan.json" fapi
+
+# Verifier plans require a live interaction with Clavex (not a login-only run).
+create_plan "oid4vp-1final-verifier-test-plan" "${DIR}/oid4vp-verifier-mdoc-plan.json"
+create_plan "oid4vp-1final-verifier-test-plan" "${DIR}/oid4vp-verifier-signed-encrypted-plan.json"
+create_plan "oid4vp-1final-verifier-test-plan" "${DIR}/oid4vp-verifier-mdoc-signed-encrypted-plan.json"
+
+if [[ "${PLAN_SELECTED}" -eq 0 ]]; then
+  err "No plans match the selected filters; no upload performed."
+  exit 2
+fi
+
+if [[ "${PLAN_FAILURES}" -gt 0 ]]; then
+  err "${PLAN_FAILURES} plan(s) could not be created; review the errors above."
+  exit 1
+fi
+if [[ "${DRY_RUN}" == "1" ]]; then
+  info "Dry run complete: no requests sent to the suite."
+fi

@@ -6,6 +6,7 @@ import (
 
 	"github.com/clavex-eu/clavex/internal/middleware"
 	"github.com/clavex-eu/clavex/internal/repository"
+	"github.com/clavex-eu/clavex/internal/trustcatalog"
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -87,7 +88,7 @@ func (h *IACAHandler) Upload(c echo.Context) error {
 		})
 	}
 
-	return c.JSON(http.StatusCreated, root)
+	return c.JSON(http.StatusCreated, iacaResponse(root))
 }
 
 // List handles GET /api/v1/organizations/:org_id/mdoc/iaca-roots
@@ -103,7 +104,24 @@ func (h *IACAHandler) List(c echo.Context) error {
 	if roots == nil {
 		return c.JSON(http.StatusOK, []any{})
 	}
-	return c.JSON(http.StatusOK, roots)
+	views := make([]iacaRootResponse, 0, len(roots))
+	for _, root := range roots {
+		views = append(views, iacaResponse(root))
+	}
+	return c.JSON(http.StatusOK, views)
+}
+
+// Catalog only describes public development roots. Installation remains an
+// explicit, tenant-scoped Upload action; no tenant is seeded by this read.
+func (h *IACAHandler) Catalog(c echo.Context) error {
+	if _, err := uuidParam(c, "org_id"); err != nil {
+		return echo.ErrBadRequest
+	}
+	catalog, err := trustcatalog.Reference()
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
+	return c.JSON(http.StatusOK, catalog)
 }
 
 // Delete handles DELETE /api/v1/organizations/:org_id/mdoc/iaca-roots/:root_id

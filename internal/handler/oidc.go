@@ -14,6 +14,7 @@ import (
 	"html/template"
 	"net/http"
 	"net/url"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -267,6 +268,9 @@ func (h *OIDCHandler) WithBundIDSAMLRepository(r *repository.BundIDSAMLRepositor
 
 func (h *OIDCHandler) WithOID4VCIHandler(vci *OID4VCIHandler) *OIDCHandler {
 	h.vciH = vci
+	if vci != nil {
+		vci.oidcHandler = h
+	}
 	return h
 }
 
@@ -544,6 +548,24 @@ func (h *OIDCHandler) newTC(issuer string) *oidc.TokenConfig {
 	}
 }
 
+// verificationTC selects the same tenant signer used by issuance and discovery.
+// The issuer comes from trusted request configuration, never from token claims.
+func (h *OIDCHandler) verificationTC(ctx context.Context, issuer, orgSlug string) (*oidc.TokenConfig, error) {
+	tc := h.newTC(issuer)
+	if h.orgSigners == nil {
+		return tc, nil
+	}
+	org, err := h.orgs.GetBySlug(ctx, orgSlug)
+	if err != nil {
+		return nil, fmt.Errorf("resolve token issuer: %w", err)
+	}
+	tc.Keys, err = h.orgSigners.Resolve(ctx, org.ID)
+	if err != nil {
+		return nil, err
+	}
+	return tc, nil
+}
+
 // applyTTLOverrides adjusts tc's TTLs using per-org then per-client settings.
 // Hierarchy: global default → org override → client override (client wins).
 // nil means "not set / inherit"; 0 is treated as nil (revert to server default).
@@ -572,11 +594,18 @@ func applyTTLOverrides(tc *oidc.TokenConfig, org *models.Organization, cl *model
 // tc.Keys to the org-specific signer. Every org has its own signer (auto-
 // provisioned on first use), so this always runs when orgSigners is wired.
 // It supersedes direct calls to applyTTLOverrides at token-issuance sites.
-func (h *OIDCHandler) applyOrgOverrides(ctx context.Context, tc *oidc.TokenConfig, org *models.Organization, cl *models.OIDCClient) {
+func (h *OIDCHandler) applyOrgOverrides(ctx context.Context, tc *oidc.TokenConfig, org *models.Organization, cl *models.OIDCClient) error {
 	applyTTLOverrides(tc, org, cl)
 	if org != nil && h.orgSigners != nil {
-		tc.Keys = h.orgSigners.For(ctx, org.ID)
+		var err error
+		tc.Keys, err = h.orgSigners.Resolve(ctx, org.ID)
+		if err != nil {
+			return err
+		}
+	} else if h.orgSigners != nil {
+		return fmt.Errorf("tenant unavailable for signing")
 	}
+	return nil
 }
 
 // ── Discovery ─────────────────────────────────────────────────────────────────
@@ -585,7 +614,8 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 	ctx := c.Request().Context()
 	orgSlug := c.Param("org_slug")
 
-	if _, err := h.orgs.GetBySlug(ctx, orgSlug); err != nil {
+	org, err := h.orgs.GetBySlug(ctx, orgSlug)
+	if err != nil {
 		return echo.NewHTTPError(http.StatusNotFound, "organization not found")
 	}
 
@@ -606,6 +636,9 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 		"check_session_iframe":   base + "/check-session",
 		"introspection_endpoint": base + "/introspect",
 		"revocation_endpoint":    base + "/revoke",
+
+		// OID4VCI Final 12.3: advertise anonymous pre-authorized wallet requests.
+		"pre-authorized_grant_anonymous_access_supported": h.vciH != nil,
 
 		// Supported values
 		"response_types_supported":              []string{"code", "id_token", "token", "code id_token", "code token", "token id_token", "code token id_token"},
@@ -652,7 +685,7 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 			"sub", "iss", "aud", "exp", "iat", "jti", "nbf",
 			"email", "email_verified",
 			"name", "given_name", "family_name",
-			"auth_time", "nonce", "at_hash",
+			"auth_time", "nonce", "at_hash", "acr",
 			"org_id", "roles", "groups",
 			"verified_claims",
 		},
@@ -697,6 +730,32 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 		"authorization_response_iss_parameter_supported": true, // RFC 9207
 	}
 
+	// Derive credential scopes from active configurations of this tenant only.
+	if h.vciH != nil {
+		configs, configErr := h.vciH.repo.ListCredentialConfigs(ctx, org.ID)
+		if configErr != nil {
+			return echo.ErrServiceUnavailable
+		}
+		scopes := resp["scopes_supported"].([]string)
+		seen := map[string]bool{}
+		for _, scope := range scopes {
+			seen[scope] = true
+		}
+		var extra []string
+		for _, credential := range configs {
+			scope := oid4w.CredentialConfigID(credential.VCT)
+			if credential.IsActive && scope != "" && !seen[scope] {
+				extra = append(extra, scope)
+				seen[scope] = true
+			}
+		}
+		sort.Strings(extra)
+		resp["scopes_supported"] = append(scopes, extra...)
+	}
+	// The implemented default authentication context is conservative. Do not
+	// advertise higher assurance solely because an RP requested it.
+	resp["acr_values_supported"] = []string{"0"}
+
 	// OpenID Federation 1.0 — advertise federation support when enabled.
 	// OIDF §10.1: client_registration_types_supported and
 	// federation_registration_endpoint are required in the Discovery document
@@ -718,7 +777,7 @@ func (h *OIDCHandler) Discovery(c echo.Context) error {
 // (hybrid mode per NIST SP 800-208 / BSI TR-02102-1) — the org's own PQC key
 // when per-org PQC signers are wired, otherwise the global one.
 func (h *OIDCHandler) JWKS(c echo.Context) error {
-	c.Response().Header().Set("Cache-Control", "public, max-age=3600, stale-while-revalidate=86400")
+	c.Response().Header().Set("Cache-Control", "no-cache")
 
 	ctx := c.Request().Context()
 
@@ -731,7 +790,14 @@ func (h *OIDCHandler) JWKS(c echo.Context) error {
 
 	var jwks []byte
 	if h.orgSigners != nil && orgID != nil {
-		jwks = h.orgSigners.For(ctx, *orgID).JWKS()
+		signer, err := h.orgSigners.Resolve(ctx, *orgID)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		jwks = signer.JWKS()
+	}
+	if h.orgSigners != nil && orgID == nil {
+		return echo.ErrNotFound
 	}
 	if jwks == nil {
 		jwks = h.tc.Keys.JWKS()
@@ -740,7 +806,11 @@ func (h *OIDCHandler) JWKS(c echo.Context) error {
 	// PQC: publish the org's own ML-DSA-65 key when per-org signers are wired,
 	// otherwise the global one. Passive discovery either way.
 	if h.orgPQCSigners != nil && orgID != nil {
-		jwks = oidc.MergeJWKS(jwks, h.orgPQCSigners.For(ctx, *orgID).JWKObject())
+		pqc, err := h.orgPQCSigners.Resolve(ctx, *orgID)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		jwks = oidc.MergeJWKS(jwks, pqc.JWKObject())
 	} else if h.pqcSigner != nil {
 		jwks = oidc.MergeJWKS(jwks, h.pqcSigner.JWKObject())
 	}
@@ -757,6 +827,9 @@ func (h *OIDCHandler) JWKS(c echo.Context) error {
 // ── Dynamic Client Registration (RFC 7591) ────────────────────────────────────
 
 type dcrRequest struct {
+	LogoURI                 string          `json:"logo_uri"`
+	PolicyURI               string          `json:"policy_uri"`
+	TosURI                  string          `json:"tos_uri"`
 	RedirectURIs            []string        `json:"redirect_uris"`
 	ClientName              string          `json:"client_name"`
 	GrantTypes              []string        `json:"grant_types"`
@@ -795,6 +868,10 @@ func (h *OIDCHandler) Register(c echo.Context) error {
 			"error":             "invalid_client_metadata",
 			"error_description": "redirect_uris is required",
 		})
+	}
+
+	if err := validateClientDisplayMetadata(req.LogoURI, req.PolicyURI, req.TosURI); err != nil {
+		return c.JSON(http.StatusBadRequest, map[string]string{"error": "invalid_client_metadata", "error_description": err.Error()})
 	}
 
 	// RFC 6749 §3.1.2: redirect URIs MUST NOT contain a fragment component.
@@ -842,6 +919,7 @@ func (h *OIDCHandler) Register(c echo.Context) error {
 	}
 
 	client, secret, err := h.clients.RegisterClient(ctx, repository.RegisterClientParams{
+		LogoURI: req.LogoURI, PolicyURI: req.PolicyURI, TosURI: req.TosURI,
 		OrgID:                          org.ID,
 		Name:                           req.ClientName,
 		RedirectURIs:                   req.RedirectURIs,
@@ -875,6 +953,12 @@ func (h *OIDCHandler) Register(c echo.Context) error {
 		"dpop_bound_access_tokens":                   client.DpopBoundAccessTokens,
 		"tls_client_certificate_bound_access_tokens": client.TLSClientCertBoundAccessTokens,
 	}
+	for name, value := range map[string]string{"logo_uri": req.LogoURI, "policy_uri": req.PolicyURI, "tos_uri": req.TosURI} {
+		if value != "" {
+			resp[name] = value
+		}
+	}
+
 	// RFC 7591 §3.2.1: MUST NOT return client_secret for non-secret auth methods.
 	if client.TokenEndpointAuthMethod != "private_key_jwt" &&
 		client.TokenEndpointAuthMethod != "tls_client_auth" &&
@@ -923,8 +1007,9 @@ func (h *OIDCHandler) Authorize(c echo.Context) error {
 	// resolved and verified once auto-registration has fetched the RP's entity
 	// configuration (and thus its protocol jwks_uri).
 	clientLookup := oidc.ClientLookup(h.clients)
-	if h.cfg.Federation.Enabled && len(h.cfg.Federation.TrustAnchors) > 0 {
-		resolver := federation.NewResolver(h.cfg.Federation.TrustAnchors)
+	fc := h.cfg.Federation.ForTenant(orgSlug, org.ConformanceMode)
+	if fc.Enabled && len(fc.TrustAnchors) > 0 {
+		resolver := federation.NewTenantResolver(h.cfg.Federation, orgSlug, org.ConformanceMode)
 		clientLookup = federation.NewAutoRegisterLookup(h.clients, resolver, h.clients, org.ID)
 	}
 
@@ -1167,7 +1252,11 @@ func (h *OIDCHandler) Authorize(c echo.Context) error {
 				// prompt=none SSO path: build hybrid id_token if needed.
 				var hybridTok string
 				if strings.Contains(req.ResponseType, "id_token") {
-					hybridTok = h.hybridIDToken(c, code, req.Nonce, orgSlug, req.ClientID, ssoSess.UserID, ssoSess.AuthTime)
+					var hybridErr error
+					hybridTok, hybridErr = h.hybridIDToken(c, code, req.Nonce, orgSlug, req.ClientID, ssoSess.UserID, ssoSess.AuthTime, req.AcrValues)
+					if hybridErr != nil {
+						return echo.ErrServiceUnavailable
+					}
 				}
 				sessState := oidc.ComputeSessionState(req.ClientID, oidc.RPOriginFromRedirectURI(req.RedirectURI), ssoSess.ID)
 				return h.redirectWithCode(c, req.RedirectURI, code, req.State, orgSlug, req.ClientID, req.ResponseMode, hybridTok, sessState)
@@ -1227,7 +1316,11 @@ func (h *OIDCHandler) Authorize(c echo.Context) error {
 						// Silent SSO path: build hybrid id_token if needed.
 						var hybridTok string
 						if strings.Contains(req.ResponseType, "id_token") {
-							hybridTok = h.hybridIDToken(c, code, req.Nonce, orgSlug, req.ClientID, ssoSess.UserID, ssoSess.AuthTime)
+							var hybridErr error
+							hybridTok, hybridErr = h.hybridIDToken(c, code, req.Nonce, orgSlug, req.ClientID, ssoSess.UserID, ssoSess.AuthTime, req.AcrValues)
+							if hybridErr != nil {
+								return echo.ErrServiceUnavailable
+							}
 						}
 						sessState := oidc.ComputeSessionState(req.ClientID, oidc.RPOriginFromRedirectURI(req.RedirectURI), ssoSess.ID)
 						return h.redirectWithCode(c, req.RedirectURI, code, req.State, orgSlug, req.ClientID, req.ResponseMode, hybridTok, sessState)
@@ -1282,15 +1375,17 @@ func (h *OIDCHandler) Authorize(c echo.Context) error {
 	passkeyEnabled := h.cfg.Auth.WebAuthnRPID != ""
 	// Optionally resolve the client display name for custom templates.
 	clientName := ""
-	if cl, clErr := h.clients.GetByClientID(ctx, req.ClientID); clErr == nil {
+	var displayClient *models.OIDCClient
+	if cl, clErr := h.clients.GetByClientID(ctx, req.ClientID); clErr == nil && cl.OrgID == org.ID {
 		clientName = cl.Name
+		displayClient = cl
 	}
 	cancelURL := "/" + orgSlug + "/authorize/cancel?login_session_id=" + sessID
 
 	// Load active IDPs for promoted-source buttons on the login page.
 	idpProviders := h.loadIDPButtons(ctx, org.ID, orgSlug, req.ClientID)
 
-	return renderLoginWithCaptcha(c, org.Name, org.LogoURL, org.CustomLoginHTML, sessID, orgSlug, req.LoginHint, "", captchaEnabled, captchaSiteKey, captchaScriptURL, passkeyEnabled, clientName, cancelURL, idpProviders)
+	return renderLoginWithCaptcha(c, org.Name, org.LogoURL, org.CustomLoginHTML, sessID, orgSlug, req.LoginHint, "", captchaEnabled, captchaSiteKey, captchaScriptURL, passkeyEnabled, clientName, cancelURL, idpProviders, displayClient)
 }
 
 // AuthorizeDispatch is the POST handler for the authorization endpoint.
@@ -1353,7 +1448,11 @@ func (h *OIDCHandler) AuthorizeSubmit(c echo.Context) error {
 
 	passkeyEnabled := h.cfg.Auth.WebAuthnRPID != ""
 	renderErr := func(msg string) error {
-		return renderLogin(c, orgName, logoURL, customLoginHTML, sessID, loginSess.OrgSlug, email, msg, passkeyEnabled)
+		var displayClient *models.OIDCClient
+		if cl, lookupErr := h.clients.GetByClientID(ctx, loginSess.ClientID); lookupErr == nil && cl.OrgID.String() == loginSess.OrgID {
+			displayClient = cl
+		}
+		return renderLoginWithCaptcha(c, orgName, logoURL, customLoginHTML, sessID, loginSess.OrgSlug, email, msg, false, "", "", passkeyEnabled, "", "", nil, displayClient)
 	}
 
 	// CAPTCHA verification (if the org has it enabled)
@@ -1773,7 +1872,11 @@ skipMFA:
 	// Build hybrid id_token for response_type=code id_token.
 	var hybridTok string
 	if strings.Contains(loginSess.ResponseType, "id_token") {
-		hybridTok = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, user.ID.String(), loginSess.AuthTime)
+		var hybridErr error
+		hybridTok, hybridErr = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, user.ID.String(), loginSess.AuthTime, loginSess.AcrValues)
+		if hybridErr != nil {
+			return echo.ErrServiceUnavailable
+		}
 	}
 	sessState := oidc.ComputeSessionState(loginSess.ClientID, oidc.RPOriginFromRedirectURI(loginSess.RedirectURI), ssoSess.ID)
 	return h.redirectWithCode(c, loginSess.RedirectURI, code, loginSess.State, loginSess.OrgSlug, loginSess.ClientID, loginSess.ResponseMode, hybridTok, sessState)
@@ -1789,7 +1892,6 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 	ctx := c.Request().Context()
 	orgSlug := c.Param("org_slug")
 
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
 	grantType := c.FormValue("grant_type")
 
 	ctx, span := tracing.Tracer("clavex/handler").Start(ctx, "handler.token")
@@ -1798,6 +1900,27 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 		attribute.String("org_slug", orgSlug),
 		attribute.String("grant_type", grantType),
 	)
+
+	// VCI token families use a distinct namespace and lifecycle. Delegate before
+	// generic DPoP processing so one request does not consume its proof twice.
+	if h.vciH != nil && (grantType == "urn:ietf:params:oauth:grant-type:pre-authorized_code" ||
+		grantType == "refresh_token" && strings.HasPrefix(c.FormValue("refresh_token"), walletRefreshPrefix)) {
+		return h.vciH.Token(c)
+	}
+
+	if h.vciH != nil && grantType == "authorization_code" {
+		handles, err := h.vciH.walletAuthorizationCodeRequest(c)
+		if err != nil {
+			return err
+		}
+		if handles {
+			return h.vciH.Token(c)
+		}
+	}
+	tc, resolveErr := h.verificationTC(ctx, h.issuerFromRequest(c, orgSlug), orgSlug)
+	if resolveErr != nil {
+		return echo.ErrServiceUnavailable
+	}
 
 	// DPoP (RFC 9449): parse proof if present.
 	// htu = URL without query string; htm = HTTP method.
@@ -1880,7 +2003,9 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 			}
 		}
 		// Apply per-org then per-client TTL overrides (client wins over org, both win over global).
-		h.applyOrgOverrides(ctx, tc, orgForToken, cl)
+		if err := h.applyOrgOverrides(ctx, tc, orgForToken, cl); err != nil {
+			return echo.ErrServiceUnavailable
+		}
 		rawCode := c.FormValue("code")
 		ts, err := oidc.ExchangeCode(ctx,
 			clientID,
@@ -1899,33 +2024,32 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 		if err != nil {
 			var te *oidc.TokenError
 			if ok := isTokenError(err, &te); ok {
-				// RFC 6749 §4.1.2: if code was already used, revoke the access token
-				// previously issued for this code (best-effort, async).
-				//
-				// We intentionally do NOT revoke the entire refresh token family here.
-				// RFC 6749 §4.1.2 and RFC 9700 §2.2.1 only RECOMMEND revoking access
-				// tokens; they say nothing about refresh token families.  Cascading
-				// family revocation on code replay caused false positives in slow
-				// flows (e.g., JAR+JARM): the async SetRevocationData goroutine always
-				// completes before the code replay goroutine in those flows, making
-				// code retries appear as attacks and invalidating the refresh token
-				// before the client can use it (breaking fapi2-security-profile-id2-
-				// refresh-token in the JARM conformance plan).
+				// Revoke only for a replay authenticated as the original client
+				// and bound to the original redirect URI, verifier and JKT. Other
+				// invalid_grant errors must not invalidate legitimate sessions.
 				if te.Code == "invalid_grant" {
 					c.Logger().Warnf("token invalid_grant: org=%s client=%s redirect_uri=%q desc=%s",
 						orgSlug, clientID, c.FormValue("redirect_uri"), te.Description)
-					capturedTC := tc
-					codeHash := oidc.HashToken(rawCode)
-					go func() {
-						bgCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-						defer cancel()
-						// Only revoke when a previous successful exchange is confirmed
-						// (AccessTokenJTI is set asynchronously alongside RefreshFamilyID).
-						if ac, err := h.codes.GetUsedByHash(bgCtx, codeHash); err == nil && ac != nil && ac.AccessTokenJTI != "" {
-							ttl := capturedTC.AccessTokenTTL
-							_ = h.store.RevokeToken(bgCtx, ac.AccessTokenJTI, ttl)
+					// A failed exchange alone is not proof of a valid replay. In
+					// particular, another client or a wrong verifier must not revoke
+					// a successfully issued token.
+					ac, lookupErr := h.codes.GetUsedByHash(ctx, oidc.HashToken(rawCode))
+					if lookupErr != nil {
+						return echo.ErrServiceUnavailable
+					}
+					if ac != nil && ac.AccessTokenJTI != "" && cl != nil && ac.OrgID == cl.OrgID && ac.ClientID == clientID &&
+						ac.RedirectURI == c.FormValue("redirect_uri") && oidc.VerifyPKCE(ac.PKCEChallenge, c.FormValue("code_verifier")) == nil &&
+						(ac.DpopJKT == "" || dpop != nil && dpop.JKT == ac.DpopJKT) {
+						if err := h.store.RevokeToken(ctx, ac.AccessTokenJTI, tc.AccessTokenTTL); err != nil {
+							return echo.ErrServiceUnavailable
 						}
-					}()
+						if ac.RefreshFamilyID != uuid.Nil {
+							if err := h.tokens.RevokeFamilyByID(ctx, ac.RefreshFamilyID); err != nil {
+								return echo.ErrServiceUnavailable
+							}
+						}
+					}
+
 				}
 				return tokenError(c, te.Code, te.Description)
 			}
@@ -1991,7 +2115,9 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 			}
 		}
 		// Apply per-org then per-client TTL overrides.
-		h.applyOrgOverrides(ctx, tc, orgForRefresh, clForRefresh)
+		if err := h.applyOrgOverrides(ctx, tc, orgForRefresh, clForRefresh); err != nil {
+			return echo.ErrServiceUnavailable
+		}
 		ts, err := oidc.ExchangeRefreshToken(ctx,
 			clientID,
 			c.FormValue("refresh_token"),
@@ -2060,7 +2186,9 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 			if o, oErr := h.orgs.GetBySlug(ctx, orgSlug); oErr == nil {
 				ccOrg = o
 			}
-			h.applyOrgOverrides(ctx, tc, ccOrg, ccCl)
+			if err := h.applyOrgOverrides(ctx, tc, ccOrg, ccCl); err != nil {
+				return echo.ErrServiceUnavailable
+			}
 			ccScope = oidc.FilterScope(ccScope, ccCl.Scopes)
 		}
 		te, err := oidc.ExchangeClientCredentials(ctx, clientID, ccScope, tc, dpop, mtls)
@@ -2141,7 +2269,9 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 			if fetched, clErr := h.clients.GetByClientID(ctx, clientID); clErr == nil {
 				teCl = fetched
 			}
-			h.applyOrgOverrides(ctx, targetTC, targetOrg, teCl)
+			if err := h.applyOrgOverrides(ctx, targetTC, targetOrg, teCl); err != nil {
+				return echo.ErrServiceUnavailable
+			}
 			// Trust MaxTokenTTL is a hard cap: it overrides even per-client settings.
 			if trust.MaxTokenTTL != nil {
 				maxTTL := time.Duration(*trust.MaxTokenTTL) * time.Second
@@ -2155,7 +2285,10 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 			}
 			// The subject_token was issued by the SOURCE org, so it must be
 			// verified against the source issuer (not the target).
-			sourceTC := h.newTC(h.issuerFromRequest(c, sourceSlug))
+			sourceTC, resolveErr := h.verificationTC(ctx, h.issuerFromRequest(c, sourceSlug), sourceSlug)
+			if resolveErr != nil {
+				return echo.ErrServiceUnavailable
+			}
 			resp, err := oidc.ExchangeToken(ctx,
 				clientID,
 				c.FormValue("subject_token"),
@@ -2226,15 +2359,18 @@ func (h *OIDCHandler) Token(c echo.Context) error {
 // ── Introspect (RFC 7662) ─────────────────────────────────────────────────────
 
 // introspectCacheKey returns a Redis key for a token without storing the raw token value.
-func introspectCacheKey(token string) string {
-	h := sha256.Sum256([]byte(token))
+func introspectCacheKey(issuer, token string) string {
+	h := sha256.Sum256([]byte(issuer + "\x00" + token))
 	return "introspect:" + hex.EncodeToString(h[:])
 }
 
 func (h *OIDCHandler) Introspect(c echo.Context) error {
 	ctx := c.Request().Context()
 	orgSlug := c.Param("org_slug")
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
+	tc, err := h.verificationTC(ctx, h.issuerFromRequest(c, orgSlug), orgSlug)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
 	ctx, span := tracing.Tracer("clavex/handler").Start(ctx, "handler.introspect")
 	defer span.End()
 	span.SetAttributes(attribute.String("org_slug", orgSlug))
@@ -2245,7 +2381,7 @@ func (h *OIDCHandler) Introspect(c echo.Context) error {
 	}
 
 	token := c.FormValue("token")
-	cacheKey := introspectCacheKey(token)
+	cacheKey := introspectCacheKey(tc.Issuer, token)
 
 	// Cache hit — return immediately
 	if cached, err := h.rdb.Get(ctx, cacheKey).Bytes(); err == nil {
@@ -2418,7 +2554,10 @@ func (h *OIDCHandler) mergeIntrospectStepUp(resp oidc.IntrospectionResponse, fie
 func (h *OIDCHandler) Revoke(c echo.Context) error {
 	ctx := c.Request().Context()
 	orgSlug := c.Param("org_slug")
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
+	tc, err := h.verificationTC(ctx, h.issuerFromRequest(c, orgSlug), orgSlug)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
 
 	token := c.FormValue("token")
 	hint := c.FormValue("token_type_hint")
@@ -2445,7 +2584,7 @@ func (h *OIDCHandler) Revoke(c echo.Context) error {
 			_ = oidc.RevokeRefreshTokenByValue(ctx, token, h.tokens)
 		} else {
 			// Invalidate introspection cache entry for the revoked token
-			h.rdb.Del(ctx, introspectCacheKey(token))
+			h.rdb.Del(ctx, introspectCacheKey(tc.Issuer, token))
 		}
 	}
 	org, _ := h.orgs.GetBySlug(ctx, orgSlug)
@@ -2470,7 +2609,10 @@ func (h *OIDCHandler) Revoke(c echo.Context) error {
 func (h *OIDCHandler) UserInfo(c echo.Context) error {
 	ctx := c.Request().Context()
 	orgSlug := c.Param("org_slug")
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
+	tc, err := h.verificationTC(ctx, h.issuerFromRequest(c, orgSlug), orgSlug)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
 	ctx, span := tracing.Tracer("clavex/handler").Start(ctx, "handler.userinfo")
 	defer span.End()
 	span.SetAttributes(attribute.String("org_slug", orgSlug))
@@ -2595,7 +2737,10 @@ func (h *OIDCHandler) Logout(c echo.Context) error {
 
 	ctx := c.Request().Context()
 	orgSlug := c.Param("org_slug")
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
+	tc, err := h.verificationTC(ctx, h.issuerFromRequest(c, orgSlug), orgSlug)
+	if err != nil {
+		return echo.ErrInternalServerError
+	}
 
 	if hint := param("id_token_hint"); hint != "" {
 		_ = oidc.RevokeAccessToken(ctx, hint, tc, h.store)
@@ -2764,12 +2909,12 @@ func (h *OIDCHandler) authenticateClientByAssertion(c echo.Context) (string, err
 	}
 	clientID := tok.Issuer()
 	if clientID == "" {
-		clientID = tok.Subject()
-	}
-	if clientID == "" {
-		return "", echo.NewHTTPError(http.StatusUnauthorized, "client_assertion missing iss/sub")
+		return "", echo.NewHTTPError(http.StatusUnauthorized, "client_assertion iss is required")
 	}
 
+	if requested := c.FormValue("client_id"); requested != "" && requested != clientID {
+		return "", echo.NewHTTPError(http.StatusUnauthorized, "client_id does not match client_assertion")
+	}
 	client, err := h.clients.GetByClientID(ctx, clientID)
 	if err != nil || !client.IsActive {
 		return "", echo.NewHTTPError(http.StatusUnauthorized, "unknown client")
@@ -2792,7 +2937,18 @@ func (h *OIDCHandler) authenticateClientByAssertion(c echo.Context) (string, err
 	// extraAudiences accepts /par (PAR endpoint) and /bc-authorize (CIBA
 	// backchannel authentication endpoint) in addition to the token endpoint
 	// and issuer, since this function authenticates clients at all three.
-	if _, err = oidc.ValidateClientAssertionJWT(ctx, assertion, keySet, issuer+"/token", issuer, jtiCache, issuer+"/par", issuer+"/bc-authorize"); err != nil {
+	profile := models.ClientAssertionProfileStandard
+	if raw, exists := client.Metadata[models.ClientAssertionProfileMetadataKey]; exists {
+		value, ok := raw.(string)
+		if !ok {
+			return "", echo.NewHTTPError(http.StatusUnauthorized, "invalid client assertion profile")
+		}
+		profile = value
+	}
+	if _, err = oidc.ValidateClientAssertionJWTWithProfile(ctx, assertion, keySet, issuer+"/token", issuer, jtiCache, profile, issuer+"/par", issuer+"/bc-authorize", issuer+"/oid4vci/token"); err != nil {
+		if errors.Is(err, oidc.ErrClientReplayUnavailable) {
+			return "", echo.ErrServiceUnavailable
+		}
 		var te *oidc.TokenError
 		if errors.As(err, &te) {
 			return "", echo.NewHTTPError(http.StatusUnauthorized, te.Description)
@@ -2844,7 +3000,8 @@ func (h *OIDCHandler) resolveClientJWKS(ctx context.Context, client *models.OIDC
 // draft-ietf-oauth-attestation-based-client-auth.
 //
 // client_assertion_type must be
-//   urn:ietf:params:oauth:client-assertion-type:jwt-client-attestation
+//
+//	urn:ietf:params:oauth:client-assertion-type:jwt-client-attestation
 //
 // client_assertion must be "<attest_jwt>~<pop_jwt>" (tilde-separated).
 // The attestation JWT is verified against the client's registered JWKS
@@ -2895,6 +3052,10 @@ func (h *OIDCHandler) authenticateClientByAttestationAssertion(c echo.Context) (
 		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "client not configured for attest_jwt_client_auth")
 	}
 
+	org, orgErr := h.orgs.GetBySlug(ctx, c.Param("org_slug"))
+	if orgErr != nil || org.ID != client.OrgID || !org.IsActive {
+		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "client does not belong to the active organisation")
+	}
 	// Resolve the client's public key set (used to verify the attestation JWT).
 	keySet, err := h.resolveClientJWKS(ctx, client)
 	if err != nil {
@@ -2914,13 +3075,36 @@ func (h *OIDCHandler) authenticateClientByAttestationAssertion(c echo.Context) (
 		jtiCache,
 		issuer+"/par",
 		issuer+"/bc-authorize",
+		issuer+"/oid4vci/token",
 	)
 	if valErr != nil {
+		if errors.Is(valErr, oidc.ErrClientReplayUnavailable) {
+			return "", "", echo.ErrServiceUnavailable
+		}
 		var te *oidc.TokenError
 		if errors.As(valErr, &te) {
 			return "", "", echo.NewHTTPError(http.StatusUnauthorized, te.Description)
 		}
 		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "client_assertion invalid")
+	}
+
+	required := false
+	if value, ok := org.Settings["wallet_attestation_status_required"]; ok {
+		flag, valid := value.(bool)
+		if !valid {
+			return "", "", echo.ErrServiceUnavailable
+		}
+		required = flag
+	}
+	var status json.RawMessage
+	if value, ok := unverifiedAttest.Get("status"); ok {
+		status, _ = json.Marshal(value)
+	}
+	if err := oid4w.CheckDelegatedStatus(ctx, org.ID.String(), org.Settings, "wallet-attestation+jwt", unverifiedAttest.Issuer(), "oauth-client-attestation+jwt", status, required); err != nil {
+		if errors.Is(err, oid4w.ErrStatusUnavailable) {
+			return "", "", echo.ErrServiceUnavailable
+		}
+		return "", "", echo.NewHTTPError(http.StatusUnauthorized, "wallet attestation status is invalid")
 	}
 
 	return clientID, instanceJKT, nil
@@ -2932,6 +3116,9 @@ type redisJTICache struct {
 }
 
 func (r *redisJTICache) CheckAndSet(ctx context.Context, key string, ttl time.Duration) (bool, error) {
+	if r.rdb == nil {
+		return false, oidc.ErrClientReplayUnavailable
+	}
 	set, err := r.rdb.SetNX(ctx, key, 1, ttl).Result()
 	if err != nil {
 		return false, err
@@ -2942,11 +3129,13 @@ func (r *redisJTICache) CheckAndSet(ctx context.Context, key string, ttl time.Du
 // hybridIDToken builds the authorization-response ID token for hybrid flows
 // (response_type=code id_token). The token contains only the claims required by
 // OIDC Core §3.3.2.11: sub, iss, aud, iat, exp, nonce, auth_time, c_hash.
-// Returns an empty string on any error (the code redirect still succeeds, but
-// without the id_token — not ideal; callers should log the error).
-func (h *OIDCHandler) hybridIDToken(c echo.Context, code, nonce, orgSlug, clientID, userID string, authTime int64) string {
+// Errors are propagated so a hybrid response never silently omits its ID token.
+func (h *OIDCHandler) hybridIDToken(c echo.Context, code, nonce, orgSlug, clientID, userID string, authTime int64, acrValues string) (string, error) {
 	cHash := oidc.ComputeAtHash(code)
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
+	tc, err := h.verificationTC(c.Request().Context(), h.issuerFromRequest(c, orgSlug), orgSlug)
+	if err != nil {
+		return "", err
+	}
 	// Honour per-client id_token_signed_response_alg if registered (fail-open: default PS256).
 	idTokenAlg := ""
 	if cl, err := h.clients.GetByClientID(c.Request().Context(), clientID); err == nil {
@@ -2956,12 +3145,12 @@ func (h *OIDCHandler) hybridIDToken(c echo.Context, code, nonce, orgSlug, client
 		UserID:   userID,
 		AuthTime: authTime,
 		CHash:    cHash,
+		Acr:      oidc.ResolveACR(acrValues),
 	}, oidc.ResolveIDTokenAlg(idTokenAlg))
 	if err != nil {
-		c.Logger().Errorf("hybridIDToken: %v", err)
-		return ""
+		return "", err
 	}
-	return idTok
+	return idTok, nil
 }
 
 type loginData struct {
@@ -2970,7 +3159,10 @@ type loginData struct {
 	// LogoURL is the URL of the org's logo; empty string if none.
 	LogoURL string
 	// ClientName is the display name of the OIDC client requesting authentication.
-	ClientName string
+	ClientName      string
+	ClientLogoURL   string
+	ClientPolicyURI string
+	ClientTosURI    string
 	// ActionURL is the form POST target, e.g. "/acme/authorize".
 	ActionURL        string
 	LoginSessionID   string
@@ -3005,11 +3197,7 @@ type idpButton struct {
 	StartURL   string // e.g. "/acme/idp/uuid"
 }
 
-func renderLogin(c echo.Context, orgName string, logoURL *string, customHTML *string, sessID, orgSlug, email, errMsg string, passkeyEnabled bool) error {
-	return renderLoginWithCaptcha(c, orgName, logoURL, customHTML, sessID, orgSlug, email, errMsg, false, "", "", passkeyEnabled, "", "", nil)
-}
-
-func renderLoginWithCaptcha(c echo.Context, orgName string, logoURL *string, customHTML *string, sessID, orgSlug, email, errMsg string, captchaEnabled bool, captchaSiteKey, captchaScriptURL string, passkeyEnabled bool, clientName, cancelURL string, idps []*idpButton) error {
+func renderLoginWithCaptcha(c echo.Context, orgName string, logoURL *string, customHTML *string, sessID, orgSlug, email, errMsg string, captchaEnabled bool, captchaSiteKey, captchaScriptURL string, passkeyEnabled bool, clientName, cancelURL string, idps []*idpButton, clients ...*models.OIDCClient) error {
 	var logoStr string
 	if logoURL != nil {
 		logoStr = *logoURL
@@ -3031,6 +3219,9 @@ func renderLoginWithCaptcha(c echo.Context, orgName string, logoURL *string, cus
 		EmailOTPEnabled:  true,
 		CancelURL:        cancelURL,
 		IDPProviders:     idps,
+	}
+	if len(clients) > 0 {
+		data.ClientName, data.ClientLogoURL, data.ClientPolicyURI, data.ClientTosURI = clientDisplayData(clients[0])
 	}
 	c.Response().Header().Set("Content-Type", "text/html; charset=utf-8")
 	c.Response().WriteHeader(http.StatusOK)
@@ -3281,7 +3472,11 @@ func (h *OIDCHandler) MFAChallengeSubmit(c echo.Context) error {
 
 	var hybridTok string
 	if strings.Contains(loginSess.ResponseType, "id_token") {
-		hybridTok = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, user.ID.String(), loginSess.AuthTime)
+		var hybridErr error
+		hybridTok, hybridErr = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, user.ID.String(), loginSess.AuthTime, loginSess.AcrValues)
+		if hybridErr != nil {
+			return echo.ErrServiceUnavailable
+		}
 	}
 	// Session state: use SSO cookie if available (set just above by setSSOCookie).
 	var mfaSessState string
@@ -3364,7 +3559,11 @@ func (h *OIDCHandler) AuthorizeResume(c echo.Context) error {
 
 	var hybridTok string
 	if strings.Contains(loginSess.ResponseType, "id_token") {
-		hybridTok = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, loginSess.UserID, loginSess.AuthTime)
+		var hybridErr error
+		hybridTok, hybridErr = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, loginSess.UserID, loginSess.AuthTime, loginSess.AcrValues)
+		if hybridErr != nil {
+			return echo.ErrServiceUnavailable
+		}
 	}
 	// Session state: use browser-state cookie set during the original login.
 	var idpSessState string
@@ -3507,7 +3706,11 @@ func (h *OIDCHandler) OID4VPResume(c echo.Context) error {
 
 	var hybridTok string
 	if strings.Contains(loginSess.ResponseType, "id_token") {
-		hybridTok = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, loginSess.UserID, loginSess.AuthTime)
+		var hybridErr error
+		hybridTok, hybridErr = h.hybridIDToken(c, code, loginSess.Nonce, loginSess.OrgSlug, loginSess.ClientID, loginSess.UserID, loginSess.AuthTime, loginSess.AcrValues)
+		if hybridErr != nil {
+			return echo.ErrServiceUnavailable
+		}
 	}
 	var sessState string
 	if ck, err := c.Cookie(bsCookie); err == nil && ck.Value != "" {
@@ -3880,7 +4083,11 @@ func (h *OIDCHandler) redirectWithError(c echo.Context, ae *oidc.AuthorizeError)
 	// MUST also be wrapped in a signed JARM JWT (not sent as plain query params).
 	if oidc.IsJARMMode(ae.ResponseMode) {
 		issuer := h.issuerFromRequest(c, ae.OrgSlug)
-		jarmJWT, err := oidc.BuildJARMErrorResponse(h.tc.Keys, issuer, ae.ClientID, ae.Code, ae.Description, ae.State)
+		tc, err := h.verificationTC(c.Request().Context(), issuer, ae.OrgSlug)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		jarmJWT, err := oidc.BuildJARMErrorResponse(tc.Keys, issuer, ae.ClientID, ae.Code, ae.Description, ae.State)
 		if err != nil {
 			return echo.ErrInternalServerError
 		}
@@ -3945,7 +4152,11 @@ func (h *OIDCHandler) redirectWithError(c echo.Context, ae *oidc.AuthorizeError)
 func (h *OIDCHandler) redirectWithCode(c echo.Context, redirectURI, code, state, orgSlug, clientID, responseMode, idToken, sessionState string) error {
 	if oidc.IsJARMMode(responseMode) {
 		issuer := h.issuerFromRequest(c, orgSlug)
-		jarmJWT, err := oidc.BuildJARMResponse(h.tc.Keys, issuer, clientID, code, state)
+		tc, err := h.verificationTC(c.Request().Context(), issuer, orgSlug)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		jarmJWT, err := oidc.BuildJARMResponse(tc.Keys, issuer, clientID, code, state)
 		if err != nil {
 			return echo.ErrInternalServerError
 		}

@@ -1,0 +1,18 @@
+{
+  "description": "Clavex \u2014 OID4VP Final verifier / sd_jwt_vc / signed encrypted",
+  "alias": "clavex-oid4vp-verifier-signed-encrypted",
+  "variant": {
+    "vp_profile": "plain_vp",
+    "credential_format": "sd_jwt_vc",
+    "client_id_prefix": "x509_san_dns",
+    "response_mode": "direct_post.jwt",
+    "request_method": "request_uri_signed"
+  },
+  "credential": {
+    "signing_jwk": "${JWK:wallet1}"
+  },
+  "waitTimeoutSeconds": 60,
+  "client": {
+    "client_id": "id.clavex.eu"
+  }
+}

@@ -92,26 +92,14 @@ func (s *DBSigner) load(ctx context.Context) error {
 
 // bootstrap generates a new RSA-2048 key and stores it as the first active key.
 func (s *DBSigner) bootstrap(ctx context.Context) error {
-	priv, kid, keyEnc, err := s.generateAndEncrypt()
+	_, kid, encrypted, err := s.generateAndEncrypt()
 	if err != nil {
-		return fmt.Errorf("db signer: bootstrap generate key: %w", err)
+		return err
 	}
-
-	if err := s.repo.Insert(ctx, kid, "PS256", keyEnc); err != nil {
-		return fmt.Errorf("db signer: bootstrap insert key: %w", err)
+	if _, err = s.repo.ReplaceInstallationKey(ctx, repository.OrgKeyReplacement{KID: kid, Algorithm: "PS256", KeyEnc: encrypted, ProvisionOnly: true}); err != nil {
+		return err
 	}
-
-	jwksJSON, err := buildJWKS(&priv.PublicKey, kid)
-	if err != nil {
-		return fmt.Errorf("db signer: build JWKS after bootstrap: %w", err)
-	}
-
-	s.mu.Lock()
-	s.privateKey = priv
-	s.kid = kid
-	s.jwks = jwksJSON
-	s.mu.Unlock()
-	return nil
+	return s.load(ctx)
 }
 
 // Rotate retires the current active key and promotes a freshly generated key.
@@ -119,32 +107,14 @@ func (s *DBSigner) bootstrap(ctx context.Context) error {
 // (signed with the old kid) can still be verified during the grace period.
 func (s *DBSigner) Rotate() error {
 	ctx := context.Background()
-
-	priv, kid, keyEnc, err := s.generateAndEncrypt()
+	_, kid, encrypted, err := s.generateAndEncrypt()
 	if err != nil {
-		return fmt.Errorf("db signer: rotate generate key: %w", err)
+		return err
 	}
-
-	// Retire the current active key before inserting the new one.
-	if err := s.repo.RetireActive(ctx); err != nil {
-		return fmt.Errorf("db signer: retire active key: %w", err)
+	if _, err = s.repo.ReplaceInstallationKey(ctx, repository.OrgKeyReplacement{KID: kid, Algorithm: "PS256", KeyEnc: encrypted}); err != nil {
+		return err
 	}
-
-	if err := s.repo.Insert(ctx, kid, "PS256", keyEnc); err != nil {
-		return fmt.Errorf("db signer: insert new key: %w", err)
-	}
-
-	jwksJSON, err := s.buildJWKSFromDB(ctx)
-	if err != nil {
-		return fmt.Errorf("db signer: rebuild JWKS after rotate: %w", err)
-	}
-
-	s.mu.Lock()
-	s.privateKey = priv
-	s.kid = kid
-	s.jwks = jwksJSON
-	s.mu.Unlock()
-	return nil
+	return s.load(ctx)
 }
 
 // PrivateKey returns the active RSA private key for token signing.

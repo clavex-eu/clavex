@@ -97,7 +97,11 @@ func (h *Handler) EntityConfiguration(c echo.Context) error {
 
 	orgSlug := c.Param("org_slug")
 	issuer := h.cfg.HTTP.IssuerURLFromBase(h.cfg.Auth.IssuerBase, orgSlug)
-	fc := h.cfg.Federation
+	org, lookupErr := h.orgs.GetBySlug(c.Request().Context(), orgSlug)
+	if lookupErr != nil || !org.IsActive {
+		return echo.NewHTTPError(http.StatusNotFound, "organisation not found")
+	}
+	fc := h.cfg.Federation.ForTenant(orgSlug, org.ConformanceMode)
 
 	var token []byte
 	var err error
@@ -164,12 +168,12 @@ func (h *Handler) EntityConfiguration(c echo.Context) error {
 // Register handles POST /:org_slug/federation/register.
 //
 // Implements OpenID Federation 1.0 §9.6 explicit client registration:
-//   1. Parse the RP's signed Entity Statement (compact JWS).
-//   2. Fetch the RP's Entity Configuration to obtain its JWKS.
-//   3. Verify the registration JWT signature.
-//   4. Resolve and validate the trust chain up to a configured trust anchor.
-//   5. Apply metadata policies from the chain.
-//   6. Upsert the OIDC client record.
+//  1. Parse the RP's signed Entity Statement (compact JWS).
+//  2. Fetch the RP's Entity Configuration to obtain its JWKS.
+//  3. Verify the registration JWT signature.
+//  4. Resolve and validate the trust chain up to a configured trust anchor.
+//  5. Apply metadata policies from the chain.
+//  6. Upsert the OIDC client record.
 //
 // The request body must be a compact JWS with Content-Type
 // "application/entity-statement+jwt", or a form field named "entity_statement"
@@ -178,7 +182,14 @@ func (h *Handler) Register(c echo.Context) error {
 	if !h.cfg.Federation.Enabled {
 		return echo.NewHTTPError(http.StatusNotFound, "openid federation is not enabled")
 	}
-	if len(h.cfg.Federation.TrustAnchors) == 0 {
+	ctx := c.Request().Context()
+	orgSlug := c.Param("org_slug")
+	org, err := h.orgs.GetBySlug(ctx, orgSlug)
+	if err != nil || !org.IsActive {
+		return echo.NewHTTPError(http.StatusNotFound, "organisation not found")
+	}
+	fc := h.cfg.Federation.ForTenant(orgSlug, org.ConformanceMode)
+	if len(fc.TrustAnchors) == 0 {
 		return c.JSON(http.StatusServiceUnavailable, map[string]string{
 			"error":             "trust_anchors_not_configured",
 			"error_description": "No trust anchors configured; explicit federation registration is unavailable.",
@@ -209,8 +220,7 @@ func (h *Handler) Register(c echo.Context) error {
 	}
 
 	// ── Validate trust chain ──────────────────────────────────────────────────
-	resolver := NewResolver(h.cfg.Federation.TrustAnchors)
-	ctx := c.Request().Context()
+	resolver := NewTenantResolver(h.cfg.Federation, orgSlug, org.ConformanceMode)
 
 	rpData, err := resolver.Validate(ctx, regJWT)
 	if err != nil {
@@ -219,14 +229,6 @@ func (h *Handler) Register(c echo.Context) error {
 			"error":             "invalid_client_metadata",
 			"error_description": err.Error(),
 		})
-	}
-
-	// ── Resolve the tenant org ────────────────────────────────────────────────
-	orgSlug := c.Param("org_slug")
-	org, err := h.orgs.GetBySlug(ctx, orgSlug)
-	if err != nil {
-		c.Logger().Errorf("federation: org %s not found: %v", orgSlug, err)
-		return echo.NewHTTPError(http.StatusNotFound, "organisation not found")
 	}
 
 	// ── Build the federation registration params ──────────────────────────────
@@ -325,13 +327,19 @@ func (h *Handler) taGuard(c echo.Context) (string, *orgRow, error) {
 	issuer := h.cfg.HTTP.IssuerURLFromBase(h.cfg.Auth.IssuerBase, orgSlug)
 	ctx := c.Request().Context()
 	org, err := h.orgs.GetBySlug(ctx, orgSlug)
-	if err != nil {
+	if err != nil || !org.IsActive {
 		return "", nil, echo.NewHTTPError(http.StatusNotFound, "organisation not found")
+	}
+	if !h.cfg.Federation.ForTenant(orgSlug, org.ConformanceMode).TrustAnchorMode {
+		return "", nil, echo.NewHTTPError(http.StatusNotFound, "trust anchor mode not enabled")
 	}
 	return issuer, &orgRow{id: org.ID, name: org.Name}, nil
 }
 
-type orgRow struct{ id uuid.UUID; name string }
+type orgRow struct {
+	id   uuid.UUID
+	name string
+}
 
 // FetchSubordinateStatement handles GET /:org_slug/federation/fetch
 //
@@ -697,4 +705,3 @@ func (h *Handler) TrustMarkStatusEndpoint(c echo.Context) error {
 	active := !tm.Revoked && tm.ExpiresAt.After(time.Now())
 	return c.JSON(http.StatusOK, map[string]bool{"active": active})
 }
-

@@ -1,23 +1,15 @@
 package oid4w
 
-// Token Status List — IETF draft-ietf-oauth-status-list (also compatible with
-// W3C StatusList2021).  This implementation follows the JWT-based encoding:
-//
-//   GET /:slug/oid4vci/status-list/:id
-//   → application/statuslist+jwt  (RFC 9457-style JWT VC)
-//
-// Each status list is a bitstring encoded as a zlib-compressed byte array,
-// then base64url-encoded.  Each credential occupies 1 bit:
-//   0 = VALID
-//   1 = REVOKED
-//
-// References:
-//   https://www.ietf.org/archive/id/draft-ietf-oauth-status-list-05.txt
-//   https://w3c.github.io/vc-status-list-2021/
+// JWT Token Status List profile, pinned to draft-ietf-oauth-status-list-21.
+// Local issuance uses binary states; the strict validator also reads 2/4/8-bit
+// external lists. This is not W3C StatusList2021 or an RFC 9457 document.
 
 import (
+	"bytes"
 	"compress/zlib"
+	"crypto"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -26,7 +18,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lestrrat-go/jwx/v2/cert"
 	"github.com/lestrrat-go/jwx/v2/jwa"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
@@ -38,22 +32,43 @@ const StatusListSize = 65536
 
 // credentialStatus values
 const (
-	StatusValid   byte = 0
-	StatusRevoked byte = 1
+	StatusValid     byte = 0
+	StatusRevoked   byte = 1
+	StatusSuspended byte = 2
 )
 
 // StatusList holds the in-memory bitstring for one list.
 type StatusList struct {
-	bits []byte // len = ceil(StatusListSize / 8)
+	bits  []byte
+	width int
 }
 
 // NewStatusList allocates an empty status list (all bits = 0 = VALID).
 func NewStatusList() *StatusList {
-	return &StatusList{bits: make([]byte, StatusListSize/8)}
+	return NewStatusListWithBits(1)
 }
+
+// NewStatusListWithBits supports the JWT status-list widths without changing
+// the number of slots. Existing one-bit lists remain readable.
+func NewStatusListWithBits(width int) *StatusList {
+	if width != 1 && width != 2 && width != 4 && width != 8 {
+		return nil
+	}
+	return &StatusList{bits: make([]byte, StatusListSize*width/8), width: width}
+}
+func (sl *StatusList) Bits() int { return sl.width }
 
 // DecodeStatusList decompresses and decodes a base64url-encoded status list.
 func DecodeStatusList(encoded string) (*StatusList, error) {
+	return DecodeStatusListWithBits(encoded, 1)
+}
+func DecodeStatusListWithBits(encoded string, width int) (*StatusList, error) {
+	if NewStatusListWithBits(width) == nil {
+		return nil, fmt.Errorf("unsupported local status width")
+	}
+	if len(encoded) > 128*1024 {
+		return nil, fmt.Errorf("local status list exceeds size limit")
+	}
 	compressed, err := base64.RawURLEncoding.DecodeString(encoded)
 	if err != nil {
 		// Try standard base64 as well (some issuers use padding)
@@ -67,11 +82,14 @@ func DecodeStatusList(encoded string) (*StatusList, error) {
 		return nil, fmt.Errorf("status list: zlib open: %w", err)
 	}
 	defer r.Close()
-	bits, err := io.ReadAll(r)
+	bits, err := io.ReadAll(io.LimitReader(r, int64(StatusListSize*width/8+1)))
 	if err != nil {
 		return nil, fmt.Errorf("status list: zlib read: %w", err)
 	}
-	return &StatusList{bits: bits}, nil
+	if len(bits) != StatusListSize*width/8 {
+		return nil, fmt.Errorf("status list: invalid local list size")
+	}
+	return &StatusList{bits: bits, width: width}, nil
 }
 
 // Encode compresses the bitstring and returns a base64url string suitable
@@ -88,31 +106,25 @@ func (sl *StatusList) Encode() (string, error) {
 	return base64.RawURLEncoding.EncodeToString([]byte(buf.String())), nil
 }
 
-// Get returns the status byte (0 or 1) at the given index.
+// Get returns the status value at index.
 func (sl *StatusList) Get(index int) (byte, error) {
-	if index < 0 || index >= StatusListSize {
-		return 0, fmt.Errorf("status list: index %d out of range [0, %d)", index, StatusListSize)
+	if sl.width < 1 || index < 0 || index >= StatusListSize || index*sl.width/8 >= len(sl.bits) {
+		return 0, fmt.Errorf("status list index out of range")
 	}
-	bytePos := index / 8
-	bitPos := uint(index % 8)
-	return (sl.bits[bytePos] >> bitPos) & 1, nil
+	return (sl.bits[index*sl.width/8] >> uint(index*sl.width%8)) & byte((1<<sl.width)-1), nil
 }
 
-// Set sets the status bit at index to val (0 or 1).
+// Set updates one status value without changing neighbouring entries.
 func (sl *StatusList) Set(index int, val byte) error {
-	if index < 0 || index >= StatusListSize {
-		return fmt.Errorf("status list: index %d out of range [0, %d)", index, StatusListSize)
+	if _, err := sl.Get(index); err != nil {
+		return err
 	}
-	if val > 1 {
-		return fmt.Errorf("status list: val must be 0 or 1, got %d", val)
+	mask := byte((1 << sl.width) - 1)
+	if int(val) > int(mask) {
+		return fmt.Errorf("status does not fit list width")
 	}
-	bytePos := index / 8
-	bitPos := uint(index % 8)
-	if val == 1 {
-		sl.bits[bytePos] |= 1 << bitPos
-	} else {
-		sl.bits[bytePos] &^= 1 << bitPos
-	}
+	pos, shift := index*sl.width/8, uint(index*sl.width%8)
+	sl.bits[pos] = (sl.bits[pos] & ^(mask << shift)) | (val << shift)
 	return nil
 }
 
@@ -132,32 +144,103 @@ func (sl *StatusList) IsRevoked(index int) (bool, error) {
 
 // StatusListJWTParams are the parameters for signing a status list JWT.
 type StatusListJWTParams struct {
-	Issuer     string
-	ListID     uuid.UUID // becomes the "sub" / URL path of the list
-	StatusList *StatusList
-	TTL        time.Duration
-	PrivateKey *rsa.PrivateKey
-	KID        string
+	X5C                  *cert.Chain
+	CertificateExpiresAt time.Time
+	Issuer               string
+	ListID               uuid.UUID // becomes the "sub" / URL path of the list
+	StatusList           *StatusList
+	TTL                  time.Duration
+	ListURI              string
+	Signer               crypto.Signer
+	Algorithm            jwa.SignatureAlgorithm
+	PrivateKey           *rsa.PrivateKey
+	KID                  string
 }
 
 // IssueStatusListJWT signs the status list as a JWT.
 // The resulting compact JWS should be served with
 // Content-Type: application/statuslist+jwt.
 func IssueStatusListJWT(p StatusListJWTParams) (string, error) {
+	if p.StatusList == nil {
+		return "", fmt.Errorf("status list is required")
+	}
+	if p.TTL <= 0 {
+		return "", fmt.Errorf("positive status token lifetime is required")
+	}
+	if p.ListURI == "" {
+		p.ListURI = strings.TrimRight(p.Issuer, "/") + "/oid4vci/status-list/" + p.ListID.String()
+	}
+	if _, err := ParseStatusClaim([]byte(fmt.Sprintf(`{"status_list":{"idx":0,"uri":%q}}`, p.ListURI))); err != nil {
+		return "", err
+	}
+	signer := p.Signer
+	if signer == nil {
+		if p.PrivateKey == nil {
+			return "", fmt.Errorf("status signer is required")
+		}
+		signer = p.PrivateKey
+	}
+	alg := p.Algorithm
+	if alg == "" {
+		alg = jwa.RS256
+	}
+	if alg != jwa.RS256 && alg != jwa.PS256 && alg != jwa.ES256 {
+		return "", fmt.Errorf("unsupported status signing algorithm")
+	}
 	encoded, err := p.StatusList.Encode()
 	if err != nil {
 		return "", err
 	}
 
 	now := time.Now()
+	expires := now.Add(p.TTL)
+	if !p.CertificateExpiresAt.IsZero() && p.CertificateExpiresAt.Before(expires) {
+		expires = p.CertificateExpiresAt
+	}
+	if p.X5C != nil {
+		if p.X5C.Len() == 0 {
+			return "", fmt.Errorf("empty status certificate chain")
+		}
+		publicDER, err := x509.MarshalPKIXPublicKey(signer.Public())
+		if err != nil {
+			return "", err
+		}
+		for i := 0; i < p.X5C.Len(); i++ {
+			raw, _ := p.X5C.Get(i)
+			der, err := base64.StdEncoding.DecodeString(string(raw))
+			if err != nil {
+				return "", fmt.Errorf("invalid status certificate encoding")
+			}
+			certificate, err := x509.ParseCertificate(der)
+			if err != nil {
+				return "", fmt.Errorf("invalid status certificate")
+			}
+			if now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
+				return "", fmt.Errorf("status certificate is not currently valid")
+			}
+			if i == 0 {
+				expected, err := x509.MarshalPKIXPublicKey(certificate.PublicKey)
+				if err != nil || !bytes.Equal(publicDER, expected) || certificate.IsCA || certificate.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+					return "", fmt.Errorf("status certificate does not match signing key")
+				}
+			}
+			if certificate.NotAfter.Before(expires) {
+				expires = certificate.NotAfter
+			}
+		}
+	}
+	if !expires.After(now) {
+		return "", fmt.Errorf("status certificate lifetime exhausted")
+	}
 	tok, err := jwt.NewBuilder().
 		JwtID(uuid.NewString()).
 		Issuer(p.Issuer).
-		Subject(p.ListID.String()).
+		Subject(p.ListURI).
 		IssuedAt(now).
-		Expiration(now.Add(p.TTL)).
+		Expiration(expires).
+		Claim("ttl", 60).
 		Claim("status_list", map[string]any{
-			"bits": 1,
+			"bits": p.StatusList.Bits(),
 			"lst":  encoded,
 		}).
 		Build()
@@ -169,10 +252,35 @@ func IssueStatusListJWT(p StatusListJWTParams) (string, error) {
 	if p.KID != "" {
 		_ = hdrs.Set(jws.KeyIDKey, p.KID)
 	}
+	// Publish only the signer's public key. Consumers must still establish
+	// issuer trust independently; an embedded JWK is not itself a trust anchor.
+	publicJWK, err := jwk.FromRaw(signer.Public())
+	if err != nil {
+		return "", err
+	}
+	if err = publicJWK.Set(jwk.KeyUsageKey, "sig"); err != nil {
+		return "", err
+	}
+	if err = publicJWK.Set(jwk.AlgorithmKey, alg); err != nil {
+		return "", err
+	}
+	if p.KID != "" {
+		if err = publicJWK.Set(jwk.KeyIDKey, p.KID); err != nil {
+			return "", err
+		}
+	}
+	if err = hdrs.Set(jws.JWKKey, publicJWK); err != nil {
+		return "", err
+	}
+	if p.X5C != nil {
+		if err = hdrs.Set(jws.X509CertChainKey, p.X5C); err != nil {
+			return "", err
+		}
+	}
 	// typ = statuslist+jwt per the IETF draft
-	_ = hdrs.Set(jws.ContentTypeKey, "statuslist+jwt")
+	_ = hdrs.Set(jws.TypeKey, "statuslist+jwt")
 
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.RS256, p.PrivateKey, jws.WithProtectedHeaders(hdrs)))
+	signed, err := jwt.Sign(tok, jwt.WithKey(alg, signer, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
 		return "", fmt.Errorf("status list jwt: sign: %w", err)
 	}
@@ -195,9 +303,9 @@ type StatusRef struct {
 
 // BuildStatusClaim constructs the status claim for embedding in an SD-JWT VC.
 //
-//   listURI: absolute URL where the status list JWT is served,
-//            e.g. "https://clavex.example.com/org/oid4vci/status-list/<uuid>"
-//   index:   the credential's index within the list
+//	listURI: absolute URL where the status list JWT is served,
+//	         e.g. "https://clavex.example.com/org/oid4vci/status-list/<uuid>"
+//	index:   the credential's index within the list
 func BuildStatusClaim(listURI string, index int) StatusClaim {
 	return StatusClaim{
 		StatusList: StatusRef{
@@ -218,38 +326,9 @@ var ErrRevoked = errors.New("credential revoked")
 // This is a local check (no network call). The caller is responsible for
 // fetching and passing the correct statusListJWT for the given URI.
 func CheckStatus(statusListJWT string, sc StatusClaim, pubKey *rsa.PublicKey) error {
-	tok, err := jwt.Parse([]byte(statusListJWT),
-		jwt.WithKey(jwa.RS256, pubKey),
-		jwt.WithValidate(true),
-	)
-	if err != nil {
-		return fmt.Errorf("status list: verify jwt: %w", err)
-	}
-
-	slRaw, ok := tok.Get("status_list")
-	if !ok {
-		return fmt.Errorf("status list: missing status_list claim")
-	}
-	slMap, ok := slRaw.(map[string]interface{})
-	if !ok {
-		return fmt.Errorf("status list: status_list claim is not an object")
-	}
-	lstRaw, ok := slMap["lst"].(string)
-	if !ok {
-		return fmt.Errorf("status list: missing lst field")
-	}
-
-	sl, err := DecodeStatusList(lstRaw)
+	list, err := ValidateStatusListToken(statusListJWT, sc, "", pubKey, time.Now(), 5*time.Minute)
 	if err != nil {
 		return err
 	}
-
-	revoked, err := sl.IsRevoked(sc.StatusList.IDX)
-	if err != nil {
-		return err
-	}
-	if revoked {
-		return ErrRevoked
-	}
-	return nil
+	return list.Check(sc.StatusList.IDX)
 }

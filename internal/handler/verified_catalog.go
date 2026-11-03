@@ -104,7 +104,7 @@ var standardCatalog = []verifiedCatalogEntry{
 			{Name: "job_title", Label: "Job Title / Role", Type: "string", Mandatory: true},
 			{Name: "employment_type", Label: "Employment Type", Type: "string", Mandatory: true}, // full-time, part-time, contractor
 			{Name: "start_date", Label: "Employment Start Date", Type: "date", Mandatory: true},
-			{Name: "end_date", Label: "Employment End Date", Type: "date", Mandatory: false},     // nil = currently employed
+			{Name: "end_date", Label: "Employment End Date", Type: "date", Mandatory: false}, // nil = currently employed
 			{Name: "department", Label: "Department / Business Unit", Type: "string", Mandatory: false},
 			{Name: "gross_annual_salary", Label: "Gross Annual Salary (EUR)", Type: "number", Mandatory: false},
 			{Name: "currency", Label: "Currency (ISO 4217)", Type: "string", Mandatory: false},
@@ -254,10 +254,10 @@ func (h *VerifiedCatalogHandler) SeedSpidPreset(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, map[string]any{
-		"status":        "created",
-		"config_id":     cfg.ID,
-		"vct":           vct,
-		"source_idp":    "spid",
+		"status":         "created",
+		"config_id":      cfg.ID,
+		"vct":            vct,
+		"source_idp":     "spid",
 		"claims_mapping": cfg.ClaimsMapping,
 	})
 }
@@ -312,10 +312,10 @@ func (h *VerifiedCatalogHandler) SeedCiePreset(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, map[string]any{
-		"status":        "created",
-		"config_id":     cfg.ID,
-		"vct":           vct,
-		"source_idp":    "cie",
+		"status":         "created",
+		"config_id":      cfg.ID,
+		"vct":            vct,
+		"source_idp":     "cie",
 		"claims_mapping": cfg.ClaimsMapping,
 	})
 }
@@ -349,39 +349,35 @@ func (h *VerifiedCatalogHandler) SeedItWalletPreset(c echo.Context) error {
 		return echo.ErrNotFound
 	}
 
-	// vct follows the EUDIW PID namespace.  IT-Wallet clients discover it from the
+	// The reference PID SD-JWT VCT is distinct from the mdoc doctype. Clients discover it from the
 	// credential_configurations_supported metadata published at
 	// GET /.well-known/openid-credential-issuer.
-	const itWalletVCT = "eu.europa.ec.eudi.pid.1"
+	const itWalletVCT = "urn:eudi:pid:1"
 
-	desc := "EUDIW EU PID credential (eu.europa.ec.eudi.pid.1) aligned with the Italian " +
-		"IT-Wallet national profile. Auto-issued as a pre-authorized OID4VCI offer after " +
-		"SPID L2 login — no additional user action required. Claims are mapped from " +
-		"AgID SPID verified attributes (codice fiscale, nome, cognome, data di nascita)."
+	desc := "PID-format SD-JWT template (urn:eudi:pid:1), using attributes from SPID login. " +
+		"Creating this template does not establish recognised PID issuer status or IT-Wallet accreditation."
 
 	cfg, createErr := h.repo.CreateCredentialConfig(
 		ctx, orgID, itWalletVCT,
 		"EU Personal Identification Data (IT-Wallet / EUDIW)",
 		&desc,
-		// EUDIW ARF §6.3 mandatory + Italian IT-Wallet national profile optional claims.
+		// Template claim mapping; actual profile and issuer authorisation are separate.
 		// Values are user metadata paths populated automatically by the SPID callback.
 		map[string]interface{}{
 			// Mandatory EU PID claims
-			"family_name":         "metadata.spid_family_name",
-			"given_name":          "metadata.spid_name",
-			"birth_date":          "metadata.spid_date_of_birth",
-			// Italian national profile: codice fiscale as personal identifier
+			"family_name": "metadata.spid_family_name",
+			"given_name":  "metadata.spid_name",
+			"birth_date":  "metadata.spid_date_of_birth",
+			// Fiscal identifier available from the configured identity source
 			"tax_id_code":         "metadata.spid_fiscal_number",
 			"personal_identifier": "metadata.spid_fiscal_number",
 			// Optional EU PID claims available from SPID Level 2+
-			"birth_place":         "metadata.spid_place_of_birth",
-			"email":               "metadata.spid_email",
-			// Note: issuing_country ("IT") and issuing_authority ("IPZS") are static
-			// values that should be injected by the pre-issuance webhook or a claims-
-			// enrichment hook.  They are not mapped here because they are not user
-			// attributes — they are fixed for every Italian IT-Wallet PID.
+			"birth_place": "metadata.spid_place_of_birth",
+			"email":       "metadata.spid_email",
+			// Issuer identity and authority must reflect the actual issuer;
+			// no national authority identity is injected by this template.
 		},
-		2*365*24*3600, // 2 years — EUDIW PID standard validity (ARF §6.3.3)
+		2*365*24*3600, // Template default; certificate-backed signing also caps expiry.
 		"identity",
 		[]models.SchemaFieldDef{},
 	)
@@ -399,12 +395,12 @@ func (h *VerifiedCatalogHandler) SeedItWalletPreset(c echo.Context) error {
 	}
 
 	return c.JSON(http.StatusCreated, map[string]any{
-		"status":          "created",
-		"config_id":       cfg.ID,
-		"vct":             itWalletVCT,
-		"source_idp":      "spid",
-		"claims_mapping":  cfg.ClaimsMapping,
-		"next_step":       "Static claims (issuing_country=IT, issuing_authority=IPZS) should be injected via a pre-issuance webhook or enrichment hook.",
+		"status":         "created",
+		"config_id":      cfg.ID,
+		"vct":            itWalletVCT,
+		"source_idp":     "spid",
+		"claims_mapping": cfg.ClaimsMapping,
+		"next_step":      "Configure the actual issuer identity, applicable credential profile and wallet trust arrangements; do not impersonate a national issuer.",
 	})
 }
 
@@ -436,12 +432,10 @@ func (h *VerifiedCatalogHandler) SeedCieItWalletPreset(c echo.Context) error {
 		return echo.ErrNotFound
 	}
 
-	const itWalletVCT = "eu.europa.ec.eudi.pid.1"
+	const itWalletVCT = "urn:eudi:pid:1"
 
-	desc := "EUDIW EU PID credential (eu.europa.ec.eudi.pid.1) backed by CIE (eIDAS High). " +
-		"Auto-issued as a pre-authorized OID4VCI offer after CIE login — no additional user action required. " +
-		"Claims are mapped from CIE verified attributes (codice fiscale, nome, cognome, data di nascita). " +
-		"CIE is the preferred PID issuance source per AgID IT-Wallet specification."
+	desc := "PID-format SD-JWT template (urn:eudi:pid:1), using attributes from CIE login. " +
+		"Creating this template does not establish recognised PID issuer status or IT-Wallet accreditation."
 
 	cfg, createErr := h.repo.CreateCredentialConfig(
 		ctx, orgID, itWalletVCT,
@@ -449,16 +443,16 @@ func (h *VerifiedCatalogHandler) SeedCieItWalletPreset(c echo.Context) error {
 		&desc,
 		map[string]interface{}{
 			// Mandatory EU PID claims
-			"family_name":         "metadata.cie_family_name",
-			"given_name":          "metadata.cie_name",
-			"birth_date":          "metadata.cie_date_of_birth",
-			// Italian national profile: codice fiscale as personal identifier
+			"family_name": "metadata.cie_family_name",
+			"given_name":  "metadata.cie_name",
+			"birth_date":  "metadata.cie_date_of_birth",
+			// Fiscal identifier available from the configured identity source
 			"tax_id_code":         "metadata.cie_fiscal_number",
 			"personal_identifier": "metadata.cie_fiscal_number",
 			// Optional — only present when CIE has a verified e-mail
 			"email": "metadata.cie_email",
 		},
-		2*365*24*3600, // 2 years — EUDIW PID standard validity (ARF §6.3.3)
+		2*365*24*3600, // Template default; certificate-backed signing also caps expiry.
 		"identity",
 		[]models.SchemaFieldDef{},
 	)
@@ -481,7 +475,7 @@ func (h *VerifiedCatalogHandler) SeedCieItWalletPreset(c echo.Context) error {
 		"vct":            itWalletVCT,
 		"source_idp":     "cie",
 		"claims_mapping": cfg.ClaimsMapping,
-		"next_step":      "Static claims (issuing_country=IT, issuing_authority=IPZS) should be injected via a pre-issuance webhook or enrichment hook.",
+		"next_step":      "Configure the actual issuer identity, applicable credential profile and wallet trust arrangements; do not impersonate a national issuer.",
 	})
 }
 
@@ -742,9 +736,9 @@ func (h *VerifiedCatalogHandler) SeedAgePreset(c echo.Context) error {
 	)
 	if createErr != nil {
 		return c.JSON(http.StatusOK, map[string]any{
-			"status":      "already_exists",
-			"vct":         ageVCT,
-			"source_idp":  sourceIdpType,
+			"status":     "already_exists",
+			"vct":        ageVCT,
+			"source_idp": sourceIdpType,
 		})
 	}
 

@@ -1,0 +1,20 @@
+{
+  "description": "clavex \u2014 OIDC Config OP certification test plan (discovery / provider metadata)",
+  "alias": "clavex-config",
+  "variant": {},
+  "server": {
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-configuration"
+  },
+  "client": {
+    "client_id": "conformance-client",
+    "client_secret": "conformance-secret-12345"
+  },
+  "client2": {
+    "client_id": "conformance-client-2",
+    "client_secret": "conformance-secret-2-67890"
+  },
+  "resource": {
+    "resourceUrl": "${BACKEND_ORIGIN}/conformance/userinfo"
+  },
+  "waitTimeoutSeconds": 60
+}

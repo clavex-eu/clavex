@@ -6,6 +6,7 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"crypto/x509/pkix"
+	"encoding/asn1"
 	"encoding/pem"
 	"fmt"
 	"math/big"
@@ -36,10 +37,10 @@ func generateECDSACertPair(orgName, docType string) (keyPEM, certPEM string, err
 		},
 		NotBefore:             time.Now().Add(-time.Minute),
 		NotAfter:              time.Now().AddDate(5, 0, 0),
-		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign | x509.KeyUsageCRLSign,
+		KeyUsage:              x509.KeyUsageDigitalSignature,
 		BasicConstraintsValid: true,
-		IsCA:                  true, // self-signed acts as both IACA and DS
-		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageAny},
+		IsCA:                  false, // sandbox leaf, never an IACA trust anchor
+		UnknownExtKeyUsage:    []asn1.ObjectIdentifier{{1, 0, 18013, 5, 1, 2}},
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
 	if err != nil {

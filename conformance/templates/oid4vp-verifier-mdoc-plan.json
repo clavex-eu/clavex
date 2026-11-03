@@ -1,0 +1,15 @@
+{
+  "description": "Clavex \u2014 OID4VP Final verifier / iso_mdl",
+  "alias": "clavex-oid4vp-verifier-mdoc",
+  "variant": {
+    "vp_profile": "plain_vp",
+    "credential_format": "iso_mdl",
+    "client_id_prefix": "redirect_uri",
+    "response_mode": "direct_post",
+    "request_method": "url_query"
+  },
+  "credential": {
+    "signing_jwk": "${JWK:wallet1}"
+  },
+  "waitTimeoutSeconds": 60
+}

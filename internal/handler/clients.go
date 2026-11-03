@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	"github.com/clavex-eu/clavex/internal/audit"
+	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -120,6 +121,7 @@ func (h *ClientHandler) Get(c echo.Context) error {
 }
 
 type updateClientRequest struct {
+	ClientAssertionProfile *string  `json:"client_assertion_profile" validate:"omitempty,oneof=standard fapi2_final"`
 	Name                   *string  `json:"name"                      validate:"omitempty,min=1,max=120"`
 	RedirectURIs           []string `json:"redirect_uris"             validate:"omitempty,dive,redirect_uri"`
 	PostLogoutRedirectURIs []string `json:"post_logout_redirect_uris" validate:"omitempty,dive,url"`
@@ -131,7 +133,7 @@ type updateClientRequest struct {
 	KeycloakCompat         *bool    `json:"keycloak_compat"`
 	// AccessTokenTTL overrides the access token lifetime (seconds) for this client.
 	// Pass 0 to clear the override and revert to org/server default.
-	AccessTokenTTL  *int `json:"access_token_ttl"`
+	AccessTokenTTL *int `json:"access_token_ttl"`
 	// RefreshTokenTTL overrides the refresh token lifetime (seconds) for this client.
 	// Pass 0 to clear the override and revert to org/server default.
 	RefreshTokenTTL *int `json:"refresh_token_ttl"`
@@ -153,7 +155,7 @@ func (h *ClientHandler) Update(c echo.Context) error {
 	if err := bindAndValidate(c, &req); err != nil {
 		return err
 	}
-	client, err := h.repo.Update(c.Request().Context(), id, orgID, req.Name, req.RedirectURIs, req.IsActive, req.MFARequired, req.KeycloakCompat, req.AccessTokenTTL, req.RefreshTokenTTL, req.GrantTypes, req.ResponseTypes, req.PostLogoutRedirectURIs)
+	client, err := h.repo.Update(c.Request().Context(), id, orgID, req.Name, req.RedirectURIs, req.IsActive, req.MFARequired, req.KeycloakCompat, req.AccessTokenTTL, req.RefreshTokenTTL, req.GrantTypes, req.ResponseTypes, req.PostLogoutRedirectURIs, req.ClientAssertionProfile)
 	if err != nil {
 		if errors.Is(err, pgx.ErrNoRows) {
 			return echo.ErrNotFound
@@ -176,7 +178,7 @@ func (h *ClientHandler) Update(c echo.Context) error {
 		reflectManagedMarker(&client.ManagedMarker, mk)
 	}
 	emitEntityAudit(c, h.auditor, orgID, "oidc_client.updated", auditResourceOIDCClient, client.ClientID,
-		map[string]interface{}{"name": client.Name})
+		map[string]interface{}{"name": client.Name, "client_assertion_profile": client.Metadata[models.ClientAssertionProfileMetadataKey]})
 	return c.JSON(http.StatusOK, client)
 }
 

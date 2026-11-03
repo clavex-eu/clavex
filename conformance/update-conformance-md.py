@@ -17,6 +17,11 @@ Outputs: CONFORMANCE.md (repo root)
 """
 
 import argparse
+import os
+import re
+import importlib.util
+from plan_selection import latest_plans
+from manual_review import collect_reviews, render_reviews
 import sys
 import time
 from datetime import datetime, timezone
@@ -24,7 +29,8 @@ from datetime import datetime, timezone
 import requests
 import urllib3
 
-urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
+if os.environ.get("SUITE_INSECURE") == "1":
+    urllib3.disable_warnings(urllib3.exceptions.InsecureRequestWarning)
 
 OUT_FILE = "CONFORMANCE.md"
 
@@ -58,7 +64,7 @@ RESULT_EMOJI = {
 
 
 def _get(sess, suite_url, path):
-    r = sess.get(f"{suite_url}{path}", verify=False, timeout=30)
+    r = sess.get(f"{suite_url}{path}", verify=(os.environ.get("SUITE_CA_FILE") or os.environ.get("SUITE_INSECURE") != "1"), timeout=30)
     r.raise_for_status()
     return r.json()
 
@@ -91,9 +97,9 @@ def _final_result(info):
 
 
 def fetch_results(sess, suite_url):
-    """Return list of (alias, label, modules_results) tuples, newest-first deduped."""
+    """Return list of (alias, label, modules_results) tuples, deduplicated by creation timestamp."""
     try:
-        raw = _get(sess, suite_url, "/api/plan")
+        raw = _get(sess, suite_url, "/api/plan?length=1000")
     except Exception as e:
         print(f"ERROR: cannot reach suite at {suite_url}: {e}", file=sys.stderr)
         sys.exit(1)
@@ -116,14 +122,7 @@ def fetch_results(sess, suite_url):
                 pass
         enriched.append(p)
 
-    # Deduplicate: keep newest per alias (API returns newest-first)
-    seen = set()
-    deduped = []
-    for p in enriched:
-        alias = _plan_alias(p)
-        if alias not in seen:
-            seen.add(alias)
-            deduped.append(p)
+    deduped = latest_plans(enriched)
 
     results = []
     for plan in deduped:
@@ -166,7 +165,7 @@ def build_badge_url(passed, total):
     return f"https://img.shields.io/badge/{label}-{message}-{colour}"
 
 
-def render_md(results, op_base, suite_url, run_ts):
+def render_md(results, op_base, suite_url, run_ts, manual_rows=None):
     """Return the full CONFORMANCE.md content as a string."""
     total_passed = sum(
         1 for _, _, mods in results
@@ -192,25 +191,29 @@ def render_md(results, op_base, suite_url, run_ts):
         f"**Suite:** [{suite_url}]({suite_url})\n"
     )
     lines.append(
-        "_Results are updated automatically by the nightly CI job "
-        "(`.github/workflows/conformance.yml`). "
-        "🔍 REVIEW tests require a manual screenshot upload on the suite UI — "
-        "they are functionally correct._\n"
+        "_Results are derived from suite records. "
+        "REVIEW requires case-specific human evidence and validation; "
+        "it is not automatically passed. Skipped and incomplete cases are not passes. "
+        "See the reproduction guide at `conformance/REPRODUCIBILITY.md` for "
+        "version scope, reporting limitations and tooling availability. "
+        "Suite results are not certification._\n"
     )
 
     # Summary table
     lines.append("## Summary\n")
-    lines.append("| Plan | Tests | ✅ Passed | 🔍 Review | ❌ Failed | Pass rate |")
-    lines.append("|------|------:|----------:|----------:|----------:|----------:|")
+    lines.append("| Plan | Tests | ✅ Passed | 🔍 Review | ❌ Failed | Skipped | Other / incomplete | Pass rate |")
+    lines.append("|------|------:|----------:|----------:|----------:|--------:|-------------------:|----------:|")
 
     for alias, label, mods in results:
         p = sum(1 for _, r, _ in mods if r == "PASSED")
         rv = sum(1 for _, r, _ in mods if r == "REVIEW")
-        f = sum(1 for _, r, _ in mods if r in ("FAILED", "INTERRUPTED"))
+        f = sum(1 for _, r, _ in mods if r == "FAILED")
+        skipped = sum(1 for _, r, _ in mods if r == "SKIPPED")
+        other = len(mods) - p - rv - f - skipped
         t = len(mods)
-        rate = f"{int(p/t*100)}%" if t else "—"  # floor — keep in sync with badge generator
-        slug = alias.replace(" ", "-").lower()
-        lines.append(f"| [{label}](#{slug}) | {t} | {p} | {rv} | {f} | **{rate}** |")
+        rate = f"{100*p//t}%" if t else "—"  # floor — keep in sync with badge generator
+        slug = re.sub(r"[^a-z0-9_-]+", "-", alias.lower())
+        lines.append(f"| [{label}](#{slug}) | {t} | {p} | {rv} | {f} | {skipped} | {other} | **{rate}** |")
 
     lines.append("")
 
@@ -218,9 +221,10 @@ def render_md(results, op_base, suite_url, run_ts):
     lines.append("## Per-plan Results\n")
 
     for alias, label, mods in results:
-        slug = alias.replace(" ", "-").lower()
+        slug = re.sub(r"[^a-z0-9_-]+", "-", alias.lower())
         p = sum(1 for _, r, _ in mods if r == "PASSED")
         t = len(mods)
+        lines.append(f'<a id="{slug}"></a>\n')
         lines.append(f"### {label}\n")
         lines.append(f"**Alias:** `{alias}` &nbsp;|&nbsp; **{p}/{t} passing**\n")
         lines.append("| Test module | Result | Log |")
@@ -230,6 +234,9 @@ def render_md(results, op_base, suite_url, run_ts):
             log_cell = f"[view]({link})" if link else "—"
             lines.append(f"| `{name}` | {emoji} {result} | {log_cell} |")
         lines.append("")
+
+    if manual_rows is not None:
+        lines.append(render_reviews(manual_rows))
 
     lines.append("---")
     lines.append(
@@ -243,8 +250,9 @@ def render_md(results, op_base, suite_url, run_ts):
 def main():
     ap = argparse.ArgumentParser(description="Update CONFORMANCE.md from suite API")
     ap.add_argument("--suite-url", default="https://localhost.emobix.co.uk:8443")
-    ap.add_argument("--suite-token", default=None)
+    ap.add_argument("--suite-token", default=os.environ.get("SUITE_TOKEN"))
     ap.add_argument("--op-base", default="https://id.clavex.eu")
+    ap.add_argument("--review-registry", default=None, help="Local per-instance review registry (default: conformance/.local/manual-reviews.jsonl)")
     ap.add_argument("--out", default=OUT_FILE, help="Output file path")
     args = ap.parse_args()
 
@@ -260,7 +268,9 @@ def main():
         sys.exit(0)
 
     run_ts = datetime.now(timezone.utc)
-    md = render_md(results, args.op_base, args.suite_url, run_ts)
+    review_args = {"path": args.review_registry} if args.review_registry else {}
+    manual_rows = collect_reviews(sess, args.suite_url, results, **review_args)
+    md = render_md(results, args.op_base, args.suite_url, run_ts, manual_rows)
 
     with open(args.out, "w") as f:
         f.write(md)
@@ -270,66 +280,11 @@ def main():
     )
     total_tests = sum(len(mods) for _, _, mods in results)
 
-    # Write a shields.io endpoint JSON so README badge stays current.
-    import json, os
-    badge_colour = "red"
-    if total_tests > 0:
-        pct = total_passed / total_tests
-        badge_colour = "brightgreen" if pct >= 0.98 else "green" if pct >= 0.90 else "yellow" if pct >= 0.75 else "red"
-    badge_data = {
-        "schemaVersion": 1,
-        "label": "OIDC Conformance",
-        "message": f"{total_passed}/{total_tests} passing",
-        "color": badge_colour,
-    }
-    badge_path = os.path.join(os.path.dirname(args.out), "conformance-badge.json")
-    with open(badge_path, "w") as f:
-        json.dump(badge_data, f)
-
-    # Per-suite badges for README (FAPI 2.0, JARM, mTLS, OID4VCI, OID4VP)
-    PER_PLAN_BADGES = {
-        "clavex-fapi":           ("FAPI 2.0", "conformance-fapi-badge.json"),
-        "clavex-fapi-dpop":      ("FAPI 2.0", "conformance-fapi-badge.json"),
-        "clavex-fapi-jarm":      ("JARM",     "conformance-jarm-badge.json"),
-        "clavex-fapi-mtls":      ("mTLS",     "conformance-mtls-badge.json"),
-        "clavex-oid4vci-issuer": ("OID4VCI",  "conformance-oid4vci-badge.json"),
-        "clavex-oid4vp-verifier":("OID4VP",   "conformance-oid4vp-badge.json"),
-        "clavex-haip":           ("HAIP",     "conformance-haip-badge.json"),
-        "clavex-fapi2-ciba-poll":("FAPI-CIBA", "conformance-ciba-badge.json"),
-        "clavex-openid-federation-op": ("OpenID Federation", "conformance-federation-badge.json"),
-    }
-    written_badges = set()
-    for alias, _label, mods in results:
-        if alias not in PER_PLAN_BADGES or not mods:
-            continue
-        badge_label, badge_file = PER_PLAN_BADGES[alias]
-        if badge_file in written_badges:
-            continue
-        written_badges.add(badge_file)
-        p = sum(1 for _, r, _ in mods if r == "PASSED")
-        t = len(mods)
-        pct = p / t if t else 0
-        colour = (
-            "brightgreen" if pct >= 0.95 else
-            "green"       if pct >= 0.90 else
-            "yellow"      if pct >= 0.75 else
-            "red"
-        )
-        # OID4VCI / OID4VP badges show a pass/fail checkmark instead of a %.
-        if badge_file in ("conformance-oid4vci-badge.json", "conformance-oid4vp-badge.json"):
-            message = "\u2713" if pct >= 0.95 else ("\u2717" if t else "\u2014")
-        else:
-            message = f"{int(pct*100)}%" if t else "\u2014"  # floor \u2014 match CONFORMANCE.md
-        per_badge = {
-            "schemaVersion": 1,
-            "label": badge_label,
-            "message": message,
-            "color": colour,
-        }
-        per_path = os.path.join(os.path.dirname(args.out), badge_file)
-        with open(per_path, "w") as f:
-            json.dump(per_badge, f)
-        print(f"Written {per_path}  ({badge_label}: {p}/{t} = {pct*100:.0f}%)")
+    # Use the same parser/writer as the push-triggered badge workflow.
+    spec = importlib.util.spec_from_file_location("conformance_badges", os.path.join(os.path.dirname(__file__), "update-badges-from-md.py"))
+    badges = importlib.util.module_from_spec(spec)
+    spec.loader.exec_module(badges)
+    badges.write_badges(badges.parse_conformance_md(args.out), os.path.dirname(os.path.abspath(args.out)))
 
     print(
         f"Written {args.out}  ({total_passed}/{total_tests} passing, "

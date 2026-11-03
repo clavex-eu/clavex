@@ -11,12 +11,15 @@ interface KeyEntry {
   rotation_interval_days: number
   last_rotated_at: string | null
   schedulable: boolean
+  rotatable: boolean
+  kid?: string
   reason?: string
 }
 
 interface KeyRotationStatus {
   keys: KeyEntry[]
   byok_active: boolean
+  can_manage: boolean
 }
 
 const KIND_LABELS: Record<string, { title: string; subtitle: string }> = {
@@ -49,7 +52,7 @@ function formatDate(iso: string | null) {
   return new Date(iso).toLocaleString(undefined, { dateStyle: 'medium', timeStyle: 'short' })
 }
 
-function KeyCard({ entry, orgId }: { entry: KeyEntry; orgId: string }) {
+function KeyCard({ entry, orgId, canManage }: { entry: KeyEntry; orgId: string; canManage: boolean }) {
   const qc = useQueryClient()
   const label = KIND_LABELS[entry.key_kind] ?? { title: entry.key_kind, subtitle: '' }
   const [policy, setPolicy] = useState(entry.rotation_policy)
@@ -73,10 +76,22 @@ function KeyCard({ entry, orgId }: { entry: KeyEntry; orgId: string }) {
     },
   })
 
+  const rotate = useMutation({
+    mutationFn: () => api.post(`/organizations/${orgId}/key-rotation/${entry.key_kind}/rotate`),
+    onSuccess: () => {
+      qc.invalidateQueries({ queryKey: ['key-rotation', orgId] })
+      toast.success(`${label.title} rotated`)
+    },
+    onError: (e: unknown) => {
+      const message = (e as { response?: { data?: { message?: string } } })?.response?.data?.message
+      toast.error(message || 'Failed to rotate tenant key')
+    },
+  })
+
   // OIDC and PQC keys are both per-org now, so an org admin manages their own
   // rotation policy for each. Non-schedulable entries (an imported BYOK OIDC
   // key, or the BYOK card) are read-only and show a reason instead.
-  const editable = entry.schedulable
+  const editable = entry.schedulable && canManage
   const dirty = policy !== entry.rotation_policy || interval !== entry.rotation_interval_days
 
   return (
@@ -89,6 +104,7 @@ function KeyCard({ entry, orgId }: { entry: KeyEntry; orgId: string }) {
           <div>
             <h2 style={{ fontSize: 15, fontWeight: 600, margin: 0 }}>{label.title}</h2>
             <p style={{ fontSize: 12, margin: '2px 0 0', color: 'var(--clavex-neutral)' }}>{label.subtitle}</p>
+            {entry.kid && <p style={{ fontSize: 12, margin: '6px 0 0', overflowWrap: 'anywhere' }}>Active key: <code>{entry.kid}</code></p>}
             {entry.key_kind !== 'byok' && (
               <p style={{ fontSize: 12, margin: '6px 0 0', color: 'var(--clavex-neutral)' }}>
                 Last rotated: <strong>{formatDate(entry.last_rotated_at)}</strong>
@@ -127,10 +143,20 @@ function KeyCard({ entry, orgId }: { entry: KeyEntry; orgId: string }) {
             onClick={() => save.mutate({ rotation_policy: policy, rotation_interval_days: interval })}>
             <RotateCw size={14} /> {save.isPending ? 'Saving…' : 'Save'}
           </button>
+          {entry.rotatable && (
+            <button type="button" style={{ ...btnPrimary, opacity: rotate.isPending ? 0.5 : 1 }}
+              disabled={rotate.isPending || save.isPending}
+              onClick={() => {
+                if (window.confirm(`Rotate this tenant's ${label.title} now? A new key will sign subsequent tokens. The retired key remains available during the grace period.`)) rotate.mutate()
+              }}>
+              <RotateCw size={14} /> {rotate.isPending ? 'Rotating…' : 'Rotate now'}
+            </button>
+          )}
+
         </div>
       ) : (
         <div style={{ marginTop: 14, padding: '10px 14px', borderRadius: 8, background: '#fef9c3', border: '0.5px solid #fde68a' }}>
-          <p style={{ fontSize: 12, margin: 0, color: '#854d0e' }}>{entry.reason}</p>
+          <p style={{ fontSize: 12, margin: 0, color: '#854d0e' }}>{entry.reason || (canManage ? 'This key requires manual management.' : 'Security write permission is required to manage this tenant’s keys.')}</p>
         </div>
       )}
     </div>
@@ -140,7 +166,7 @@ function KeyCard({ entry, orgId }: { entry: KeyEntry; orgId: string }) {
 export default function KeyRotationPage() {
   const { orgId } = useAuthStore()
 
-  const { data, isLoading } = useQuery<KeyRotationStatus>({
+  const { data, isLoading, isError } = useQuery<KeyRotationStatus>({
     queryKey: ['key-rotation', orgId],
     queryFn: () => api.get(`/organizations/${orgId}/key-rotation`).then(r => r.data),
     enabled: !!orgId,
@@ -153,17 +179,19 @@ export default function KeyRotationPage() {
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Key Rotation</h1>
           <p style={{ fontSize: 13, margin: 0, color: 'var(--clavex-neutral)' }}>
-            Scheduled rotation policy for signing keys. Rotations reuse the JWKS grace window, so tokens signed with the retired key stay verifiable.
+            Manage this tenant’s signing keys and rotation schedule. Retired keys remain available for verification during the grace period; installation keys are managed separately.
           </p>
         </div>
       </div>
 
       {isLoading ? (
         <p style={{ color: 'var(--clavex-neutral)', fontSize: 13 }}>Loading…</p>
+      ) : isError ? (
+        <p role="alert">Unable to load tenant key settings. Use an administrator account belonging to this tenant with security access.</p>
       ) : (
         <>
           {(data?.keys ?? []).map(entry => (
-            <KeyCard key={entry.key_kind} entry={entry} orgId={orgId!} />
+            <KeyCard key={entry.key_kind} entry={entry} orgId={orgId!} canManage={data?.can_manage ?? false} />
           ))}
           <SSHCARotationCard orgId={orgId!} />
         </>

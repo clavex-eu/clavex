@@ -32,6 +32,19 @@
         <p class="text-sm text-gray-500 mt-1">Sign in to continue</p>
       </div>
 
+      {{if .ClientName}}
+      <section class="mb-5 rounded-xl border border-gray-100 bg-slate-50 p-3 text-center" aria-label="Requesting application">
+        {{if .ClientLogoURL}}<img src="{{.ClientLogoURL}}" alt="{{.ClientName}} logo" referrerpolicy="no-referrer" class="h-10 max-w-full mx-auto mb-2 object-contain" />{{end}}
+        <p class="text-sm text-gray-600">Continue to <strong class="text-gray-900">{{.ClientName}}</strong></p>
+        {{if or .ClientPolicyURI .ClientTosURI}}
+        <nav class="mt-2 flex justify-center gap-4 text-sm" aria-label="Application policies">
+          {{if .ClientPolicyURI}}<a href="{{.ClientPolicyURI}}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">Privacy policy</a>{{end}}
+          {{if .ClientTosURI}}<a href="{{.ClientTosURI}}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 underline">Terms of service</a>{{end}}
+        </nav>
+        {{end}}
+      </section>
+      {{end}}
+
       {{if .Error}}
         <div class="mb-5 rounded-lg bg-red-50 border border-red-200 px-4 py-3 text-sm text-red-700">
           {{.Error}}

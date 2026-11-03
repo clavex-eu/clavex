@@ -26,22 +26,7 @@ PER_PLAN_BADGES = {
     "clavex-fapi-mtls":       ("mTLS",     "conformance-mtls-badge.json"),
     "clavex-oid4vci-issuer":  ("OID4VCI",  "conformance-oid4vci-badge.json"),
     "clavex-oid4vp-verifier": ("OID4VP",   "conformance-oid4vp-badge.json"),
-    "clavex-haip":            ("HAIP",     "conformance-haip-badge.json"),
-    "clavex-fapi2-ciba-poll": ("FAPI-CIBA", "conformance-ciba-badge.json"),
-    "clavex-openid-federation-op": ("OpenID Federation", "conformance-federation-badge.json"),
 }
-
-# Regex for a Markdown table row: | plan | tests | passed | review | failed | rate% |
-_ROW_RE = re.compile(
-    r"^\|\s*(?P<plan>clavex-\S+)\s*"   # plan alias
-    r"\|\s*(?P<tests>\d+)\s*"          # total tests
-    r"\|\s*(?P<passed>\d+)\s*"         # passed
-    r"\|\s*(?P<review>\d+)\s*"         # review
-    r"\|\s*(?P<failed>\d+)\s*"         # failed
-    r"\|\s*(?P<rate>\d+)%\s*\|",       # pass rate %
-    re.IGNORECASE,
-)
-
 
 def _colour(pct: float) -> str:
     if pct >= 0.98:
@@ -54,26 +39,30 @@ def _colour(pct: float) -> str:
 
 
 def parse_conformance_md(path: str) -> dict[str, tuple[int, int, int]]:
-    """
-    Returns {plan_alias: (passed, skipped, total)} for every row found in the table.
-    skipped = total - passed - review - failed  (tests not counted as pass/fail).
-    """
-    results: dict[str, tuple[int, int, int]] = {}
-    try:
-        with open(path, encoding="utf-8") as f:
-            for line in f:
-                m = _ROW_RE.match(line.strip())
-                if m:
-                    plan   = m.group("plan")
-                    total  = int(m.group("tests"))
-                    passed = int(m.group("passed"))
-                    review = int(m.group("review"))
-                    failed = int(m.group("failed"))
-                    skipped = max(0, total - passed - review - failed)
-                    results[plan] = (passed, skipped, total)
-    except FileNotFoundError:
-        print(f"ERROR: {path} not found", file=sys.stderr)
-        sys.exit(1)
+    """Read old/new summary columns, including linked labels; never infer skips."""
+    results = {}
+    columns = None
+    with open(path, encoding="utf-8") as source:
+        for line in source:
+            cells = [cell.strip() for cell in line.strip().strip("|").split("|")]
+            if cells and cells[0] == "Plan":
+                columns = cells
+                continue
+            if not columns or len(cells) != len(columns):
+                continue
+            label = cells[0]
+            linked = re.search(r"\]\(#(clavex-[^)]+)\)", label)
+            alias = linked.group(1) if linked else label.strip("`")
+            if not alias.startswith("clavex-"):
+                continue
+            def number(name):
+                index = next((i for i, column in enumerate(columns) if name.lower() in column.lower()), None)
+                return int(cells[index]) if index is not None else 0
+            total, passed = number("Tests"), number("Passed")
+            skipped = number("Skipped")
+            if min(total, passed, skipped) < 0 or passed + skipped > total:
+                raise ValueError(f"Invalid summary counts for {alias}")
+            results[alias] = (passed, skipped, total)
     return results
 
 
@@ -82,7 +71,7 @@ def build_badge(label: str, passed: int, skipped: int, total: int) -> dict:
     colour = _colour(pct)
     # Floor (truncate) the percentage so badges match the "Pass rate" column in
     # CONFORMANCE.md, which is rendered with int truncation \u2014 never round up.
-    rate = int(pct * 100)
+    rate = 100 * passed // total if total else 0
     if not total:
         message = "\u2014"
     elif skipped:
@@ -124,9 +113,13 @@ def main() -> None:
 
     results = parse_conformance_md(md_path)
     if not results:
-        print("WARNING: no conformance table rows found in CONFORMANCE.md — badges unchanged", file=sys.stderr)
-        sys.exit(0)
+        print("ERROR: no conformance table rows found in CONFORMANCE.md — badges unchanged", file=sys.stderr)
+        sys.exit(1)
 
+    write_badges(results, out_dir)
+
+
+def write_badges(results, out_dir):
     written: set[str] = set()
     for alias, (label, badge_file) in PER_PLAN_BADGES.items():
         if alias not in results:
@@ -142,11 +135,10 @@ def main() -> None:
         written.add(badge_file)
         pct = passed / total * 100 if total else 0
         skip_note = f"  ({skipped} skipped)" if skipped else ""
-        print(f"  {badge_file:45s}  {label}: {passed}/{total} = {pct:.0f}%{skip_note}  →  {badge['message']} ({badge['color']})")
+        print(f"  {badge_file:45s}  {label}: {passed}/{total} = {100 * passed // total if total else 0}%{skip_note}  →  {badge['message']} ({badge['color']})")
 
     if not written:
-        print("No matching plan aliases found in CONFORMANCE.md — no badges updated", file=sys.stderr)
-        sys.exit(1)
+        print("No matching per-plan badge aliases; writing the overall badge only", file=sys.stderr)
 
     # Top-level OIDC Conformance badge — aggregate of every plan in the table.
     overall = build_overall_badge(results)
@@ -157,7 +149,7 @@ def main() -> None:
     written.add("conformance-badge.json")
     print(f"  {'conformance-badge.json':45s}  OIDC Conformance  →  {overall['message']} ({overall['color']})")
 
-    print(f"\nUpdated {len(written)} badge file(s) from {md_path}")
+    print(f"\nUpdated {len(written)} badge file(s) from supplied summary")
 
 
 if __name__ == "__main__":

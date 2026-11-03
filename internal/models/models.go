@@ -803,6 +803,7 @@ type CredentialOffer struct {
 
 // IssuedCredential is an audit record of a credential that was issued to a wallet.
 type IssuedCredential struct {
+	IsSuspended      bool       `db:"is_suspended" json:"is_suspended"`
 	ID               uuid.UUID  `db:"id"                 json:"id"`
 	OrgID            uuid.UUID  `db:"org_id"             json:"org_id"`
 	UserID           *uuid.UUID `db:"user_id"            json:"user_id,omitempty"`
@@ -853,12 +854,14 @@ type FederatedInstallation struct {
 // transaction_id and polls POST /deferred-credential until status transitions to
 // "completed" (issuer approved) or "failed" (issuer rejected).
 type DeferredCredential struct {
+	StatusParents             json.RawMessage        `db:"status_parents" json:"-"`
 	ID                        uuid.UUID              `db:"id"                          json:"id"`
 	OrgID                     uuid.UUID              `db:"org_id"                      json:"org_id"`
 	TransactionID             string                 `db:"transaction_id"              json:"transaction_id"`
 	OfferID                   uuid.UUID              `db:"offer_id"                    json:"offer_id"`
 	CredentialConfigurationID string                 `db:"credential_configuration_id" json:"credential_configuration_id"`
 	ProofKeyID                string                 `db:"proof_key_id"                json:"proof_key_id"`
+	HolderJWK                 json.RawMessage        `db:"holder_jwk"                  json:"-"`
 	ClaimsPayload             map[string]interface{} `db:"claims_payload"              json:"claims_payload,omitempty"`
 	Status                    string                 `db:"status"                      json:"status"` // pending | completed | failed | expired
 	CredentialJWT             *string                `db:"credential_jwt"              json:"credential_jwt,omitempty"`
@@ -867,9 +870,14 @@ type DeferredCredential struct {
 	CreatedAt                 time.Time              `db:"created_at"                  json:"created_at"`
 	ExpiresAt                 time.Time              `db:"expires_at"                  json:"expires_at"`
 	CompletedAt               *time.Time             `db:"completed_at"                json:"completed_at,omitempty"`
+	DeliveredAt               *time.Time             `db:"delivered_at" json:"delivered_at,omitempty"`
 }
 
 type PresentationSession struct {
+	ResponseMode string `db:"response_mode" json:"response_mode,omitempty"`
+	// Private ephemeral response keys are encrypted at rest and never exposed in APIs.
+	ResponseKeyCiphertext  []byte                 `db:"response_key_ciphertext" json:"-"`
+	ResponseKeyThumbprint  []byte                 `json:"-"`
 	ID                     uuid.UUID              `db:"id"                      json:"id"`
 	OrgID                  uuid.UUID              `db:"org_id"                  json:"org_id"`
 	RequestID              string                 `db:"request_id"              json:"request_id"`
@@ -1144,9 +1152,11 @@ type OrgMdocIssuer struct {
 	OrgID       uuid.UUID `db:"org_id"               json:"org_id"`
 	DisplayName string    `db:"display_name"         json:"display_name"`
 	DocType     string    `db:"doc_type"             json:"doc_type"`
-	// DSPrivateKeyPEM is the PKCS#8 PEM-encoded ECDSA private key.
+	// DSPrivateKeyPEM stores an encrypted key envelope for new API writes,
+	// or a legacy PEM-encoded ECDSA private key.
 	// Nil when the key is managed by an external KMS.
 	DSPrivateKeyPEM    *string   `db:"ds_private_key_pem"   json:"-"`
+	VaultSignerRef     string    `db:"vault_signer_ref" json:"vault_signer_ref,omitempty"`
 	DSCertificatePEM   string    `db:"ds_certificate_pem"   json:"ds_certificate_pem"`
 	IACACertificatePEM *string   `db:"iaca_certificate_pem" json:"iaca_certificate_pem,omitempty"`
 	ValidityHours      int       `db:"validity_hours"       json:"validity_hours"`
@@ -1561,3 +1571,11 @@ func DefaultAccountCenterConfig(orgID uuid.UUID) *AccountCenterConfig {
 		ShowDataExport: true,
 	}
 }
+
+// Client assertion profiles are explicitly configured by a tenant administrator.
+// Requiring PAR alone does not imply adoption of the FAPI 2.0 Final profile.
+const (
+	ClientAssertionProfileMetadataKey = "clavex_client_assertion_profile"
+	ClientAssertionProfileStandard    = "standard"
+	ClientAssertionProfileFAPIFinal   = "fapi2_final"
+)

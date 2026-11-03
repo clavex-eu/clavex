@@ -47,20 +47,22 @@ import (
 const mdocProximityTTL = 10 * time.Minute
 
 type MdocProximityHandler struct {
-	repo     *repository.MdocProximityRepository
-	orgs     *repository.OrgRepository
-	iacaRepo *repository.IACARepository
-	keys     oidc.Signer
-	cfg      baseURLProvider
+	repo       *repository.MdocProximityRepository
+	orgs       *repository.OrgRepository
+	iacaRepo   *repository.IACARepository
+	keys       oidc.Signer
+	cfg        baseURLProvider
+	walletRepo *repository.OID4WRepository
 }
 
 func NewMdocProximityHandler(pool *pgxpool.Pool, keys oidc.Signer, cfg baseURLProvider) *MdocProximityHandler {
 	return &MdocProximityHandler{
-		repo:     repository.NewMdocProximityRepository(pool),
-		orgs:     repository.NewOrgRepository(pool),
-		iacaRepo: repository.NewIACARepository(pool),
-		keys:     keys,
-		cfg:      cfg,
+		repo:       repository.NewMdocProximityRepository(pool),
+		orgs:       repository.NewOrgRepository(pool),
+		iacaRepo:   repository.NewIACARepository(pool),
+		keys:       keys,
+		cfg:        cfg,
+		walletRepo: repository.NewOID4WRepository(pool),
 	}
 }
 
@@ -227,6 +229,7 @@ func (h *MdocProximityHandler) GetRequest(c echo.Context) error {
 		},
 		// Format hints to the wallet that we expect mso_mdoc format.
 		ClientMetadata: map[string]any{
+			"vp_formats_supported": map[string]any{"mso_mdoc": defaultClientMetadata["vp_formats_supported"].(map[string]interface{})["mso_mdoc"]},
 			"vp_formats": map[string]any{
 				"mso_mdoc": map[string]any{
 					"alg": []string{"ES256", "ES384", "ES512"},
@@ -312,74 +315,62 @@ func (h *MdocProximityHandler) Response(c echo.Context) error {
 		return echo.ErrNotFound
 	}
 
-	// ── Load per-org IACA trust anchors ───────────────────────────────────
-	// Returns nil if no roots are configured; VerifyDeviceResponse treats
-	// nil TrustedRoots as "skip root chain check" (COSE_Sign1 sig + MSO
-	// digest verification still enforced regardless).
-	trustedRoots, _ := h.iacaRepo.GetCertPool(ctx, org.ID)
-
-	// ── Verify IssuerSigned data ───────────────────────────────────────────
-	verifyOpts := mdoc.VerificationOptions{
-		ExpectedNonce: session.Nonce,
-		TrustedRoots:  trustedRoots, // nil → root-trust advisory only
+	if session.OrgID != org.ID {
+		return echo.ErrNotFound
 	}
-	verified, verifyErrs := mdoc.VerifyDeviceResponse(dr, verifyOpts)
-	if len(verified) == 0 {
-		errMsg := "no documents verified"
-		if len(verifyErrs) > 0 {
-			errMsg = verifyErrs[0].Error()
-		}
-		_ = h.repo.Fail(ctx, state, errMsg)
-		return c.JSON(http.StatusUnprocessableEntity, map[string]string{
-			"error":             "verification_failed",
-			"error_description": errMsg,
-		})
-	}
-
-	// ── Build session transcript (ISO 18013-7 OpenID4VPHandover) ──────────
-	baseURL := h.cfg.BaseURL()
-	transcript, err := mdoc.BuildSessionTranscript(
-		session.ClientID,
-		baseURL+"/"+org.Slug+"/mdoc/response",
-		session.Nonce,
-	)
+	transcript, err := mdoc.BuildSessionTranscript(session.ClientID, session.ResponseURI, session.Nonce)
 	if err != nil {
-		// Transcript build failure is non-fatal; we log and skip key binding.
-		transcript = nil
+		return echo.ErrInternalServerError
+	}
+	var verified []*mdoc.VerifiedDocument
+	if len(dr.Documents) == 0 || len(dr.DocumentErrors) > 0 {
+		return c.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "verification_failed"})
+	}
+	for _, doc := range dr.Documents {
+		requested := false
+		for _, docType := range session.RequestedDocTypes {
+			if doc.DocType == docType {
+				requested = true
+			}
+		}
+		if !requested {
+			return c.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "unexpected_document_type"})
+		}
+		roots, err := h.iacaRepo.GetCertPoolForDocType(ctx, org.ID, doc.DocType)
+		if err != nil {
+			return echo.ErrInternalServerError
+		}
+		vdocs, errs := mdoc.VerifyDeviceResponse(&mdoc.DeviceResponse{Version: dr.Version, Status: dr.Status, Documents: []mdoc.Document{doc}}, mdoc.VerificationOptions{TrustedRoots: roots, RequireTrustedIssuer: true, RequireDeviceAuth: true, SessionTranscript: transcript})
+		if len(errs) > 0 || len(vdocs) != 1 {
+			_ = h.repo.Fail(ctx, state, "mdoc issuer or device verification failed")
+			return c.JSON(http.StatusUnprocessableEntity, map[string]string{"error": "verification_failed"})
+		}
+		verified = append(verified, vdocs[0])
+	}
+
+	walletRepo, tx, err := h.walletRepo.BeginIssuance(ctx)
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
+	defer tx.Rollback(ctx)
+	for _, vd := range verified {
+		result := &oid4w.VerificationResult{Claims: map[string]interface{}{}, Identity: &oid4w.VerifiedCredentialIdentity{
+			Format: "mso_mdoc", Issuer: oid4w.MDOCIssuerIdentity(vd.IssuerCert), CredentialType: vd.DocType,
+			ExpiresAt: vd.ValidUntil, IssuerTrusted: true, HolderBound: true, Status: vd.Status,
+			CertificateChains: vd.VerifiedChains, IssuerCOSEHash: vd.IssuerAuthHash,
+		}}
+		if err := checkWalletStatus(ctx, walletRepo, org.ID, h.cfg.BaseURL()+"/"+org.Slug, org.Settings, result, true); err != nil {
+			return walletStatusError(c, err)
+		}
 	}
 
 	// ── Merge attributes + device signature verification ──────────────────
 	mergedClaims := make(map[string]any)
 	var issuerCountry *string
-	var deviceBindingErrors []string
 
 	for i := range verified {
 		vd := verified[i]
-		// Device key binding: verify the wallet signed the session transcript
-		// with the device private key whose public key is bound in the MSO.
-		// This proves possession of the device key and ties the response to
-		// this specific session (replay protection).
-		if transcript != nil {
-			deviceKey, keyErr := mdoc.ExtractDeviceKey(vd)
-			if keyErr == nil && deviceKey != nil {
-				if sigErr := mdoc.VerifyDeviceSignature(
-					dr.Documents[i], transcript, deviceKey,
-				); sigErr != nil {
-					// Hard failure: device sig present but invalid.
-					errMsg := "device signature invalid: " + sigErr.Error()
-					_ = h.repo.Fail(ctx, state, errMsg)
-					return c.JSON(http.StatusUnprocessableEntity, map[string]string{
-						"error":             "device_binding_failed",
-						"error_description": sigErr.Error(),
-					})
-				}
-				mergedClaims["_device_binding"] = "verified"
-			} else {
-				// MSO has no parseable device key (unusual but not fatal).
-				deviceBindingErrors = append(deviceBindingErrors, vd.DocType+": "+keyErr.Error())
-			}
-		}
-
+		mergedClaims["_device_binding"] = "verified"
 		// Extract attributes.
 		ns := primaryNamespace(vd.DocType)
 		attrs := mdoc.ExtractAttributes(vd, ns)
@@ -397,16 +388,13 @@ func (h *MdocProximityHandler) Response(c echo.Context) error {
 			vd.DocType,
 		)
 	}
-	if len(deviceBindingErrors) > 0 {
-		mergedClaims["_device_binding_warnings"] = deviceBindingErrors
-	}
-	// Record whether IACA root validation was enforced.
-	if trustedRoots != nil {
-		mergedClaims["_iaca_validated"] = true
-	}
+	mergedClaims["_iaca_validated"] = true
 
-	if err := h.repo.Complete(ctx, state, mergedClaims, issuerCountry); err != nil {
+	if err := repository.NewMdocProximityRepository(tx).Complete(ctx, state, mergedClaims, issuerCountry); err != nil {
 		return echo.ErrInternalServerError
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return echo.ErrServiceUnavailable
 	}
 
 	// OID4VP direct_post success response per spec.

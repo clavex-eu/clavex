@@ -186,7 +186,14 @@ func (r *ClientRepository) ListByOrg(ctx context.Context, orgID uuid.UUID) ([]*m
 // Update mutates a client. orgID scopes the write to the owning organization so
 // an admin of another tenant cannot modify a client by its (globally unique)
 // client_id; a mismatch returns pgx.ErrNoRows.
-func (r *ClientRepository) Update(ctx context.Context, clientID string, orgID uuid.UUID, name *string, redirectURIs []string, isActive *bool, mfaRequired *bool, keycloakCompat *bool, accessTokenTTL *int, refreshTokenTTL *int, grantTypes, responseTypes, postLogout []string) (*models.OIDCClient, error) {
+func (r *ClientRepository) Update(ctx context.Context, clientID string, orgID uuid.UUID, name *string, redirectURIs []string, isActive *bool, mfaRequired *bool, keycloakCompat *bool, accessTokenTTL *int, refreshTokenTTL *int, grantTypes, responseTypes, postLogout []string, assertionProfiles ...*string) (*models.OIDCClient, error) {
+	var profile *string
+	if len(assertionProfiles) > 0 {
+		profile = assertionProfiles[0]
+	}
+	if profile != nil && *profile != models.ClientAssertionProfileStandard && *profile != models.ClientAssertionProfileFAPIFinal {
+		return nil, fmt.Errorf("invalid client assertion profile")
+	}
 	c := &models.OIDCClient{}
 	err := r.pool.QueryRow(ctx, `
 		UPDATE oidc_clients SET
@@ -200,11 +207,12 @@ func (r *ClientRepository) Update(ctx context.Context, clientID string, orgID uu
 			grant_types      = CASE WHEN $10::text[] IS NOT NULL THEN $10 ELSE grant_types END,
 			response_types   = CASE WHEN $11::text[] IS NOT NULL THEN $11 ELSE response_types END,
 			post_logout_redirect_uris = CASE WHEN $12::text[] IS NOT NULL THEN $12 ELSE post_logout_redirect_uris END,
+ metadata = CASE WHEN $13::text IS NULL THEN metadata ELSE jsonb_set(COALESCE(metadata,'{}'::jsonb),'{clavex_client_assertion_profile}',to_jsonb($13::text)) END,
 			updated_at       = NOW()
 		WHERE client_id = $1 AND org_id = $9
 		RETURNING client_id, org_id, name, redirect_uris, post_logout_redirect_uris, grant_types, response_types, scopes, token_endpoint_auth_method, logo_url, is_active, mfa_required, keycloak_compat, metadata, jwks_uri, request_object_signing_alg, jwks, access_token_ttl, refresh_token_ttl, created_at, updated_at
 	`, clientID, name, redirectURIs, isActive, mfaRequired, keycloakCompat, accessTokenTTL, refreshTokenTTL, orgID,
-		emptyToNil(grantTypes), emptyToNil(responseTypes), emptyToNil(postLogout)).Scan(
+		emptyToNil(grantTypes), emptyToNil(responseTypes), emptyToNil(postLogout), profile).Scan(
 		&c.ClientID, &c.OrgID, &c.Name,
 		&c.RedirectURIs, &c.PostLogoutRedirectURIs,
 		&c.GrantTypes, &c.ResponseTypes, &c.Scopes,
@@ -285,6 +293,9 @@ func (r *ClientRepository) RotateSecret(ctx context.Context, clientID string, wa
 
 // RegisterClientParams holds RFC 7591 metadata for dynamic client registration.
 type RegisterClientParams struct {
+	LogoURI                   string
+	PolicyURI                 string
+	TosURI                    string
 	OrgID                     uuid.UUID
 	Name                      string
 	RedirectURIs              []string
@@ -333,6 +344,10 @@ func (r *ClientRepository) RegisterClient(ctx context.Context, p RegisterClientP
 	// still generate a hash internally but never return the plain-text secret
 	// to the caller — the handler decides whether to include it in the response.
 
+	metadata, err := json.Marshal(map[string]string{"policy_uri": p.PolicyURI, "tos_uri": p.TosURI})
+	if err != nil {
+		return nil, "", err
+	}
 	client := &models.OIDCClient{}
 	err = r.pool.QueryRow(ctx, `
 		INSERT INTO oidc_clients (
@@ -341,8 +356,8 @@ func (r *ClientRepository) RegisterClient(ctx context.Context, p RegisterClientP
 			grant_types, response_types,
 			client_secret_hash, token_endpoint_auth_method,
 			jwks_uri, jwks, id_token_signed_response_alg, userinfo_signed_response_alg,
-			dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens, request_object_signing_alg
-		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'')
+			dpop_bound_access_tokens, tls_client_certificate_bound_access_tokens, request_object_signing_alg, logo_url, metadata
+		) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,'',$16,$17)
 		RETURNING client_id, org_id, name, redirect_uris, post_logout_redirect_uris,
 		          grant_types, response_types, scopes,
 		          token_endpoint_auth_method, logo_url,
@@ -354,7 +369,7 @@ func (r *ClientRepository) RegisterClient(ctx context.Context, p RegisterClientP
 		p.GrantTypes, p.ResponseTypes,
 		hash, p.TokenEndpointAuthMethod,
 		p.JWKSUri, p.JWKS, p.IDTokenSignedResponseAlg, p.UserInfoSignedResponseAlg,
-		p.DpopBoundAccessTokens, p.TLSClientCertBoundAccessTokens,
+		p.DpopBoundAccessTokens, p.TLSClientCertBoundAccessTokens, nullStr(p.LogoURI), metadata,
 	).Scan(
 		&client.ClientID, &client.OrgID, &client.Name,
 		&client.RedirectURIs, &client.PostLogoutRedirectURIs,
@@ -464,8 +479,8 @@ func (r *ClientRepository) ListByOrgPage(ctx context.Context, orgID uuid.UUID, l
 // Federation clients always use private_key_jwt authentication — no shared
 // secret is generated or stored.
 type FederationRegisterParams struct {
-	OrgID                   uuid.UUID
-	EntityID                string // OIDF RP entity identifier (stored in metadata)
+	OrgID    uuid.UUID
+	EntityID string // OIDF RP entity identifier (stored in metadata)
 	// ClientID, when non-empty, is used as-is. For automatic registration
 	// (OIDF §10.2) the RP's entity ID is its client_id; leave empty for
 	// explicit registration to auto-generate a random opaque client_id.
@@ -481,7 +496,7 @@ type FederationRegisterParams struct {
 	JWKS                    []byte // inline JWKS (JSON)
 	TokenEndpointAuthMethod string // always "private_key_jwt"
 	// RegistrationType is "explicit" (default) or "automatic" (OIDF §10.2).
-	RegistrationType        string
+	RegistrationType string
 }
 
 // RegisterFederated creates or updates an OIDC client that was registered via

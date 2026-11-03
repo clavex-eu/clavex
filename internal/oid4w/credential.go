@@ -5,6 +5,7 @@ import (
 	"crypto/ecdh"
 	"crypto/ecdsa"
 	"crypto/elliptic"
+	"crypto/hkdf"
 	"crypto/hmac"
 	"crypto/rand"
 	"crypto/rsa"
@@ -22,7 +23,6 @@ import (
 	"time"
 
 	"github.com/lestrrat-go/jwx/v2/cert"
-	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 
 	"github.com/clavex-eu/clavex/internal/models"
@@ -45,8 +45,8 @@ var p256N = func() *big.Int {
 
 // caKeyPair holds the CA key material without using any deprecated ecdsa fields.
 type caKeyPair struct {
-	priv *ecdh.PrivateKey   // scalar bytes via .Bytes()
-	pub  *ecdsa.PublicKey   // for x509; parsed via ecdsa.ParseUncompressedPublicKey
+	priv *ecdh.PrivateKey // scalar bytes via .Bytes()
+	pub  *ecdsa.PublicKey // for x509; parsed via ecdsa.ParseUncompressedPublicKey
 }
 
 // caKeyCache avoids redundant key derivation (cheap) and cert generation (cheap
@@ -56,9 +56,18 @@ var (
 	caKeyCache   = map[string]*caKeyPair{}
 )
 
-// deriveCAKey deterministically derives a P-256 key pair from the issuer's
-// RSA modulus. Uses no deprecated ecdsa or elliptic APIs.
+// deriveCAKey derives a separate P-256 CA key using secret RSA material and
+// HKDF domain separation. Public JWKS material must never determine a private
+// key. Version 2 deliberately changes the formerly public-derived trust anchor.
 func deriveCAKey(priv *rsa.PrivateKey) (*caKeyPair, error) {
+	// Check before the cache: callers supplying only public fields must fail even
+	// if an earlier legitimate request already cached this modulus.
+	if priv == nil || priv.N == nil || priv.D == nil {
+		return nil, fmt.Errorf("credential CA requires a complete RSA private key")
+	}
+	if err := priv.Validate(); err != nil {
+		return nil, fmt.Errorf("credential CA RSA key: %w", err)
+	}
 	mapKey := string(priv.N.Bytes())
 	caKeyCacheMu.Lock()
 	defer caKeyCacheMu.Unlock()
@@ -66,14 +75,22 @@ func deriveCAKey(priv *rsa.PrivateKey) (*caKeyPair, error) {
 		return kp, nil
 	}
 
-	h := sha256.New()
-	h.Write(priv.N.Bytes())
-	h.Write([]byte("clavex-x5c-ca-v1"))
-	scalar := h.Sum(nil)
-
-	ecdhKey, err := ecdh.P256().NewPrivateKey(scalar)
-	if err != nil {
-		return nil, fmt.Errorf("derive ca ecdh key: %w", err)
+	var ecdhKey *ecdh.PrivateKey
+	secret := priv.D.Bytes()
+	defer clear(secret)
+	for counter := 0; counter < 256; counter++ {
+		scalar, err := hkdf.Key(sha256.New, secret, priv.N.Bytes(), fmt.Sprintf("clavex-x5c-ca-v2/%d", counter), 32)
+		if err != nil {
+			return nil, fmt.Errorf("derive credential CA key: %w", err)
+		}
+		ecdhKey, err = ecdh.P256().NewPrivateKey(scalar)
+		clear(scalar)
+		if err == nil {
+			break
+		}
+	}
+	if ecdhKey == nil {
+		return nil, fmt.Errorf("could not derive a valid credential CA scalar")
 	}
 	ecdsaPub, err := ecdsa.ParseUncompressedPublicKey(elliptic.P256(), ecdhKey.PublicKey().Bytes())
 	if err != nil {
@@ -174,7 +191,7 @@ func (s *rfc6979CASigner) Sign(_ io.Reader, digest []byte, _ crypto.SignerOpts) 
 }
 
 // BuildIssuerCACertDER returns the DER-encoded self-signed P-256 ECDSA CA
-// certificate whose key is derived from the issuer's RSA modulus. Both the key
+// certificate whose key is derived from secret issuer RSA material. Both the key
 // derivation and the cert signing are fully deterministic — the DER bytes are
 // identical across all calls and server restarts. Wallet apps and conformance
 // suites can configure the trust anchor once from /.well-known/credential-issuer-ca.pem
@@ -227,6 +244,15 @@ func BuildIssuerCACertPEM(priv *rsa.PrivateKey) ([]byte, error) {
 //
 // Returns nil when PrivateKey() is nil (Vault/KMS backends).
 func buildX5C(keys oidc.Signer) *cert.Chain {
+	if certified, ok := keys.(*CertificateCredentialSigner); ok {
+		var chain cert.Chain
+		for _, c := range certified.certificates[:len(certified.certificates)-1] {
+			if err := chain.AddString(base64.StdEncoding.EncodeToString(c.Raw)); err != nil {
+				return nil
+			}
+		}
+		return &chain
+	}
 	priv := keys.PrivateKey()
 	if priv == nil {
 		return nil
@@ -285,6 +311,7 @@ func IssueIdentityCredential(
 	keys oidc.Signer,
 	baseURL string,
 	holderKey jwk.Key,
+	status ...StatusClaim,
 ) (string, []Disclosure, error) {
 	issuer := fmt.Sprintf("%s/%s", baseURL, org.Slug)
 
@@ -363,7 +390,7 @@ func IssueIdentityCredential(
 		PlainClaims:       plain,
 		TTL:               ttl,
 		Signer:            keys.CryptoSigner(),
-		Alg:               jwa.PS256,
+		Alg:               keys.Algorithm(),
 		KID:               keys.KID(),
 		X5C:               buildX5C(keys),
 		HolderKey:         holderKey,
@@ -377,6 +404,9 @@ func IssueIdentityCredential(
 		}
 	}
 
+	if err := withCredentialStatus(&params, status); err != nil {
+		return "", nil, err
+	}
 	return IssueSDJWT(params)
 }
 
@@ -441,6 +471,7 @@ func IssueAgeCredential(
 	keys oidc.Signer,
 	baseURL string,
 	holderKey jwk.Key,
+	status ...StatusClaim,
 ) (string, []Disclosure, error) {
 	attrMap := UserAttributes(user)
 
@@ -508,11 +539,14 @@ func IssueAgeCredential(
 		PlainClaims: map[string]any{},
 		TTL:         ttl,
 		Signer:      keys.CryptoSigner(),
-		Alg:         jwa.PS256,
+		Alg:         keys.Algorithm(),
 		KID:         keys.KID(),
 		X5C:         buildX5C(keys),
 		HolderKey:   holderKey,
 	}
 
+	if err := withCredentialStatus(&params, status); err != nil {
+		return "", nil, err
+	}
 	return IssueSDJWT(params)
 }

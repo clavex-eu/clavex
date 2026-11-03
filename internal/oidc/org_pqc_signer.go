@@ -3,7 +3,7 @@ package oidc
 // org_pqc_signer.go — per-organisation Post-Quantum (ML-DSA-65) signing keys.
 //
 // This is the PQC mirror of OrgDBSigner / OrgSignerCache (org_signer.go): the
-// same lazy cache, the same auto-provision-by-default behaviour, the same
+// same fresh resolution and auto-provision-by-default behaviour, the same
 // shared signing_keys table (pqc_algorithm IS NOT NULL, org_id scoping). Every
 // organisation gets its own PQC key for free; there is no shared global PQC key
 // for new orgs.
@@ -166,7 +166,6 @@ var (
 type OrgPQCSignerCache struct {
 	global        *PQCSigner
 	mu            sync.RWMutex
-	cache         map[uuid.UUID]*OrgPQCSigner
 	repo          *repository.SigningKeyRepository
 	enc           *clavexcrypto.Encryptor
 	autoProvision bool
@@ -177,7 +176,6 @@ type OrgPQCSignerCache struct {
 func NewOrgPQCSignerCache(global *PQCSigner, repo *repository.SigningKeyRepository, enc *clavexcrypto.Encryptor) *OrgPQCSignerCache {
 	return &OrgPQCSignerCache{
 		global:        global,
-		cache:         make(map[uuid.UUID]*OrgPQCSigner),
 		repo:          repo,
 		enc:           enc,
 		autoProvision: true,
@@ -202,65 +200,45 @@ func (c *OrgPQCSignerCache) DisableAutoProvision() *OrgPQCSignerCache {
 	return c
 }
 
-// For returns the org-specific PQC signer for orgID, provisioning one lazily if
-// the org has none (auto-provision default). The global signer is only a
-// fallback: transient load error, failed provision, or auto-provision disabled.
+// For is retained for older internal callers. Request handlers use Resolve to
+// propagate errors. A load error never selects the installation key.
 func (c *OrgPQCSignerCache) For(ctx context.Context, orgID uuid.UUID) PQCKeyProvider {
-	c.mu.RLock()
-	if s, ok := c.cache[orgID]; ok {
-		c.mu.RUnlock()
-		return s
+	signer, err := c.Resolve(ctx, orgID)
+	if err != nil {
+		log.Error().Err(err).Msg("org PQC signer unavailable")
+		return nil
 	}
-	auto := c.autoProvision
-	c.mu.RUnlock()
-
-	s, err := newOrgPQCSigner(ctx, c.repo, c.enc, orgID)
-	if err == nil {
-		c.mu.Lock()
-		c.cache[orgID] = s
-		c.mu.Unlock()
-		return s
-	}
-
-	if !errors.Is(err, pgx.ErrNoRows) {
-		log.Error().Err(err).Str("org_id", orgID.String()).Msg("org_pqc_signer: load key")
-		return c.global
-	}
-
-	if !auto {
-		return c.global
-	}
-
-	if _, gerr := c.GenerateForOrg(ctx, orgID); gerr != nil {
-		// Lost a race with a concurrent provision? Try to load the winner.
-		if s2, lerr := newOrgPQCSigner(ctx, c.repo, c.enc, orgID); lerr == nil {
-			c.mu.Lock()
-			c.cache[orgID] = s2
-			c.mu.Unlock()
-			return s2
-		}
-		log.Error().Err(gerr).Str("org_id", orgID.String()).Msg("org_pqc_signer: auto-provision key")
-		return c.global
-	}
-
-	c.mu.RLock()
-	provisioned := c.cache[orgID]
-	c.mu.RUnlock()
-	if provisioned == nil {
-		return c.global
-	}
-	return provisioned
+	return signer
 }
 
-// Invalidate drops the cached signer for orgID (forces a reload on next For).
-func (c *OrgPQCSignerCache) Invalidate(orgID uuid.UUID) {
-	c.mu.Lock()
-	delete(c.cache, orgID)
-	c.mu.Unlock()
+// Resolve observes database rotations on every request and fails closed.
+func (c *OrgPQCSignerCache) Resolve(ctx context.Context, orgID uuid.UUID) (PQCKeyProvider, error) {
+	signer, err := newOrgPQCSigner(ctx, c.repo, c.enc, orgID)
+	if err == nil {
+		return signer, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	c.mu.RLock()
+	auto := c.autoProvision
+	c.mu.RUnlock()
+	if !auto {
+		return c.global, nil
+	}
+	tmp := &OrgPQCSigner{repo: c.repo, enc: c.enc, orgID: orgID}
+	pub, _, kid, keyEnc, err := tmp.generateAndEncrypt()
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.repo.ReplaceForOrg(ctx, orgID, repository.OrgKeyReplacement{KID: kid, Algorithm: PQCJWAAlgorithm, PQCAlgorithm: PQCAlgorithmMLDSA65, KeyEnc: keyEnc, PQCPublicKey: pub.Bytes(), ProvisionOnly: true}); err != nil {
+		return nil, err
+	}
+	return newOrgPQCSigner(ctx, c.repo, c.enc, orgID)
 }
 
 // GenerateForOrg mints a fresh ML-DSA-65 key for orgID, retiring any existing
-// one, and caches the new signer. Returns the new kid.
+// one atomically. Returns the new kid.
 //
 // Note: unlike OIDC there is no ImportForOrg. "Bring your own PQC key material"
 // is deliberately out of scope while the PQC/JOSE standards are immature (no
@@ -268,28 +246,15 @@ func (c *OrgPQCSignerCache) Invalidate(orgID uuid.UUID) {
 // generated key only. Revisit alongside dual-signing.
 func (c *OrgPQCSignerCache) GenerateForOrg(ctx context.Context, orgID uuid.UUID) (string, error) {
 	tmp := &OrgPQCSigner{repo: c.repo, enc: c.enc, orgID: orgID}
-	pub, priv, kid, keyEnc, err := tmp.generateAndEncrypt()
+	pub, _, kid, keyEnc, err := tmp.generateAndEncrypt()
 	if err != nil {
 		return "", err
 	}
 
-	// Retire any existing org PQC key first (partial unique index allows one).
-	_ = c.repo.RetireActivePQCForOrg(ctx, orgID)
-
-	if err := c.repo.InsertPQCForOrg(ctx, orgID, kid, PQCJWAAlgorithm, PQCAlgorithmMLDSA65, keyEnc, pub.Bytes()); err != nil {
-		return "", fmt.Errorf("org pqc signer: insert generated key: %w", err)
+	if _, err = c.repo.ReplaceForOrg(ctx, orgID, repository.OrgKeyReplacement{KID: kid, Algorithm: PQCJWAAlgorithm, PQCAlgorithm: PQCAlgorithmMLDSA65, KeyEnc: keyEnc, PQCPublicKey: pub.Bytes(), RejectImported: true}); err != nil {
+		return "", err
 	}
 
-	tmp.mu.Lock()
-	tmp.priv = priv
-	tmp.pub = pub
-	tmp.kid = kid
-	tmp.jwkObj = buildPQCJWKObject(pub, kid)
-	tmp.mu.Unlock()
-
-	c.mu.Lock()
-	c.cache[orgID] = tmp
-	c.mu.Unlock()
 	return kid, nil
 }
 

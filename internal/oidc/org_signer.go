@@ -1,14 +1,8 @@
 package oidc
 
-// OrgSignerCache manages per-organisation signing keys (BYOK).
-//
-// When an organisation has registered its own RSA signing key via the BYOK API,
-// the OIDCHandler uses that key instead of the global installation key.
-// The cache avoids a database round-trip on every token issuance.
-//
-// Usage:
-//   cache := NewOrgSignerCache(globalSigner, signingKeyRepo, encryptor)
-//   signer := cache.For(ctx, org.ID)   // returns org key or global fallback
+// OrgSignerCache resolves per-organisation signing keys into fresh request
+// snapshots. The historical type name is retained for callers. Database state
+// is checked on every Resolve to observe rotations from every replica.
 
 import (
 	"context"
@@ -34,13 +28,14 @@ import (
 // OrgDBSigner implements Signer for a single organisation's key stored in the
 // signing_keys table (org_id IS NOT NULL).
 type OrgDBSigner struct {
-	mu         sync.RWMutex
-	repo       *repository.SigningKeyRepository
-	enc        *clavexcrypto.Encryptor
-	orgID      uuid.UUID
-	privateKey *rsa.PrivateKey
-	kid        string
-	jwks       []byte
+	mu               sync.RWMutex
+	repo             *repository.SigningKeyRepository
+	enc              *clavexcrypto.Encryptor
+	orgID            uuid.UUID
+	privateKey       *rsa.PrivateKey
+	kid              string
+	jwks             []byte
+	verificationJWKS []byte
 }
 
 func newOrgDBSigner(ctx context.Context, repo *repository.SigningKeyRepository, enc *clavexcrypto.Encryptor, orgID uuid.UUID) (*OrgDBSigner, error) {
@@ -67,10 +62,15 @@ func (s *OrgDBSigner) load(ctx context.Context) error {
 		return fmt.Errorf("org signer (org=%s): build JWKS: %w", s.orgID, err)
 	}
 
+	verificationJWKS, err := s.buildVerificationJWKS(ctx)
+	if err != nil {
+		return err
+	}
 	s.mu.Lock()
 	s.privateKey = priv
 	s.kid = row.KID
 	s.jwks = jwksJSON
+	s.verificationJWKS = verificationJWKS
 	s.mu.Unlock()
 	return nil
 }
@@ -79,30 +79,41 @@ func (s *OrgDBSigner) load(ctx context.Context) error {
 // reloads the in-memory state.
 func (s *OrgDBSigner) Rotate() error {
 	ctx := context.Background()
-
-	priv, kid, keyEnc, err := s.generateAndEncrypt()
+	_, kid, encrypted, err := s.generateAndEncrypt()
 	if err != nil {
-		return fmt.Errorf("org signer: rotate generate key: %w", err)
+		return err
 	}
+	if _, err = s.repo.ReplaceForOrg(ctx, s.orgID, repository.OrgKeyReplacement{KID: kid, Algorithm: "PS256", KeyEnc: encrypted, RejectImported: true}); err != nil {
+		return err
+	}
+	return s.load(ctx)
+}
 
-	if err := s.repo.RetireActiveForOrg(ctx, s.orgID); err != nil {
-		return fmt.Errorf("org signer: retire active key: %w", err)
-	}
-	if err := s.repo.InsertForOrg(ctx, s.orgID, kid, "PS256", keyEnc); err != nil {
-		return fmt.Errorf("org signer: insert new key: %w", err)
-	}
+// VerificationJWKS includes only this tenant's signing keys, never the global
+// transition keys published for legacy external consumers.
+func (s *OrgDBSigner) VerificationJWKS() []byte {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.verificationJWKS
+}
 
-	jwksJSON, err := s.buildJWKSFromDB(ctx)
+func (s *OrgDBSigner) buildVerificationJWKS(ctx context.Context) ([]byte, error) {
+	rows, err := s.repo.GetJWKSKeysForOrg(ctx, s.orgID)
 	if err != nil {
-		return fmt.Errorf("org signer: rebuild JWKS after rotate: %w", err)
+		return nil, err
 	}
-
-	s.mu.Lock()
-	s.privateKey = priv
-	s.kid = kid
-	s.jwks = jwksJSON
-	s.mu.Unlock()
-	return nil
+	entries := make([]rsaKeyEntry, 0, len(rows))
+	for _, row := range rows {
+		if row.OrgID == nil || *row.OrgID != s.orgID {
+			continue
+		}
+		key, err := s.decryptKey(row.KeyEnc)
+		if err != nil {
+			return nil, err
+		}
+		entries = append(entries, rsaKeyEntry{pub: &key.PublicKey, kid: row.KID})
+	}
+	return marshalJWKS(entries), nil
 }
 
 func (s *OrgDBSigner) PrivateKey() *rsa.PrivateKey {
@@ -201,29 +212,21 @@ var _ Signer = (*OrgDBSigner)(nil)
 
 // ── OrgSignerCache ────────────────────────────────────────────────────────────
 
-// OrgSignerCache lazily loads and caches per-org OrgDBSigners.
-//
-// Per-org key isolation is the DEFAULT: the first time an org signs a token it
-// is lazily provisioned its own RSA key (see For). The global Signer is only
-// used as a fallback for transient errors, or when auto-provisioning is
-// explicitly disabled (autoProvision=false) for tests or a staged rollout.
+// OrgSignerCache provisions independent tenant keys and resolves their current
+// signing/verification state. Global keys are used only in the explicit legacy
+// mode for a tenant with no key, never after a load/decryption failure.
 type OrgSignerCache struct {
 	global        Signer
 	mu            sync.RWMutex
-	cache         map[uuid.UUID]*OrgDBSigner
 	repo          *repository.SigningKeyRepository
 	enc           *clavexcrypto.Encryptor
 	autoProvision bool
 }
 
-// NewOrgSignerCache creates a cache backed by the given repository and encryptor.
-// Auto-provisioning is on by default: any org without a key gets one minted on
-// first use. global is only returned as a fallback (transient error, or when
-// auto-provisioning has been disabled).
+// NewOrgSignerCache enables tenant-key provisioning and strict resolution.
 func NewOrgSignerCache(global Signer, repo *repository.SigningKeyRepository, enc *clavexcrypto.Encryptor) *OrgSignerCache {
 	return &OrgSignerCache{
 		global:        global,
-		cache:         make(map[uuid.UUID]*OrgDBSigner),
 		repo:          repo,
 		enc:           enc,
 		autoProvision: true,
@@ -251,111 +254,61 @@ func NewOrgSignerCacheFromKEK(pool *pgxpool.Pool, kek [32]byte, global Signer) *
 	)
 }
 
-// For returns the org-specific Signer for orgID. If the org has no key yet, one
-// is lazily provisioned (auto-provision default) so every org signs with its
-// own isolated RSA key. The result is cached after the first successful load.
-//
-// The global Signer is only returned as a fallback: on a transient load error,
-// on a failed provision, or when auto-provisioning has been disabled.
+// For is retained for older internal callers. Request handlers use Resolve so
+// errors can be returned without dereferencing an unavailable signer.
 func (c *OrgSignerCache) For(ctx context.Context, orgID uuid.UUID) Signer {
-	c.mu.RLock()
-	if s, ok := c.cache[orgID]; ok {
-		c.mu.RUnlock()
-		return s
+	signer, err := c.Resolve(ctx, orgID)
+	if err != nil {
+		log.Error().Err(err).Msg("org signer unavailable")
+		return nil
 	}
-	auto := c.autoProvision
-	c.mu.RUnlock()
-
-	s, err := newOrgDBSigner(ctx, c.repo, c.enc, orgID)
-	if err == nil {
-		c.mu.Lock()
-		c.cache[orgID] = s
-		c.mu.Unlock()
-		return s
-	}
-
-	if !errors.Is(err, pgx.ErrNoRows) {
-		// Transient DB/decrypt error — fall back to the global signer rather
-		// than minting a key we might duplicate once the DB recovers.
-		log.Error().Err(err).Str("org_id", orgID.String()).Msg("org_signer: load key")
-		return c.global
-	}
-
-	// No key exists for this org yet.
-	if !auto {
-		return c.global
-	}
-
-	// Auto-provision a fresh org key on first use.
-	if _, gerr := c.GenerateForOrg(ctx, orgID); gerr != nil {
-		// A concurrent For() for the same org may have won the race and already
-		// inserted the active key (unique index violation here); try to load it.
-		if s2, lerr := newOrgDBSigner(ctx, c.repo, c.enc, orgID); lerr == nil {
-			c.mu.Lock()
-			c.cache[orgID] = s2
-			c.mu.Unlock()
-			return s2
-		}
-		log.Error().Err(gerr).Str("org_id", orgID.String()).Msg("org_signer: auto-provision key")
-		return c.global
-	}
-
-	// GenerateForOrg populated the cache; reuse that entry.
-	c.mu.RLock()
-	provisioned := c.cache[orgID]
-	c.mu.RUnlock()
-	if provisioned == nil {
-		return c.global
-	}
-	return provisioned
+	return signer
 }
 
-// Invalidate removes an org's entry from the cache so that the next call to
-// For() reloads from the database. Call this after uploading or rotating a
-// BYOK key.
-func (c *OrgSignerCache) Invalidate(orgID uuid.UUID) {
-	c.mu.Lock()
-	delete(c.cache, orgID)
-	c.mu.Unlock()
+// Resolve rechecks database state on each request. A fresh immutable snapshot
+// observes rotations from every replica and excludes keys after grace expiry.
+// Database/decryption failures never silently select the installation key.
+func (c *OrgSignerCache) Resolve(ctx context.Context, orgID uuid.UUID) (Signer, error) {
+	signer, err := newOrgDBSigner(ctx, c.repo, c.enc, orgID)
+	if err == nil {
+		return signer, nil
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return nil, err
+	}
+	c.mu.RLock()
+	auto := c.autoProvision
+	c.mu.RUnlock()
+	if !auto {
+		return c.global, nil
+	}
+	tmp := &OrgDBSigner{repo: c.repo, enc: c.enc, orgID: orgID}
+	_, kid, keyEnc, err := tmp.generateAndEncrypt()
+	if err != nil {
+		return nil, err
+	}
+	if _, err = c.repo.ReplaceForOrg(ctx, orgID, repository.OrgKeyReplacement{KID: kid, Algorithm: "PS256", KeyEnc: keyEnc, ProvisionOnly: true}); err != nil {
+		return nil, err
+	}
+	return newOrgDBSigner(ctx, c.repo, c.enc, orgID)
 }
 
 // GenerateForOrg creates a new RSA-2048 signing key for orgID, persists it in
-// the DB (retiring any previous org key first), and updates the cache.
+// the DB in one transaction, retaining the previous key during grace.
 // Returns the new kid.
 func (c *OrgSignerCache) GenerateForOrg(ctx context.Context, orgID uuid.UUID) (string, error) {
-	// Temporary signer to reuse generateAndEncrypt helper.
+	return c.generateForOrg(ctx, orgID, true)
+}
+
+func (c *OrgSignerCache) generateForOrg(ctx context.Context, orgID uuid.UUID, protectImported bool) (string, error) {
 	tmp := &OrgDBSigner{repo: c.repo, enc: c.enc, orgID: orgID}
-	priv, kid, keyEnc, err := tmp.generateAndEncrypt()
+	_, kid, keyEnc, err := tmp.generateAndEncrypt()
 	if err != nil {
 		return "", err
 	}
-
-	// Retire any existing org key first.
-	_ = c.repo.RetireActiveForOrg(ctx, orgID)
-
-	if err := c.repo.InsertForOrg(ctx, orgID, kid, "PS256", keyEnc); err != nil {
-		return "", fmt.Errorf("org signer: insert generated key: %w", err)
+	if _, err = c.repo.ReplaceForOrg(ctx, orgID, repository.OrgKeyReplacement{KID: kid, Algorithm: "PS256", KeyEnc: keyEnc, RejectImported: protectImported}); err != nil {
+		return "", err
 	}
-
-	tmp.mu.Lock()
-	tmp.privateKey = priv
-	tmp.kid = kid
-	tmp.mu.Unlock()
-
-	// Build JWKS from the DB so it includes the new active key AND the global
-	// key still in its transition/grace window (continuity for pre-switch
-	// tokens). Falls back to the in-memory key inside buildJWKSFromDB.
-	jwksJSON, err := tmp.buildJWKSFromDB(ctx)
-	if err != nil {
-		return "", fmt.Errorf("org signer: build JWKS: %w", err)
-	}
-	tmp.mu.Lock()
-	tmp.jwks = jwksJSON
-	tmp.mu.Unlock()
-
-	c.mu.Lock()
-	c.cache[orgID] = tmp
-	c.mu.Unlock()
 	return kid, nil
 }
 
@@ -388,36 +341,16 @@ func (c *OrgSignerCache) ImportForOrg(ctx context.Context, orgID uuid.UUID, pkcs
 		return "", fmt.Errorf("encrypt imported key: %w", err)
 	}
 
-	_ = c.repo.RetireActiveForOrg(ctx, orgID)
-
-	// Imported (BYOK / external custody) keys are tagged so that scheduled
-	// rotation never regenerates them — the server does not hold their canonical
-	// material and must not silently replace it.
-	if err := c.repo.InsertImportedForOrg(ctx, orgID, kid, "PS256", keyEnc); err != nil {
-		return "", fmt.Errorf("org signer: insert imported key: %w", err)
+	if _, err = c.repo.ReplaceForOrg(ctx, orgID, repository.OrgKeyReplacement{KID: kid, Algorithm: "PS256", KeyEnc: keyEnc, Source: "imported"}); err != nil {
+		return "", err
 	}
 
-	jwksJSON, err := buildJWKS(&priv.PublicKey, kid)
-	if err != nil {
-		return "", fmt.Errorf("org signer: build JWKS: %w", err)
-	}
-
-	s := &OrgDBSigner{repo: c.repo, enc: c.enc, orgID: orgID}
-	s.privateKey = priv
-	s.kid = kid
-	s.jwks = jwksJSON
-
-	c.mu.Lock()
-	c.cache[orgID] = s
-	c.mu.Unlock()
 	return kid, nil
 }
 
-// RemoveForOrg hard-deletes all signing keys for an org (reverts to global key).
+// RemoveForOrg restores a generated tenant key without deleting the retired
+// keys needed to validate outstanding tokens. It never selects a global key.
 func (c *OrgSignerCache) RemoveForOrg(ctx context.Context, orgID uuid.UUID) error {
-	if err := c.repo.DeleteAllForOrg(ctx, orgID); err != nil {
-		return err
-	}
-	c.Invalidate(orgID)
-	return nil
+	_, err := c.generateForOrg(ctx, orgID, false)
+	return err
 }

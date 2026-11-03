@@ -480,7 +480,9 @@ func (h *OIDCHandler) deviceCodeGrant(c echo.Context) error {
 	if o, oErr := h.orgs.GetBySlug(ctx, orgSlug); oErr == nil {
 		dcOrg = o
 	}
-	h.applyOrgOverrides(ctx, tc, dcOrg, dcCl)
+	if err := h.applyOrgOverrides(ctx, tc, dcOrg, dcCl); err != nil {
+		return echo.ErrServiceUnavailable
+	}
 	uc := oidc.UserClaimsFromModel(user)
 	if roleNames, err := h.users.FlattenRoleNames(ctx, user.ID); err == nil {
 		uc.Roles = roleNames

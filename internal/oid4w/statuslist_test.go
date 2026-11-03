@@ -178,13 +178,13 @@ func TestIssueStatusListJWT_CheckStatus(t *testing.T) {
 	}
 
 	// A valid credential (not revoked) should pass.
-	sc := oid4w.BuildStatusClaim("https://clavex.example.com/status/"+listID.String(), 10)
+	sc := oid4w.BuildStatusClaim("https://clavex.example.com/oid4vci/status-list/"+listID.String(), 10)
 	if err := oid4w.CheckStatus(tokenStr, sc, &priv.PublicKey); err != nil {
 		t.Fatalf("CheckStatus for valid credential: %v", err)
 	}
 
 	// A revoked credential should return ErrRevoked.
-	scRevoked := oid4w.BuildStatusClaim("https://clavex.example.com/status/"+listID.String(), 5)
+	scRevoked := oid4w.BuildStatusClaim("https://clavex.example.com/oid4vci/status-list/"+listID.String(), 5)
 	err = oid4w.CheckStatus(tokenStr, scRevoked, &priv.PublicKey)
 	if err != oid4w.ErrRevoked {
 		t.Fatalf("expected ErrRevoked, got %v", err)
@@ -213,7 +213,7 @@ func TestCheckStatus_WrongKey(t *testing.T) {
 		PrivateKey: priv,
 	}
 	tokenStr, _ := oid4w.IssueStatusListJWT(params)
-	sc := oid4w.BuildStatusClaim("https://clavex.example.com/status/"+listID.String(), 0)
+	sc := oid4w.BuildStatusClaim("https://clavex.example.com/oid4vci/status-list/"+listID.String(), 0)
 	if err := oid4w.CheckStatus(tokenStr, sc, &other.PublicKey); err == nil {
 		t.Fatal("expected verification failure with wrong key")
 	}

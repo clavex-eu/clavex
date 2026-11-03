@@ -12,10 +12,13 @@ package handler
 //
 //	GET /key-rotation          — policy + schedulability for every key category
 //	PUT /key-rotation/:kind     — set org policy for oidc | pqc
+//	POST /key-rotation/:kind/rotate — rotate a generated tenant key now
 
 import (
+	"context"
 	"errors"
 	"net/http"
+	"time"
 
 	"github.com/clavex-eu/clavex/internal/audit"
 	"github.com/clavex-eu/clavex/internal/config"
@@ -32,10 +35,16 @@ import (
 const byokRotationMessage = "Automatic rotation is not available for organization-provided (BYOK) keys — rotate manually through your own key management process."
 
 // KeyRotationHandler serves the global key rotation policy API.
+type orgKeyRotator interface {
+	RotateForOrg(context.Context, uuid.UUID) (string, error)
+}
+
 type KeyRotationHandler struct {
-	repo     *repository.KeyRotationPolicyRepository
-	signRepo *repository.SigningKeyRepository
-	auditor  *audit.Emitter
+	oidcRotator orgKeyRotator
+	pqcRotator  orgKeyRotator
+	repo        *repository.KeyRotationPolicyRepository
+	signRepo    *repository.SigningKeyRepository
+	auditor     *audit.Emitter
 }
 
 // NewKeyRotationHandler builds the handler.
@@ -59,6 +68,8 @@ type keyRotationEntry struct {
 	LastRotatedAt  *string `json:"last_rotated_at"`
 	Schedulable    bool    `json:"schedulable"`
 	Reason         string  `json:"reason,omitempty"`
+	Rotatable      bool    `json:"rotatable"`
+	KID            string  `json:"kid,omitempty"`
 }
 
 // orgKeyImported reports whether the org's active signing key is imported
@@ -144,7 +155,37 @@ func (h *KeyRotationHandler) Status(c echo.Context) error {
 		Reason:         byokReason,
 	})
 
-	return c.JSON(http.StatusOK, map[string]any{"keys": entries, "byok_active": imported})
+	for i := range entries {
+		switch entries[i].KeyKind {
+		case repository.KeyKindOIDC:
+			entries[i].Rotatable = !imported && h.oidcRotator != nil
+			if row, e := h.signRepo.GetActiveForOrg(c.Request().Context(), orgID); e == nil {
+				entries[i].KID = row.KID
+				if entries[i].LastRotatedAt == nil {
+					date := row.CreatedAt.UTC().Format(time.RFC3339)
+					entries[i].LastRotatedAt = &date
+				}
+			}
+			if h.oidcRotator == nil {
+				entries[i].Schedulable = false
+				entries[i].Reason = "Tenant signing-key rotation requires the database key backend."
+			}
+		case repository.KeyKindPQC:
+			entries[i].Rotatable = h.pqcRotator != nil
+			if row, e := h.signRepo.GetActivePQCForOrg(c.Request().Context(), orgID); e == nil {
+				entries[i].KID = row.KID
+				if entries[i].LastRotatedAt == nil {
+					date := row.CreatedAt.UTC().Format(time.RFC3339)
+					entries[i].LastRotatedAt = &date
+				}
+			}
+			if h.pqcRotator == nil {
+				entries[i].Schedulable = false
+				entries[i].Reason = "Tenant PQC rotation requires PQC and the database key backend."
+			}
+		}
+	}
+	return c.JSON(http.StatusOK, map[string]any{"keys": entries, "byok_active": imported, "can_manage": tenantKeysWritable(c)})
 }
 
 type setPolicyBody struct {
@@ -231,6 +272,10 @@ func (h *KeyRotationHandler) SetPolicy(c echo.Context) error {
 		return echo.NewHTTPError(http.StatusBadRequest, byokRotationMessage)
 	}
 
+	if (kind == repository.KeyKindOIDC && h.oidcRotator == nil) || (kind == repository.KeyKindPQC && h.pqcRotator == nil) {
+		return echo.NewHTTPError(http.StatusConflict, "tenant key rotation is unavailable for this key backend")
+	}
+
 	var body setPolicyBody
 	if err := c.Bind(&body); err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid body")
@@ -292,4 +337,70 @@ func (h *KeyRotationHandler) SetPolicy(c echo.Context) error {
 		"rotation_policy":        body.RotationPolicy,
 		"rotation_interval_days": body.IntervalDays,
 	})
+}
+
+// WithOrgRotators configures the tenant operations independently of global keys.
+func (h *KeyRotationHandler) WithOrgRotators(rsa, pqc orgKeyRotator) *KeyRotationHandler {
+	h.oidcRotator = rsa
+	h.pqcRotator = pqc
+	return h
+}
+
+// Rotate handles POST /key-rotation/:kind/rotate. Imported keys require explicit
+// replacement through the tenant signing-key endpoint, never silent generation.
+func (h *KeyRotationHandler) Rotate(c echo.Context) error {
+	orgID, err := uuidParam(c, "org_id")
+	if err != nil {
+		return err
+	}
+	var rotator orgKeyRotator
+	kind := c.Param("kind")
+	switch kind {
+	case repository.KeyKindOIDC:
+		rotator = h.oidcRotator
+	case repository.KeyKindPQC:
+		rotator = h.pqcRotator
+	default:
+		return echo.NewHTTPError(http.StatusBadRequest, "kind must be 'oidc' or 'pqc'")
+	}
+	if rotator == nil {
+		return echo.NewHTTPError(http.StatusConflict, "tenant key rotation is unavailable for this key backend")
+	}
+	ctx := c.Request().Context()
+	kid, err := rotator.RotateForOrg(ctx, orgID)
+	if errors.Is(err, repository.ErrImportedSigningKey) {
+		return echo.NewHTTPError(http.StatusConflict, byokRotationMessage)
+	}
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
+	// Record the event independently of whether a rotation policy was set.
+	resourceType, resourceID := "signing_key", kid
+	var actorID *uuid.UUID
+	if claims := middleware.GetClaims(c); claims != nil {
+		if id, e := uuid.Parse(claims.Subject); e == nil {
+			actorID = &id
+		}
+	}
+	h.auditor.Emit(ctx, audit.EmitParams{OrgID: orgID, ActorID: actorID, Action: "key.rotated", ResourceType: &resourceType, ResourceID: &resourceID, Status: "success", Metadata: map[string]interface{}{"key_kind": kind, "scope": "tenant"}})
+	if err := h.repo.MarkRotatedForOrg(ctx, kind, orgID, time.Now()); err != nil {
+		c.Logger().Errorf("key rotated but policy timestamp update failed: %v", err)
+	}
+	return c.JSON(http.StatusOK, map[string]string{"kid": kid, "key_kind": kind})
+}
+
+func tenantKeysWritable(c echo.Context) bool {
+	claims := middleware.GetClaims(c)
+	if claims == nil || !claims.IsAdmin || claims.IsSuperAdmin || claims.OrgID != c.Param("org_id") {
+		return false
+	}
+	if claims.Permissions == nil {
+		return true
+	}
+	for _, perm := range claims.Permissions {
+		if perm == middleware.PermSecurityWrite {
+			return true
+		}
+	}
+	return false
 }

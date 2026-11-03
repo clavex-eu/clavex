@@ -398,7 +398,7 @@ func IssueAuthorizationCode(
 		AuthTime:             req.AuthTime,
 		ExpiresAt:            expires,
 		AuthorizationDetails: req.AuthorizationDetails,
-		Acr:                  resolveAcr(req.AcrValues),
+		Acr:                  ResolveACR(req.AcrValues),
 		ClaimsParam:          req.ClaimsParam,
 		ExtraClaims:          req.ExtraClaims,
 		DpopJKT:              req.DpopJKT,
@@ -411,12 +411,11 @@ func IssueAuthorizationCode(
 	return code, nil
 }
 
-// resolveAcr selects the ACR value to include in the ID token.
-// When acr_values is requested, we return "0" (password authentication per
-// NIST 800-63). The caller must not request acr_values that require MFA or
-// higher — those flows are not yet supported.
+// ResolveACR selects the conservative context implemented by the default flow.
+// A voluntary request for a higher value does not establish that assurance.
+// No mapping to a national/eIDAS assurance level is implied.
 // Returns "" (omit acr claim) when acr_values was not requested.
-func resolveAcr(acrValues string) string {
+func ResolveACR(acrValues string) string {
 	if strings.TrimSpace(acrValues) == "" {
 		return ""
 	}

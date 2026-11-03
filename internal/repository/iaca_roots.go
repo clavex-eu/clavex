@@ -1,6 +1,7 @@
 package repository
 
 import (
+	"bytes"
 	"context"
 	"crypto/sha256"
 	"crypto/x509"
@@ -39,13 +40,15 @@ func (r *IACARepository) Create(
 	createdBy *uuid.UUID,
 ) (*models.OrgIACARoot, error) {
 	// Validate PEM and extract cert.
-	cert, err := parseSingleCertPEM(certPEM)
+	cert, err := parseIACAUploadPEM(certPEM)
 	if err != nil {
 		return nil, fmt.Errorf("iaca: %w", err)
 	}
 	if !cert.IsCA {
 		return nil, errors.New("iaca: certificate is not a CA (BasicConstraints.IsCA must be true)")
 	}
+	// Store only the public certificate, never incidental data from an upload.
+	certPEM = string(pem.EncodeToMemory(&pem.Block{Type: "CERTIFICATE", Bytes: cert.Raw}))
 
 	fp := sha256Fingerprint(cert)
 	subjectDN := cert.Subject.String()
@@ -123,11 +126,14 @@ func (r *IACARepository) Delete(ctx context.Context, id, orgID uuid.UUID) error 
 // Returns nil, nil when no roots are configured (caller treats nil pool as
 // "skip chain validation" and falls back to best-effort verification).
 func (r *IACARepository) GetCertPool(ctx context.Context, orgID uuid.UUID) (*x509.CertPool, error) {
-	const q = `
-		SELECT pem FROM org_iaca_roots
-		WHERE org_id = $1 AND is_active = true`
+	return r.GetCertPoolForDocType(ctx, orgID, "")
+}
 
-	rows, err := r.pool.Query(ctx, q, orgID)
+// GetCertPoolForDocType respects the explicitly configured document-type policy.
+func (r *IACARepository) GetCertPoolForDocType(ctx context.Context, orgID uuid.UUID, docType string) (*x509.CertPool, error) {
+	const q = `SELECT pem FROM org_iaca_roots WHERE org_id=$1 AND is_active=true
+	 AND ($2='' OR cardinality(doc_types)=0 OR $2=ANY(doc_types))`
+	rows, err := r.pool.Query(ctx, q, orgID, docType)
 	if err != nil {
 		return nil, err
 	}
@@ -142,8 +148,7 @@ func (r *IACARepository) GetCertPool(ctx context.Context, orgID uuid.UUID) (*x50
 		}
 		cert, err := parseSingleCertPEM(certPEM)
 		if err != nil {
-			// Skip malformed stored certs rather than failing completely.
-			continue
+			return nil, fmt.Errorf("invalid configured IACA root: %w", err)
 		}
 		pool.AddCert(cert)
 		count++
@@ -158,6 +163,28 @@ func (r *IACARepository) GetCertPool(ctx context.Context, orgID uuid.UUID) (*x50
 }
 
 // ── Helpers ───────────────────────────────────────────────────────────────────
+
+// New uploads must contain exactly one public certificate. Keep the legacy
+// stored-record reader separate so this validation does not silently change
+// the trust interpretation of existing tenant records.
+func parseIACAUploadPEM(raw string) (*x509.Certificate, error) {
+	if len(raw) > 64*1024 {
+		return nil, errors.New("certificate upload exceeds 64 KiB")
+	}
+	data := bytes.TrimSpace([]byte(raw))
+	if !bytes.HasPrefix(data, []byte("-----BEGIN CERTIFICATE-----")) {
+		return nil, errors.New("provide exactly one public certificate in PEM format")
+	}
+	block, rest := pem.Decode(data)
+	if block == nil || block.Type != "CERTIFICATE" || len(block.Headers) != 0 || len(bytes.TrimSpace(rest)) != 0 {
+		return nil, errors.New("provide exactly one public certificate; keys and certificate bundles are not accepted")
+	}
+	cert, err := x509.ParseCertificate(block.Bytes)
+	if err != nil {
+		return nil, errors.New("invalid X.509 certificate")
+	}
+	return cert, nil
+}
 
 func parseSingleCertPEM(certPEM string) (*x509.Certificate, error) {
 	block, _ := pem.Decode([]byte(certPEM))

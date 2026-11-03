@@ -1,6 +1,7 @@
 import { useState, useEffect } from 'react'
 import { useQuery, useMutation, useQueryClient } from '@tanstack/react-query'
-import api from '@/lib/api'
+import api, { toArr } from '@/lib/api'
+import WalletIssuerCertificates from './WalletIssuerCertificates'
 import toast from 'react-hot-toast'
 import { RotateCw, KeyRound } from 'lucide-react'
 
@@ -14,12 +15,12 @@ interface KeyEntry {
 const LABELS: Record<string, { title: string; subtitle: string; rotatePath: string }> = {
   oidc: {
     title: 'OIDC Signing Key (RSA / PS256)',
-    subtitle: 'Global installation key used to sign OIDC/JWT tokens for every organization.',
+    subtitle: 'Installation signing key for global and explicitly configured legacy flows; tenant signing keys are separate.',
     rotatePath: '/superadmin/rotate-signing-key',
   },
   pqc: {
     title: 'PQC Signing Key (ML-DSA-65)',
-    subtitle: 'Global post-quantum key published in JWKS for every organization.',
+    subtitle: 'Installation post-quantum key; tenant PQC keys are managed separately.',
     rotatePath: '/superadmin/rotate-pqc-signing-key',
   },
 }
@@ -103,6 +104,28 @@ function KeyCard({ entry }: { entry: KeyEntry }) {
   )
 }
 
+function WalletSigningAdministration() {
+  const [selected, setSelected] = useState('')
+  const orgs = useQuery<{ id: string; name: string; slug: string }[]>({
+    queryKey: ['sa-wallet-signing-orgs'],
+    queryFn: () => api.get('/organizations').then(r => toArr(r.data)),
+  })
+  const orgId = orgs.data?.some(o => o.id === selected) ? selected : ''
+  return <section className="mt-8 space-y-4">
+    <h2 className="text-lg font-semibold">Wallet issuing certificates</h2>
+    <p className="text-sm text-slate-600">Manage mdoc Document Signers for each organisation. Metadata and SD-JWT certificates currently use installation configuration.</p>
+    <label className="block text-sm" htmlFor="wallet-signing-org">Organisation
+      <select aria-label="Organisation" id="wallet-signing-org" className="mt-1 block w-full rounded-lg border border-slate-300 bg-white p-2"
+        value={orgId} onChange={e => setSelected(e.target.value)}>
+        <option value="">Select an organisation</option>
+        {orgs.data?.map(o => <option key={o.id} value={o.id}>{o.name} ({o.slug})</option>)}
+      </select>
+    </label>
+    {orgs.isError && <p role="alert" className="text-sm text-red-700">Unable to load organisations.</p>}
+    {orgId && <WalletIssuerCertificates key={orgId} orgId={orgId} />}
+  </section>
+}
+
 export default function SuperadminSigningKeysPage() {
   const { data, isLoading } = useQuery<{ keys: KeyEntry[] }>({
     queryKey: ['sa-signing-keys'],
@@ -116,7 +139,7 @@ export default function SuperadminSigningKeysPage() {
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Installation Signing Keys</h1>
           <p style={{ fontSize: 13, margin: 0, color: 'var(--clavex-neutral)' }}>
-            Global OIDC and PQC signing keys shared by every organization. Changing these rotates the key for the whole installation.
+            Installation OIDC and PQC keys. Tenant administrators manage their own signing keys from the tenant console; these actions do not rotate tenant keys.
           </p>
         </div>
       </div>
@@ -125,6 +148,7 @@ export default function SuperadminSigningKeysPage() {
       ) : (
         (data?.keys ?? []).map(k => <KeyCard key={k.key_kind} entry={k} />)
       )}
+      <WalletSigningAdministration />
     </div>
   )
 }

@@ -13,6 +13,7 @@ import (
 
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
 
@@ -65,8 +66,9 @@ type JSONSchemaFilter struct {
 //
 //	GET /:org_slug/wallet/request/:request_id
 //
-// Per OID4VP §6 / JAR (RFC 9101), this can be returned as a signed JWT
-// (request object) or as plain JSON. For now we return plain JSON.
+// The request_uri endpoint returns this object inside a signed JAR JWT
+// (RFC 9101). Client metadata carries the public response-encryption key when
+// the session uses direct_post.jwt.
 type AuthorizationRequest struct {
 	ResponseType   string `json:"response_type"`
 	ClientID       string `json:"client_id"`
@@ -82,7 +84,7 @@ type AuthorizationRequest struct {
 	// Deprecated in OID4VP 1.0 Final; use DCQLQuery for new integrations.
 	PresentationDefinition *PresentationDefinition `json:"presentation_definition,omitempty"`
 	// ClientMetadata is REQUIRED in OID4VP 1.0 Final §5.1 and MUST include
-	// vp_formats to declare the accepted credential formats.
+	// vp_formats_supported to declare the accepted credential formats.
 	ClientMetadata map[string]interface{} `json:"client_metadata,omitempty"`
 }
 
@@ -112,6 +114,10 @@ type DescriptorMapEntry struct {
 
 // VerificationResult holds the verified claims returned after OID4VP.
 type VerificationResult struct {
+	Credentials                 []VerifiedDCQLCredential
+	Identity                    *VerifiedCredentialIdentity
+	CertificateStatusAssessment string
+	StatusAssessment            string // set only by a status-policy evaluator, not cryptographic verification alone
 	// Claims contains all disclosed claims from the SD-JWT.
 	Claims map[string]any
 	// MatchedDescriptors lists the InputDescriptor IDs that were satisfied.
@@ -138,7 +144,7 @@ func VerifyPresentation(
 	expectedNonce string,
 	expectedAud string,
 	trustedIssuers map[string]*rsa.PublicKey,
-	localPubKey *rsa.PublicKey,
+	localPubKey crypto.PublicKey,
 ) (*VerificationResult, error) {
 	issuerJWT, disclosureRaws, kbJWT, err := ParseSDJWT(vpToken)
 	if err != nil {
@@ -159,6 +165,9 @@ func VerifyPresentation(
 
 	// Holder binding: when the presentation carries a KB-JWT, verify it so the
 	// vp_token cannot be replayed or presented to a different audience.
+	if _, bound := claims["cnf"]; bound && kbJWT == "" {
+		return nil, fmt.Errorf("kb-jwt: holder-bound credential requires a key binding proof")
+	}
 	if kbJWT != "" {
 		holderKey, hkErr := extractHolderPublicKey(claims)
 		if hkErr != nil {
@@ -175,7 +184,14 @@ func VerifyPresentation(
 		return nil, fmt.Errorf("presentation definition mismatch: %w", err)
 	}
 
+	issuer, _ := claims["iss"].(string)
+	_, externalTrusted := trustedIssuers[issuer]
+	identity, err := verifiedSDJWTIdentity(issuerJWT, externalTrusted, publicKeysEqual(pubKey, localPubKey), kbJWT != "")
+	if err != nil {
+		return nil, err
+	}
 	return &VerificationResult{
+		Identity:           identity,
 		Claims:             claims,
 		MatchedDescriptors: matched,
 	}, nil
@@ -183,12 +199,10 @@ func VerifyPresentation(
 
 // VerifyDCQLPresentation verifies an OID4VP vp_token for a DCQL-based session.
 //
-// For DCQL sessions the credential is issued by an external party (not Clavex).
-// Issuer signature verification is skipped to avoid synchronous JWKS discovery
-// calls (which break conformance tests where the issuer IS the test suite).
-// The KB-JWT signature IS verified against the holder's public key in cnf.jwk,
-// ensuring the presentation was produced by the legitimate holder and that
-// the nonce/aud match the current session.
+// Issuer signatures are verified against configured trust anchors without
+// synchronous JWKS discovery. Credential times, the supported DCQL constraints,
+// and holder proofs are checked independently. This currently supports one
+// dc+sd-jwt credential query; it is not a complete DCQL implementation.
 // requireTrusted, when true, rejects a presentation whose issuer is not in
 // trustedIssuers (instead of accepting its claims unverified). It MUST be true in
 // production; set false only for the conformance suite where the issuer is the
@@ -201,7 +215,7 @@ func VerifyDCQLPresentation(
 	expectedAud string,
 	trustedIssuers map[string]crypto.PublicKey,
 	requireTrusted bool,
-	localPubKey *rsa.PublicKey,
+	localPubKey crypto.PublicKey,
 ) (*VerificationResult, error) {
 	issuerJWT, disclosureRaws, kbJWT, err := ParseSDJWT(vpToken)
 	if err != nil {
@@ -226,6 +240,20 @@ func VerifyDCQLPresentation(
 	} else if requireTrusted {
 		return nil, fmt.Errorf("credential issuer %q is not in the configured trust anchors", iss)
 	}
+	// Even test-harness issuers must supply temporally valid credentials.
+	if err := validateCredentialTimes(issuerJWT); err != nil {
+		return nil, err
+	}
+	query, err := parseSDJWTDCQL(dcqlQuery)
+	if err != nil {
+		return nil, err
+	}
+	if query.requiresBinding() && kbJWT == "" {
+		return nil, fmt.Errorf("kb-jwt: DCQL requires cryptographic holder binding")
+	}
+	if err := query.match(claims); err != nil {
+		return nil, err
+	}
 
 	// Verify KB-JWT signature, nonce, aud, and sd_hash.
 	// The sd_hash check is the key to detecting a corrupted issuer SD-JWT:
@@ -241,7 +269,11 @@ func VerifyDCQLPresentation(
 		}
 	}
 
-	return &VerificationResult{Claims: claims}, nil
+	identity, err := verifiedSDJWTIdentity(issuerJWT, known, known && publicKeysEqual(issuerKey, localPubKey), kbJWT != "")
+	if err != nil {
+		return nil, err
+	}
+	return &VerificationResult{Claims: claims, Identity: identity}, nil
 }
 
 // extractHolderPublicKey parses the holder's public key from the cnf.jwk claim.
@@ -283,20 +315,35 @@ func verifyJWTSignature(compactJWT string, pubKey crypto.PublicKey) error {
 	return fmt.Errorf("signature verification failed for all supported algorithms")
 }
 
+func validateCredentialTimes(compactJWT string) error {
+	_, err := jwt.Parse([]byte(compactJWT), jwt.WithVerify(false), jwt.WithValidate(true))
+	if err != nil {
+		return fmt.Errorf("credential validity: %w", err)
+	}
+	return nil
+}
+
 // verifyKBJWT verifies the KB-JWT signature and claims:
-//   - ES256 signature against the holder's public key (cnf.jwk)
+//   - protected typ kb+jwt and ES256/PS256 signature against cnf.jwk
 //   - nonce matches the session nonce
-//   - aud matches the response_uri
+//   - aud matches the verifier client_id (or the explicitly supplied legacy audience)
 //   - sd_hash matches SHA-256(issuerJWT~disc1~disc2~)
 //
 // The sd_hash check detects a corrupted issuer SD-JWT without needing the
 // issuer's public key: if the issuer signature bytes were modified after the
 // KB-JWT was signed, the hash of the received presentation won't match.
 func verifyKBJWT(kbJWT string, holderKey crypto.PublicKey, expectedNonce, expectedAud, issuerJWT string, disclosureRaws []string) error {
-	tok, err := jwt.Parse([]byte(kbJWT),
-		jwt.WithKey(jwa.ES256, holderKey),
-		jwt.WithValidate(false),
-	)
+	message, err := jws.Parse([]byte(kbJWT))
+	if err != nil || len(message.Signatures()) != 1 || message.Signatures()[0].ProtectedHeaders().Type() != "kb+jwt" {
+		return fmt.Errorf("protected typ must be kb+jwt")
+	}
+	var tok jwt.Token
+	for _, alg := range []jwa.SignatureAlgorithm{jwa.ES256, jwa.PS256} {
+		tok, err = jwt.Parse([]byte(kbJWT), jwt.WithKey(alg, holderKey), jwt.WithValidate(false))
+		if err == nil {
+			break
+		}
+	}
 	if err != nil {
 		return fmt.Errorf("signature invalid: %w", err)
 	}
@@ -348,15 +395,16 @@ func verifyKBJWT(kbJWT string, holderKey crypto.PublicKey, expectedNonce, expect
 		if computed != sdHash {
 			return fmt.Errorf("sd_hash mismatch: issuer JWT integrity check failed")
 		}
+	} else {
+		return fmt.Errorf("sd_hash is required in kb-jwt")
 	}
 
 	return nil
 }
 
-
 // resolveIssuerKey returns the RSA public key for the issuer JWT's "iss" claim.
 // localPubKey is always accepted; trustedIssuers provides additional known issuers.
-func resolveIssuerKey(issuerJWT string, trusted map[string]*rsa.PublicKey, local *rsa.PublicKey) (*rsa.PublicKey, error) {
+func resolveIssuerKey(issuerJWT string, trusted map[string]*rsa.PublicKey, local crypto.PublicKey) (crypto.PublicKey, error) {
 	// Decode the JWT header + payload without verification to read "iss".
 	type minPayload struct {
 		Iss string `json:"iss"`
@@ -477,4 +525,3 @@ func base64URLDecode(s string) ([]byte, error) {
 	// base64.RawURLEncoding handles un-padded base64url directly.
 	return base64.RawURLEncoding.DecodeString(strings.TrimRight(s, "="))
 }
-

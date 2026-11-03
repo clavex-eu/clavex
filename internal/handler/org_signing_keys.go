@@ -4,9 +4,9 @@ package handler
 // per-organisation signing key management.
 //
 // API:
-//   GET    /api/v1/organizations/:id/signing-key        — current key info
-//   PUT    /api/v1/organizations/:id/signing-key        — generate or import key
-//   DELETE /api/v1/organizations/:id/signing-key        — remove (revert to global)
+//   GET    /api/v1/organizations/:org_id/signing-key        — current key info
+//   PUT    /api/v1/organizations/:org_id/signing-key        — generate or import key
+//   DELETE /api/v1/organizations/:org_id/signing-key — restore a generated tenant key
 
 import (
 	"crypto/rsa"
@@ -16,6 +16,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/clavex-eu/clavex/internal/audit"
+	"github.com/clavex-eu/clavex/internal/middleware"
 	"github.com/clavex-eu/clavex/internal/oidc"
 	"github.com/clavex-eu/clavex/internal/repository"
 	"github.com/google/uuid"
@@ -27,14 +29,16 @@ import (
 
 // OrgSigningKeyHandler manages per-org RSA signing keys.
 type OrgSigningKeyHandler struct {
+	auditor *audit.Emitter
 	signers *oidc.OrgSignerCache
 	keyRepo *repository.SigningKeyRepository
 	orgRepo *repository.OrgRepository
 }
 
 // NewOrgSigningKeyHandler creates the handler.
-func NewOrgSigningKeyHandler(pool *pgxpool.Pool, signers *oidc.OrgSignerCache) *OrgSigningKeyHandler {
+func NewOrgSigningKeyHandler(pool *pgxpool.Pool, signers *oidc.OrgSignerCache, emitter *audit.Emitter) *OrgSigningKeyHandler {
 	return &OrgSigningKeyHandler{
+		auditor: emitter,
 		signers: signers,
 		keyRepo: repository.NewSigningKeyRepository(pool),
 		orgRepo: repository.NewOrgRepository(pool),
@@ -48,11 +52,11 @@ type signingKeyInfo struct {
 	CreatedAt time.Time `json:"created_at"`
 }
 
-// Get handles GET /api/v1/organizations/:id/signing-key.
+// Get handles GET /api/v1/organizations/:org_id/signing-key.
 // Returns 404 if the org has no own key (it is using the global one).
 func (h *OrgSigningKeyHandler) Get(c echo.Context) error {
 	ctx := c.Request().Context()
-	orgID, err := uuid.Parse(c.Param("id"))
+	orgID, err := uuid.Parse(c.Param("org_id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid organization id")
 	}
@@ -83,14 +87,14 @@ type upsertKeyRequest struct {
 	JWK string `json:"jwk"`
 }
 
-// Upsert handles PUT /api/v1/organizations/:id/signing-key.
+// Upsert handles PUT /api/v1/organizations/:org_id/signing-key.
 //
 //   - Empty body or {"action":"generate"} → generates a new RSA-2048 key server-side.
 //   - {"pem":"-----BEGIN PRIVATE KEY-----…"} → imports PKCS#8 or PKCS#1 PEM.
 //   - {"jwk":"{…}"} → imports RSA private key in JWK JSON format.
 func (h *OrgSigningKeyHandler) Upsert(c echo.Context) error {
 	ctx := c.Request().Context()
-	orgID, err := uuid.Parse(c.Param("id"))
+	orgID, err := uuid.Parse(c.Param("org_id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid organization id")
 	}
@@ -106,6 +110,15 @@ func (h *OrgSigningKeyHandler) Upsert(c echo.Context) error {
 		}
 	}
 
+	if req.Action != "" && req.Action != "generate" && req.Action != "import" {
+		return echo.NewHTTPError(http.StatusBadRequest, "action must be generate or import")
+	}
+	if req.PEM != "" && req.JWK != "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "provide either PEM or JWK, not both")
+	}
+	if req.Action == "import" && req.PEM == "" && req.JWK == "" {
+		return echo.NewHTTPError(http.StatusBadRequest, "import requires PEM or JWK")
+	}
 	var kid string
 
 	switch {
@@ -128,10 +141,18 @@ func (h *OrgSigningKeyHandler) Upsert(c echo.Context) error {
 		kid, err = h.signers.GenerateForOrg(ctx, orgID)
 	}
 
+	if errors.Is(err, repository.ErrImportedSigningKey) {
+		return echo.NewHTTPError(http.StatusConflict, byokRotationMessage)
+	}
 	if err != nil {
 		return echo.ErrInternalServerError
 	}
 
+	source := "generated"
+	if req.PEM != "" || req.JWK != "" {
+		source = "imported"
+	}
+	h.auditChange(c, orgID, kid, source)
 	row, dbErr := h.keyRepo.GetActiveForOrg(ctx, orgID)
 	if dbErr != nil {
 		return c.JSON(http.StatusOK, map[string]string{"kid": kid})
@@ -143,11 +164,11 @@ func (h *OrgSigningKeyHandler) Upsert(c echo.Context) error {
 	})
 }
 
-// Delete handles DELETE /api/v1/organizations/:id/signing-key.
-// Hard-deletes all org signing keys; the org reverts to the global key.
+// Delete handles DELETE /api/v1/organizations/:org_id/signing-key.
+// Replaces the custom RSA key with a generated tenant key, retaining grace.
 func (h *OrgSigningKeyHandler) Delete(c echo.Context) error {
 	ctx := c.Request().Context()
-	orgID, err := uuid.Parse(c.Param("id"))
+	orgID, err := uuid.Parse(c.Param("org_id"))
 	if err != nil {
 		return echo.NewHTTPError(http.StatusBadRequest, "invalid organization id")
 	}
@@ -155,6 +176,11 @@ func (h *OrgSigningKeyHandler) Delete(c echo.Context) error {
 	if err := h.signers.RemoveForOrg(ctx, orgID); err != nil {
 		return echo.ErrInternalServerError
 	}
+	row, err := h.keyRepo.GetActiveForOrg(ctx, orgID)
+	if err != nil {
+		return echo.ErrServiceUnavailable
+	}
+	h.auditChange(c, orgID, row.KID, "generated")
 	return c.NoContent(http.StatusNoContent)
 }
 
@@ -197,4 +223,18 @@ func decodeJWKPrivate(raw []byte) ([]byte, error) {
 			"RSA key too short; minimum 2048 bits")
 	}
 	return x509.MarshalPKCS8PrivateKey(&rsaKey)
+}
+
+func (h *OrgSigningKeyHandler) auditChange(c echo.Context, orgID uuid.UUID, kid, source string) {
+	if h.auditor == nil {
+		return
+	}
+	var actorID *uuid.UUID
+	if claims := middleware.GetClaims(c); claims != nil {
+		if id, err := uuid.Parse(claims.Subject); err == nil {
+			actorID = &id
+		}
+	}
+	resourceType := "signing_key"
+	h.auditor.Emit(c.Request().Context(), audit.EmitParams{OrgID: orgID, ActorID: actorID, Action: "key.replaced", ResourceType: &resourceType, ResourceID: &kid, Status: "success", Metadata: map[string]interface{}{"scope": "tenant", "key_source": source}})
 }

@@ -1,7 +1,7 @@
-# Tests that require a manual screenshot upload on the suite UI.
-# The script cannot perform the upload, so the suite transitions the test to
-# INTERRUPTED when the script moves on.  These modules are functionally correct
-# and are counted as PASSED in all summaries.
+# Historical list of modules the operator reviewed manually and may need
+# screenshot evidence on the suite UI. Entries are retained as review records.
+# Membership does not prove the current implementation passes the module.
+# The runner preserves official results and never converts these to PASSED.
 #
 # Format: one test module name per line (exact match, case-sensitive).
 # Lines starting with # and blank lines are ignored.

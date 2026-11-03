@@ -200,7 +200,10 @@ func (h *OIDCHandler) BackchannelAuthorize(c echo.Context) error {
 		// Verify the id_token_hint was issued by this AS before trusting its
 		// `sub` claim — otherwise a client could select an arbitrary victim by
 		// forging the hint. (CIBA Core §7.1 resolution; expiry not enforced.)
-		tc := h.newTC(h.issuerFromRequest(c, orgSlug))
+		tc, resolveErr := h.verificationTC(ctx, h.issuerFromRequest(c, orgSlug), orgSlug)
+		if resolveErr != nil {
+			return echo.ErrServiceUnavailable
+		}
 		tok, hintErr := tc.ParseTrustedIDToken(idTokenHint)
 		if hintErr != nil {
 			return tokenError(c, "invalid_request", "id_token_hint is invalid or not issued by this server")
@@ -425,7 +428,9 @@ func (h *OIDCHandler) cibaGrant(c echo.Context) error {
 		if o, oErr := h.orgs.GetBySlug(ctx, orgSlug); oErr == nil {
 			cibaOrg = o
 		}
-		h.applyOrgOverrides(ctx, tc, cibaOrg, cibaCl)
+		if err := h.applyOrgOverrides(ctx, tc, cibaOrg, cibaCl); err != nil {
+			return echo.ErrServiceUnavailable
+		}
 
 		uc := oidc.UserClaimsFromModel(user)
 		if roleNames, err := h.users.FlattenRoleNames(ctx, user.ID); err == nil {
@@ -828,6 +833,14 @@ func (h *OIDCHandler) createCIBALinkedVPSession(
 	baseURL := h.cfg.Auth.IssuerBase
 	responseURI := baseURL + "/" + orgSlug + "/wallet/response"
 
+	clientID := "redirect_uri:" + responseURI
+	mode := "direct_post"
+	if h.oid4vpH != nil {
+		mode = h.oid4vpH.defaultResponseMode()
+		if h.oid4vpH.jarCert != nil && len(h.oid4vpH.jarCert.DNSNames) > 0 {
+			clientID = "x509_san_dns:" + h.oid4vpH.jarCert.DNSNames[0]
+		}
+	}
 	_, err = h.vpSessions.CreatePresentationSession(
 		ctx,
 		org.ID,
@@ -840,11 +853,10 @@ func (h *OIDCHandler) createCIBALinkedVPSession(
 		nonce,
 		time.Now().Add(10*time.Minute),
 		&authReqID,
-		"redirect_uri:"+responseURI,
+		clientID, mode,
 	)
 	if err != nil {
 		return "", "", err
 	}
 	return requestID, nonce, nil
 }
-

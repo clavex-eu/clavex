@@ -1,0 +1,42 @@
+{
+  "name": "authzen-basic-plan",
+  "description": "OpenID AuthZen 1.0 Authorization API conformance \u2014 single and batch evaluation",
+  "version": "1.0",
+  "planName": "authzen-test-plan",
+  "modules": [
+    {
+      "testModule": "authzen-api-evaluation-test",
+      "variant": {
+        "server_metadata": {
+          "evaluation_endpoint": "${CLAVEX_BASE_URL}/${ORG_SLUG}/access/v1/evaluation",
+          "evaluations_endpoint": "${CLAVEX_BASE_URL}/${ORG_SLUG}/access/v1/evaluations"
+        },
+        "client": {
+          "access_token": "${AUTHZEN_ACCESS_TOKEN}",
+          "subject": {
+            "type": "user",
+            "id": "${AUTHZEN_SUBJECT_ID}"
+          }
+        }
+      }
+    }
+  ],
+  "description_fields": [
+    {
+      "key": "evaluation_endpoint",
+      "description": "Full URL of the POST /access/v1/evaluation endpoint, e.g. https://id.example.com/acme/access/v1/evaluation"
+    },
+    {
+      "key": "evaluations_endpoint",
+      "description": "Full URL of the POST /access/v1/evaluations batch endpoint"
+    },
+    {
+      "key": "access_token",
+      "description": "Valid Clavex access token for the requesting resource server"
+    },
+    {
+      "key": "subject_id",
+      "description": "UUID or email address of the test subject user"
+    }
+  ]
+}

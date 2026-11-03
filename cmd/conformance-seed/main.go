@@ -182,7 +182,22 @@ var conformancePostLogoutURIs = []string{
 func main() {
 	cfgPath := flag.String("config", "", "path to config file (default: config.yaml)")
 	keyDir := flag.String("key-dir", "conformance", "directory where fapi-private-key.jwk is saved/loaded")
+	finalOnly := flag.Bool("final-clients-only", false, "only add dedicated Final clients to the existing conformance org; no migrations or full reseed")
+	mdocTrustOnly := flag.Bool("mdoc-trust-only", false, "only register the existing conformance mDL IACA; no keys, migrations or full reseed")
+	mdocPKIOnly := flag.Bool("mdoc-pki-only", false, "explicitly renew test mDL certificates with existing local keys and publish their CRL")
+	mdocCRLOnly := flag.Bool("mdoc-crl-only", false, "refresh only the existing conformance IACA CRL, preserving revoked serials")
+	fixtureBaseURL := flag.String("fixture-base-url", "", "public HTTPS backend origin for explicit mdoc PKI provisioning")
 	flag.Parse()
+	modes := 0
+	for _, enabled := range []bool{*finalOnly, *mdocTrustOnly, *mdocPKIOnly, *mdocCRLOnly} {
+		if enabled {
+			modes++
+		}
+	}
+	if modes > 1 {
+		fmt.Fprintln(os.Stderr, "choose one targeted provisioning mode")
+		os.Exit(2)
+	}
 
 	cfg, err := config.LoadFrom(*cfgPath)
 	if err != nil {
@@ -196,6 +211,30 @@ func main() {
 		os.Exit(1)
 	}
 	defer dbMgr.Close()
+
+	if modes > 0 {
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		org, lookupErr := repository.NewOrgRepository(dbMgr.Pool).GetBySlug(ctx, orgSlug)
+		if lookupErr != nil {
+			fmt.Fprintln(os.Stderr, "existing conformance organisation required:", lookupErr)
+			os.Exit(1)
+		}
+		var provisionErr error
+		if *finalOnly {
+			provisionErr = seedFinalClients(ctx, dbMgr.Pool, org.ID)
+		} else if *mdocPKIOnly || *mdocCRLOnly {
+			provisionErr = seedMdocPKI(ctx, dbMgr.Pool, org.ID, *keyDir, *fixtureBaseURL, *mdocCRLOnly)
+		} else {
+			provisionErr = seedMdocTrust(ctx, dbMgr.Pool, org.ID)
+		}
+		if provisionErr != nil {
+			fmt.Fprintln(os.Stderr, provisionErr)
+			os.Exit(1)
+		}
+		fmt.Println("Targeted conformance provisioning complete; existing private keys and client registrations unchanged")
+		return
+	}
 
 	// Ensure schema is up-to-date.
 	if err := db.Migrate(dbMgr.Pool); err != nil {
@@ -274,9 +313,9 @@ func main() {
 			// trust_framework "eidas" with assurance_level "substantial" covers the broadest
 			// set of conformance test scenarios. The conformance suite can filter by framework.
 			"_ida": map[string]interface{}{
-				"trust_framework":  "eidas",
-				"assurance_level":  "substantial",
-				"time":             "2024-01-15T09:00:00Z",
+				"trust_framework": "eidas",
+				"assurance_level": "substantial",
+				"time":            "2024-01-15T09:00:00Z",
 				"evidence": []interface{}{
 					map[string]interface{}{
 						"type": "electronic_record",
@@ -492,6 +531,10 @@ func main() {
 		os.Exit(1)
 	}
 	fmt.Printf("mdoc issuer upserted: %s (DS cert signed by IACA)\n", mdocDocType)
+	if err := seedMdocTrust(ctx, dbMgr.Pool, org.ID); err != nil {
+		fmt.Fprintln(os.Stderr, "conformance mdoc trust failed:", err)
+		os.Exit(1)
+	}
 
 	// Update the mdoc plan JSONs with the IACA cert (trust_anchor_pem).
 	for _, pp := range []string{mdocPlanPath, mdocEncryptedPlanPath} {
@@ -1631,6 +1674,26 @@ func main() {
 		key2Action = "generated (NEW — configure the suite once)"
 	}
 	_ = walletKeyAction // printed inline above
+
+	// Required-attestation metadata must advertise the suite's actual signer.
+	// Publish public keys only; do not confuse these with wallet auth keys.
+	attesters, err := conformanceAttesters(filepath.Join(*keyDir, "oid4vci-issuer-plan.json"))
+	if err != nil {
+		fmt.Fprintln(os.Stderr, "load conformance key attesters failed:", err)
+		os.Exit(1)
+	}
+	if _, err = dbMgr.Pool.Exec(ctx, `UPDATE organizations
+		SET settings=jsonb_set(COALESCE(settings,'{}'::jsonb),'{credential_key_attesters}',$2::jsonb), updated_at=now()
+		WHERE id=$1 AND slug=$3`, org.ID, string(attesters), orgSlug); err != nil {
+		fmt.Fprintln(os.Stderr, "configure conformance key attesters failed:", err)
+		os.Exit(1)
+	}
+	fmt.Println("conformance key-attestation trust configured from plan public keys")
+
+	if err := seedFinalClients(ctx, dbMgr.Pool, org.ID); err != nil {
+		fmt.Fprintln(os.Stderr, "Final clients failed:", err)
+		os.Exit(1)
+	}
 
 	// ── Print summary ──────────────────────────────────────────────────────────
 	fmt.Printf(`

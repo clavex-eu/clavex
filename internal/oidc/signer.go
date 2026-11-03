@@ -15,7 +15,7 @@ import (
 //
 // Planned implementations (not yet shipped):
 //   - VaultSigner   — delegates signing to HashiCorp Vault Transit; private key
-//                     never leaves Vault.
+//     never leaves Vault.
 //   - AWSSigner     — delegates signing to AWS KMS; private key never leaves KMS.
 //
 // Note: PrivateKey() is part of this interface for backward compatibility with
@@ -60,3 +60,25 @@ type Signer interface {
 
 // Ensure *KeySet satisfies Signer at compile time.
 var _ Signer = (*KeySet)(nil)
+
+// activeSigningKey reads the key and its identifier in one critical section.
+// Separate KID/CryptoSigner calls can straddle a concurrent rotation and produce
+// a valid signature labelled with the wrong key identifier.
+func activeSigningKey(signer Signer) (crypto.Signer, string) {
+	switch s := signer.(type) {
+	case *KeySet:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return s.privateKey, s.kid
+	case *DBSigner:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return s.privateKey, s.kid
+	case *OrgDBSigner:
+		s.mu.RLock()
+		defer s.mu.RUnlock()
+		return s.privateKey, s.kid
+	default:
+		return signer.CryptoSigner(), signer.KID()
+	}
+}

@@ -1,0 +1,54 @@
+{
+  "description": "clavex \u2014 OID4VCI Final (September 2025) Issuer \u2014 mso_mdoc format (ISO 18013-5 mDL), plain credential response",
+  "alias": "clavex-oid4vci-issuer-mso-mdoc",
+  "variant": {
+    "fapi_profile": "vci",
+    "credential_format": "mdoc",
+    "client_auth_type": "private_key_jwt",
+    "vci_grant_type": "authorization_code",
+    "vci_authorization_code_flow_variant": "wallet_initiated",
+    "sender_constrain": "dpop",
+    "vci_credential_encryption": "plain",
+    "fapi_request_method": "unsigned",
+    "fapi_response_mode": "plain_response"
+  },
+  "vci": {
+    "credential_issuer_url": "${BACKEND_ORIGIN}/conformance",
+    "credential_configuration_id": "org.iso.18013.5.1.mDL",
+    "client_attestation_issuer": "${BACKEND_ORIGIN}/conformance",
+    "client_attester_keys_jwks": {
+      "keys": [
+        "${JWK:wallet1}"
+      ]
+    },
+    "key_attestation_jwks": {
+      "keys": [
+        "${JWK:key-attestation}"
+      ]
+    }
+  },
+  "server": {
+    "credentialIssuer": "${BACKEND_ORIGIN}/conformance",
+    "discoveryUrl": "${BACKEND_ORIGIN}/conformance/.well-known/openid-credential-issuer?conformance=1"
+  },
+  "client": {
+    "client_id": "conformance-oid4vci-wallet",
+    "jwks": {
+      "keys": [
+        "${JWK:wallet1}"
+      ]
+    }
+  },
+  "client2": {
+    "client_id": "conformance-oid4vci-wallet-2",
+    "jwks": {
+      "keys": [
+        "${JWK:wallet2}"
+      ]
+    }
+  },
+  "credential": {
+    "trust_anchor_pem": "${PEM:issuer-root-cert}"
+  },
+  "waitTimeoutSeconds": 60
+}

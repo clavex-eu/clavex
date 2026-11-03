@@ -74,3 +74,16 @@ regulatory-monitor
 .agents/
 .claude/
 skills-lock.json
+
+# Local conformance evidence/tool caches
+conformance/.local/
+
+# Local conformance evidence/tool caches
+__pycache__/
+
+# Generated conformance plans and private fixture material (templates are public).
+conformance/*-plan.json
+conformance/*-private-key.jwk
+conformance/mdoc-*-private-key.pem
+conformance/mdoc-*-cert.pem
+conformance/.venv/
