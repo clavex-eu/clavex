@@ -15,12 +15,12 @@ interface KeyEntry {
 const LABELS: Record<string, { title: string; subtitle: string; rotatePath: string }> = {
   oidc: {
     title: 'OIDC Signing Key (RSA / PS256)',
-    subtitle: 'Global installation key used to sign OIDC/JWT tokens for every organization.',
+    subtitle: 'Installation signing key for global and explicitly configured legacy flows; tenant signing keys are separate.',
     rotatePath: '/superadmin/rotate-signing-key',
   },
   pqc: {
     title: 'PQC Signing Key (ML-DSA-65)',
-    subtitle: 'Global post-quantum key published in JWKS for every organization.',
+    subtitle: 'Installation post-quantum key; tenant PQC keys are managed separately.',
     rotatePath: '/superadmin/rotate-pqc-signing-key',
   },
 }
@@ -139,7 +139,7 @@ export default function SuperadminSigningKeysPage() {
         <div>
           <h1 style={{ fontSize: 20, fontWeight: 700, margin: 0 }}>Installation Signing Keys</h1>
           <p style={{ fontSize: 13, margin: 0, color: 'var(--clavex-neutral)' }}>
-            Global OIDC and PQC signing keys shared by every organization. Changing these rotates the key for the whole installation.
+            Installation OIDC and PQC keys. Tenant administrators manage their own signing keys from the tenant console; these actions do not rotate tenant keys.
           </p>
         </div>
       </div>

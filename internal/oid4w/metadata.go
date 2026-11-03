@@ -128,8 +128,8 @@ type KeyAttestationRequiredMeta struct {
 	// wallet-attester public keys used to verify key attestation JWTs.
 	// Required by the OIDF conformance suite check
 	// VCICheckKeyAttestationJwksIfKeyAttestationIsRequired.
-	// An empty keys array is valid — it signals that the issuer does not
-	// restrict which wallet attester signs the attestation.
+	// The handler must populate these keys from explicitly configured trust.
+	// Missing trust is rejected; an empty array never enables arbitrary attesters.
 	KeyAttestationJWKS *KeyAttestationJWKSMeta `json:"key_attestation_jwks,omitempty"`
 }
 
@@ -137,7 +137,7 @@ type KeyAttestationRequiredMeta struct {
 // key_attestations_required to advertise trusted wallet-attester keys.
 type KeyAttestationJWKSMeta struct {
 	// Keys holds the JWK objects of trusted key attestation signers.
-	// May be empty when the issuer trusts any wallet attester.
+	// Populated from configured trust before publishing required-attestation metadata.
 	Keys []interface{} `json:"keys"`
 }
 
@@ -146,6 +146,8 @@ type KeyAttestationJWKSMeta struct {
 // When present, wallets MAY (or MUST if encryption_required=true) request
 // encrypted credential responses.
 type CredentialResponseEncryptionMeta struct {
+	// Compression is used only when explicitly requested by the wallet.
+	ZipValuesSupported []string `json:"zip_values_supported,omitempty"`
 	// AlgValuesSupported is the list of supported JWE "alg" algorithms for
 	// key agreement / key transport (e.g. "ECDH-ES", "ECDH-ES+A128KW").
 	AlgValuesSupported []string `json:"alg_values_supported"`
@@ -211,9 +213,8 @@ type ClaimMeta struct {
 //
 // buildKeyAttestationsRequired returns a non-nil KeyAttestationRequiredMeta
 // only when required is true.  Returning nil omits key_attestations_required
-// from the JSON metadata entirely, which is the correct default for standard
-// wallet compatibility (EUDI reference wallet aborts silently when it sees this
-// field and cannot produce an attestation signed by the issuer's key).
+// from JSON metadata entirely for standard-profile wallets. ETSI-profile
+// wallets require an attestation-backed proof and explicitly configured attesters.
 func buildKeyAttestationsRequired(required bool) *KeyAttestationRequiredMeta {
 	if !required {
 		return nil
@@ -422,6 +423,7 @@ func BuildIssuerMetadata(baseURL, orgSlug string, configs []models.CredentialCon
 	// Advertise implemented encryption to ordinary wallets. Omitting this object
 	// causes wallets requiring response encryption to reject the issuer metadata.
 	encResponseMeta := &CredentialResponseEncryptionMeta{
+		ZipValuesSupported: []string{"DEF"},
 		AlgValuesSupported: []string{"ECDH-ES", "ECDH-ES+A128KW", "ECDH-ES+A256KW"},
 		EncValuesSupported: []string{"A256GCM", "A128CBC-HS256", "A256CBC-HS512"},
 		EncryptionRequired: false,

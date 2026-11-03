@@ -7,6 +7,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/clavex-eu/clavex/internal/models"
 	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
@@ -41,6 +42,22 @@ func ValidateClientAssertionJWT(
 	jtiCache JTICache,
 	extraAudiences ...string,
 ) (clientID string, err error) {
+	return ValidateClientAssertionJWTWithProfile(ctx, assertion, keySet, tokenEndpoint, issuer, jtiCache, models.ClientAssertionProfileStandard, extraAudiences...)
+}
+
+// ValidateClientAssertionJWTWithProfile applies the explicitly registered
+// profile. Standard RFC 7523 audiences remain compatible; FAPI Final requires
+// a single string audience equal to the issuer and PS256/ES256 signatures.
+func ValidateClientAssertionJWTWithProfile(
+	ctx context.Context,
+	assertion string,
+	keySet jwk.Set,
+	tokenEndpoint string,
+	issuer string,
+	jtiCache JTICache,
+	profile string,
+	extraAudiences ...string,
+) (clientID string, err error) {
 	invalid := func(desc string) (string, error) {
 		return "", &TokenError{Code: "invalid_client", Description: desc}
 	}
@@ -55,11 +72,35 @@ func ValidateClientAssertionJWT(
 	}
 
 	clientID = unverified.Issuer()
-	if clientID == "" {
-		clientID = unverified.Subject()
+	if clientID == "" || unverified.Subject() == "" {
+		return invalid("client_assertion iss and sub are required")
 	}
-	if clientID == "" {
-		return invalid("client_assertion missing iss/sub")
+	if unverified.Expiration().IsZero() {
+		return invalid("client_assertion exp is required")
+	}
+	switch profile {
+	case models.ClientAssertionProfileStandard:
+	case models.ClientAssertionProfileFAPIFinal:
+		message, parseErr := jws.Parse([]byte(assertion))
+		if parseErr != nil || len(message.Signatures()) != 1 {
+			return invalid("client_assertion must contain one signed JWT")
+		}
+		var claims struct {
+			Audience json.RawMessage `json:"aud"`
+		}
+		if json.Unmarshal(message.Payload(), &claims) != nil {
+			return invalid("invalid assertion claims")
+		}
+		var audience string
+		if json.Unmarshal(claims.Audience, &audience) != nil || audience != issuer {
+			return invalid("FAPI Final client_assertion aud must be a single issuer string")
+		}
+		alg := message.Signatures()[0].ProtectedHeaders().Algorithm().String()
+		if alg != "PS256" && alg != "ES256" {
+			return invalid("FAPI Final client_assertion algorithm must be PS256 or ES256")
+		}
+	default:
+		return invalid("unknown client assertion profile")
 	}
 	// RFC 7523 §3: both iss and sub MUST be present and MUST equal the client_id.
 	if sub := unverified.Subject(); sub == "" || sub != clientID {
@@ -232,7 +273,8 @@ func ValidateAttestationAssertionJWT(
 
 // validateAttestationPopJWT validates the Client Attestation PoP JWT per
 // draft-ietf-oauth-attestation-based-client-auth-07 §5.2.
-// Required claims: iss (== client_id), aud (includes tokenEndpoint or issuer), exp, jti.
+// Required claims: iss (== client_id), aud (includes tokenEndpoint or issuer), iat, jti.
+// exp is optional; iat bounds the acceptance window even when exp is absent.
 // Unlike private_key_jwt (RFC 7523), no "sub" claim is required.
 func validateAttestationPopJWT(
 	ctx context.Context,
@@ -264,7 +306,16 @@ func validateAttestationPopJWT(
 		return invalid("iss does not match client_id")
 	}
 
-	// Verify signature + exp.
+	now := time.Now()
+	iat := unverified.IssuedAt()
+	if iat.IsZero() || iat.After(now.Add(30*time.Second)) || now.After(iat.Add(5*time.Minute+30*time.Second)) {
+		return invalid("missing or stale iat")
+	}
+	if unverified.JwtID() == "" || len(unverified.JwtID()) > 512 {
+		return invalid("missing or invalid jti")
+	}
+
+	// Verify signature and registered time claims, including exp when present.
 	if _, err = jwt.Parse([]byte(popJWT),
 		jwt.WithKeySet(popKeySet,
 			jws.WithRequireKid(false),
@@ -295,9 +346,13 @@ outer:
 	// jti replay prevention.
 	if jtiCache != nil {
 		if jti := unverified.JwtID(); jti != "" {
-			ttl := time.Until(unverified.Expiration().Add(30 * time.Second))
+			deadline := iat.Add(5*time.Minute + 30*time.Second)
+			if exp := unverified.Expiration(); !exp.IsZero() && exp.Add(30*time.Second).Before(deadline) {
+				deadline = exp.Add(30 * time.Second)
+			}
+			ttl := time.Until(deadline)
 			if ttl <= 0 {
-				ttl = 5 * time.Minute
+				return invalid("expired proof")
 			}
 			used, cacheErr := jtiCache.CheckAndSet(ctx, "pop:jti:"+jti, ttl)
 			if cacheErr != nil {

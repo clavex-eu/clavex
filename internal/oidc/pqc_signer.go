@@ -48,9 +48,9 @@ import (
 	"fmt"
 	"sync"
 
+	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	clavexcrypto "github.com/clavex-eu/clavex/internal/crypto"
 	"github.com/clavex-eu/clavex/internal/repository"
-	"github.com/cloudflare/circl/sign/mldsa/mldsa65"
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -182,22 +182,14 @@ func (s *PQCSigner) load(ctx context.Context) error {
 }
 
 func (s *PQCSigner) bootstrap(ctx context.Context) error {
-	pub, priv, kid, keyEnc, err := s.generateAndEncrypt()
+	pub, _, kid, keyEnc, err := s.generateAndEncrypt()
 	if err != nil {
-		return fmt.Errorf("pqc signer: bootstrap generate key: %w", err)
+		return err
 	}
-
-	if err := s.repo.InsertPQC(ctx, kid, PQCJWAAlgorithm, PQCAlgorithmMLDSA65, keyEnc, pub.Bytes()); err != nil {
-		return fmt.Errorf("pqc signer: bootstrap insert key: %w", err)
+	if _, err = s.repo.ReplaceInstallationKey(ctx, repository.OrgKeyReplacement{KID: kid, Algorithm: PQCJWAAlgorithm, PQCAlgorithm: PQCAlgorithmMLDSA65, KeyEnc: keyEnc, PQCPublicKey: pub.Bytes(), ProvisionOnly: true}); err != nil {
+		return err
 	}
-
-	s.mu.Lock()
-	s.priv = priv
-	s.pub = pub
-	s.kid = kid
-	s.jwkObj = buildPQCJWKObject(pub, kid)
-	s.mu.Unlock()
-	return nil
+	return s.load(ctx)
 }
 
 // Rotate retires the current active ML-DSA-65 key and promotes a freshly
@@ -212,13 +204,7 @@ func (s *PQCSigner) Rotate(ctx context.Context) error {
 		return fmt.Errorf("pqc signer: rotate generate key: %w", err)
 	}
 
-	// Retire the current active key before inserting the new one — the partial
-	// unique index allows only one active PQC row at a time.
-	if err := s.repo.RetireActivePQC(ctx); err != nil {
-		return fmt.Errorf("pqc signer: rotate retire active key: %w", err)
-	}
-
-	if err := s.repo.InsertPQC(ctx, kid, PQCJWAAlgorithm, PQCAlgorithmMLDSA65, keyEnc, pub.Bytes()); err != nil {
+	if _, err := s.repo.ReplaceInstallationKey(ctx, repository.OrgKeyReplacement{KID: kid, Algorithm: PQCJWAAlgorithm, PQCAlgorithm: PQCAlgorithmMLDSA65, KeyEnc: keyEnc, PQCPublicKey: pub.Bytes()}); err != nil {
 		return fmt.Errorf("pqc signer: rotate insert new key: %w", err)
 	}
 

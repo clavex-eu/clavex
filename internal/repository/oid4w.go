@@ -1150,20 +1150,10 @@ func (r *OID4WRepository) GetOrCreateStatusList(ctx context.Context, orgID uuid.
 	return sl, err
 }
 
-// AllocateStatusIndex atomically claims the next free slot in a status list.
-// Returns the index that was allocated and the updated next_slot.
+// AllocateStatusIndex reserves an unpredictable unused slot. The reservation
+// and issued record must commit in the same transaction.
 func (r *OID4WRepository) AllocateStatusIndex(ctx context.Context, listID uuid.UUID) (int, error) {
-	var allocated int
-	err := r.pool.QueryRow(ctx, `
-		UPDATE credential_status_lists
-		SET next_slot = next_slot + 1, updated_at = NOW()
-		WHERE id = $1 AND next_slot < 65536
-		RETURNING next_slot - 1
-	`, listID).Scan(&allocated)
-	if err != nil {
-		return 0, fmt.Errorf("allocate status index: %w", err)
-	}
-	return allocated, nil
+	return r.allocateRandomStatusIndex(ctx, listID)
 }
 
 // GetStatusList fetches a status list by ID.

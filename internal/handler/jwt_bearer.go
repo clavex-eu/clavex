@@ -99,7 +99,9 @@ func (h *OIDCHandler) jwtBearerGrant(c echo.Context) error {
 	}
 
 	tc := h.newTC(issuer)
-	h.applyOrgOverrides(ctx, tc, org, nil)
+	if err := h.applyOrgOverrides(ctx, tc, org, nil); err != nil {
+		return echo.ErrServiceUnavailable
+	}
 
 	// The audience of the issued access token is the requesting client, if
 	// identified; otherwise the external issuer identifies the caller.

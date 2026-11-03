@@ -2,13 +2,58 @@ package repository
 
 import (
 	"context"
+	"crypto/rand"
 	"crypto/x509"
 	"fmt"
+	"math/big"
+	"math/bits"
 	"time"
 
 	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
+
+func (r *OID4WRepository) allocateRandomStatusIndex(ctx context.Context, list uuid.UUID) (int, error) {
+	if _, ok := r.pool.(pgx.Tx); !ok {
+		return 0, fmt.Errorf("status slot reservation requires an issuance transaction")
+	}
+	var occupied []byte
+	var count int
+	if err := r.pool.QueryRow(ctx, `SELECT allocated_slots,next_slot FROM identity.credential_status_lists WHERE id=$1 FOR UPDATE`, list).Scan(&occupied, &count); err != nil {
+		return 0, err
+	}
+	if len(occupied) != 8192 || count < 0 || count >= 65536 {
+		return 0, fmt.Errorf("status list is full or allocation state is invalid")
+	}
+	used := 0
+	for _, value := range occupied {
+		used += bits.OnesCount8(value)
+	}
+	if used != count {
+		return 0, fmt.Errorf("status slot occupancy does not match reservation count")
+	}
+	// Choose a uniform rank among all free slots, including on nearly full
+	// lists. No collision retry limit or predictable sequential fallback.
+	rank, err := rand.Int(rand.Reader, big.NewInt(int64(65536-count)))
+	if err != nil {
+		return 0, err
+	}
+	remaining := int(rank.Int64())
+	for index := 0; index < 65536; index++ {
+		mask := byte(1 << uint(index%8))
+		if occupied[index/8]&mask != 0 {
+			continue
+		}
+		if remaining > 0 {
+			remaining--
+			continue
+		}
+		occupied[index/8] |= mask
+		_, err = r.pool.Exec(ctx, `UPDATE identity.credential_status_lists SET allocated_slots=$2,next_slot=next_slot+1,updated_at=NOW() WHERE id=$1`, list, occupied)
+		return index, err
+	}
+	return 0, fmt.Errorf("status slot occupancy is invalid")
+}
 
 // Status allocation and its eventual issued record must share a transaction.
 // The advisory lock serialises list rollover without upgrading organisation
@@ -58,6 +103,9 @@ func (r *OID4WRepository) RecordCredentialWithStatus(ctx context.Context, org uu
 // Match the immutable signed issuer JWT, never the selectively disclosed
 // presentation serialisation. Locks order this decision against local revoke.
 func (r *OID4WRepository) LockCredentialStatus(ctx context.Context, org, list uuid.UUID, index int, issuerHash, coseHash, vct string) (string, int, error) {
+	if index < 0 || index >= 65536 {
+		return "", 0, fmt.Errorf("invalid credential status index")
+	}
 	var id uuid.UUID
 	if err := r.pool.QueryRow(ctx, `SELECT id FROM identity.issued_credentials WHERE org_id=$1 AND status_list_id=$2 AND status_index=$3
 	 AND (($4<>'' AND issuer_jwt_hash=$4) OR ($5<>'' AND issuer_cose_hash=$5)) AND vct=$6 AND NOT is_revoked AND NOT is_suspended AND (expires_at IS NULL OR expires_at>clock_timestamp()) FOR SHARE`, org, list, index, issuerHash, coseHash, vct).Scan(&id); err != nil {
@@ -65,7 +113,7 @@ func (r *OID4WRepository) LockCredentialStatus(ctx context.Context, org, list uu
 	}
 	var encoded string
 	var bits int
-	err := r.pool.QueryRow(ctx, `SELECT encoded,bits FROM identity.credential_status_lists WHERE id=$1 AND org_id=$2 AND next_slot>$3 FOR SHARE`, list, org, index).Scan(&encoded, &bits)
+	err := r.pool.QueryRow(ctx, `SELECT encoded,bits FROM identity.credential_status_lists WHERE id=$1 AND org_id=$2 AND get_bit(allocated_slots,$3)=1 FOR SHARE`, list, org, index).Scan(&encoded, &bits)
 	return encoded, bits, err
 }
 

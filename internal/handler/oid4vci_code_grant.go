@@ -128,7 +128,40 @@ func (h *OID4VCIHandler) authorizationCodeWalletGrant(c echo.Context, org *model
 		return echo.ErrServiceUnavailable
 	}
 	defer tx.Rollback(ctx)
-	ac, err := repo.ConsumeWalletAuthorizationCode(ctx, oidc.HashToken(c.FormValue("code")))
+	codeHash := oidc.HashToken(c.FormValue("code"))
+	ac, err := repo.ConsumeWalletAuthorizationCode(ctx, codeHash)
+	if errors.Is(err, pgx.ErrNoRows) {
+		// A valid replay invalidates the issuing grant. An unauthorised client,
+		// wrong verifier or wrong sender must not be able to revoke it.
+		used, lookupErr := repo.WalletAuthorizationCode(ctx, codeHash)
+		if lookupErr != nil {
+			return walletGrantError(c, lookupErr)
+		}
+		if used.UsedAt == nil || used.OrgID != org.ID || used.ClientID != client.ID ||
+			used.RedirectURI != c.FormValue("redirect_uri") || oidc.VerifyPKCE(used.PKCEChallenge, c.FormValue("code_verifier")) != nil {
+			return walletTokenError(c, "invalid_grant")
+		}
+		grant, lookupErr := repo.LockWalletGrantForCode(ctx, used.ID, org.ID, client.ID)
+		if lookupErr != nil {
+			return walletGrantError(c, lookupErr)
+		}
+		if !walletClientMatches(grant, client) {
+			return walletTokenError(c, "invalid_grant")
+		}
+		if err := h.walletSender(c, grant, "", false); err != nil {
+			if errors.Is(err, echo.ErrServiceUnavailable) {
+				return err
+			}
+			return walletTokenError(c, "invalid_dpop_proof")
+		}
+		if err := repo.RevokeWalletGrant(ctx, grant.ID); err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		return walletTokenError(c, "invalid_grant")
+	}
 	if err != nil {
 		return walletGrantError(c, err)
 	}
@@ -215,7 +248,14 @@ func (h *OID4VCIHandler) authorizationCodeWalletGrant(c echo.Context, org *model
 		if err != nil {
 			return echo.ErrServiceUnavailable
 		}
-		idToken, err := h.oidcHandler.newTC(h.cfg.BaseURL()+"/"+org.Slug).IssueIDToken(client.ID, ac.Nonce, uc, oidc.ResolveIDTokenAlg(methodClient.IDTokenSignedResponseAlg))
+		tc, err := h.oidcHandler.verificationTC(ctx, h.oidcHandler.issuerFromRequest(c, org.Slug), org.Slug)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		if err := h.oidcHandler.applyOrgOverrides(ctx, tc, org, methodClient); err != nil {
+			return echo.ErrServiceUnavailable
+		}
+		idToken, err := tc.IssueIDToken(client.ID, ac.Nonce, uc, oidc.ResolveIDTokenAlg(methodClient.IDTokenSignedResponseAlg))
 		if err != nil {
 			return echo.ErrServiceUnavailable
 		}
@@ -257,7 +297,10 @@ func (h *OID4VCIHandler) walletAuthorizationJWT(ctx context.Context, g *reposito
 	if json.Unmarshal(g.AuthorizationDetails, &uc.AuthorizationDetails) != nil {
 		return "", echo.ErrServiceUnavailable
 	}
-	tc := h.oidcHandler.newTC(h.cfg.BaseURL() + "/" + org.Slug)
+	tc, err := h.oidcHandler.verificationTC(ctx, h.cfg.BaseURL()+"/"+org.Slug, org.Slug)
+	if err != nil {
+		return "", err
+	}
 	tc.AccessTokenTTL = walletAccessLifetime
 	if remaining := time.Until(g.ExpiresAt); remaining < tc.AccessTokenTTL {
 		tc.AccessTokenTTL = remaining

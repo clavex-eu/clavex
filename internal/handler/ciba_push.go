@@ -208,7 +208,10 @@ func (h *OIDCHandler) PushDeleteDeviceToken(c echo.Context) error {
 // extractUserIDFromBearer validates the bearer access token for the given org
 // and returns the authenticated user's UUID.
 func (h *OIDCHandler) extractUserIDFromBearer(c echo.Context, orgSlug string) (uuid.UUID, error) {
-	tc := h.newTC(h.issuerFromRequest(c, orgSlug))
+	tc, resolveErr := h.verificationTC(c.Request().Context(), h.issuerFromRequest(c, orgSlug), orgSlug)
+	if resolveErr != nil {
+		return uuid.Nil, echo.ErrServiceUnavailable
+	}
 
 	rawToken := extractBearer(c.Request())
 	if rawToken == "" {

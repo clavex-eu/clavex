@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/require"
 )
@@ -37,6 +38,9 @@ func TestSDJWTRejectsDisclosuresOverwritingSignedIdentity(t *testing.T) {
 	for _, name := range []string{"iss", "sub", "vct", "_sd", "_sd_alg"} {
 		t.Run(name, func(t *testing.T) {
 			p := baseParams(t)
+			// Issuance rounds iat down to the hour. Keep this security fixture
+			// valid across the next hour boundary so it reaches disclosure checks.
+			p.TTL = 2 * time.Hour
 			p.DisclosableClaims = map[string]any{name: "attacker"}
 			raw, _, err := IssueSDJWT(p)
 			require.NoError(t, err)

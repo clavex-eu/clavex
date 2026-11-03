@@ -3,6 +3,7 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"github.com/google/uuid"
 	"github.com/jackc/pgx/v5"
 )
 
@@ -27,4 +28,10 @@ func (r *OID4WRepository) ConsumeWalletAuthorizationCode(ctx context.Context, ha
 	// The shared repository can now use this transaction. Its public API and
 	// ordinary OIDC lifecycle remain unchanged.
 	return NewAuthCodeRepository(r.pool).Consume(ctx, hash)
+}
+
+// LockWalletGrantForCode orders replay invalidation against refresh and issuance.
+func (r *OID4WRepository) LockWalletGrantForCode(ctx context.Context, code, org uuid.UUID, client string) (*WalletIssuanceGrant, error) {
+	return scanWalletGrant(r.pool.QueryRow(ctx, `SELECT `+walletGrantColumns+` FROM identity.wallet_issuance_grants g
+ WHERE g.authorization_code_id=$1 AND g.org_id=$2 AND g.client_id=$3 FOR UPDATE`, code, org, client))
 }

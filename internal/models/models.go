@@ -1571,3 +1571,11 @@ func DefaultAccountCenterConfig(orgID uuid.UUID) *AccountCenterConfig {
 		ShowDataExport: true,
 	}
 }
+
+// Client assertion profiles are explicitly configured by a tenant administrator.
+// Requiring PAR alone does not imply adoption of the FAPI 2.0 Final profile.
+const (
+	ClientAssertionProfileMetadataKey = "clavex_client_assertion_profile"
+	ClientAssertionProfileStandard    = "standard"
+	ClientAssertionProfileFAPIFinal   = "fapi2_final"
+)

@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/rand"
 	"crypto/rsa"
+	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -14,6 +15,7 @@ import (
 	"github.com/google/uuid"
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwk"
+	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -290,4 +292,52 @@ func TestValidateClientAssertion_UnavailableReplayStoreFailsClosed(t *testing.T)
 	key := generateRSAKey(t)
 	_, err := oidc.ValidateClientAssertionJWT(context.Background(), makeAssertion(t, key), publicKeySet(t, key), caTokenEndpoint, caIssuer, unavailableClientJTICache{})
 	require.ErrorIs(t, err, oidc.ErrClientReplayUnavailable)
+}
+
+// Raw claims preserve the aud JSON representation, which Final constrains.
+func TestClientAssertionProfiles(t *testing.T) {
+	priv := generateRSAKey(t)
+	ks := publicKeySet(t, priv)
+	cases := []struct {
+		name     string
+		profile  string
+		audience any
+		omit     string
+		alg      jwa.SignatureAlgorithm
+		valid    bool
+	}{
+		{"standard endpoint", "standard", caTokenEndpoint, "", jwa.RS256, true},
+		{"standard array", "standard", []string{caIssuer, "https://other.example"}, "", jwa.PS256, true},
+		{"missing issuer", "standard", caIssuer, "iss", jwa.PS256, false},
+		{"missing subject", "standard", caIssuer, "sub", jwa.PS256, false},
+		{"missing expiry", "standard", caIssuer, "exp", jwa.PS256, false},
+		{"final issuer", "fapi2_final", caIssuer, "", jwa.PS256, true},
+		{"final token endpoint", "fapi2_final", caTokenEndpoint, "", jwa.PS256, false},
+		{"final PAR endpoint", "fapi2_final", caIssuer + "/par", "", jwa.PS256, false},
+		{"final singleton array", "fapi2_final", []string{caIssuer}, "", jwa.PS256, false},
+		{"final multi array", "fapi2_final", []string{caIssuer, "https://other.example"}, "", jwa.PS256, false},
+		{"final RS256", "fapi2_final", caIssuer, "", jwa.RS256, false},
+		{"unknown profile", "unexpected", caIssuer, "", jwa.PS256, false},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			claims := map[string]any{"iss": caClientID, "sub": caClientID, "aud": tc.audience, "exp": time.Now().Add(time.Minute).Unix(), "jti": uuid.NewString()}
+			delete(claims, tc.omit)
+			payload, err := json.Marshal(claims)
+			require.NoError(t, err)
+			headers := jws.NewHeaders()
+			require.NoError(t, headers.Set(jws.KeyIDKey, testKID))
+			signed, err := jws.Sign(payload, jws.WithKey(tc.alg, priv, jws.WithProtectedHeaders(headers)))
+			require.NoError(t, err)
+			_, err = oidc.ValidateClientAssertionJWTWithProfile(context.Background(), string(signed), ks, caTokenEndpoint, caIssuer, nil, tc.profile, caIssuer+"/par")
+			if tc.valid {
+				require.NoError(t, err)
+			} else {
+				require.Error(t, err)
+				var te *oidc.TokenError
+				require.ErrorAs(t, err, &te)
+				require.Equal(t, "invalid_client", te.Code)
+			}
+		})
+	}
 }

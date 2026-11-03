@@ -3,7 +3,9 @@ package repository
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/jackc/pgx/v5"
 	"time"
 
 	"github.com/google/uuid"
@@ -157,12 +159,16 @@ func (r *AuthCodeRepository) GetUsedByHash(ctx context.Context, codeHash string)
 	var familyID *uuid.UUID
 	err := r.pool.QueryRow(ctx, `
 		SELECT id, org_id, client_id, user_id, code_hash,
-		       COALESCE(access_token_jti,''), refresh_family_id
+		       COALESCE(access_token_jti,''), refresh_family_id, redirect_uri,
+		       COALESCE(pkce_challenge,''), COALESCE(pkce_method,''), COALESCE(dpop_jkt,'')
 		FROM   authorization_codes
 		WHERE  code_hash = $1 AND used_at IS NOT NULL
-	`, codeHash).Scan(&ac.ID, &ac.OrgID, &ac.ClientID, &ac.UserID, &ac.CodeHash, &jti, &familyID)
+	`, codeHash).Scan(&ac.ID, &ac.OrgID, &ac.ClientID, &ac.UserID, &ac.CodeHash, &jti, &familyID, &ac.RedirectURI, &ac.PKCEChallenge, &ac.PKCEMethod, &ac.DpopJKT)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return nil, nil
+	}
 	if err != nil {
-		return nil, nil //nolint:nilerr // not found → treat same as not used
+		return nil, fmt.Errorf("lookup used authorization code: %w", err)
 	}
 	if jti != nil {
 		ac.AccessTokenJTI = *jti
@@ -174,7 +180,7 @@ func (r *AuthCodeRepository) GetUsedByHash(ctx context.Context, codeHash string)
 }
 
 // SetRevocationData records the access token JTI and refresh token family_id
-// from a successful code exchange. Called asynchronously; both values are used
+// from a successful code exchange before returning tokens; both values are used
 // together for targeted revocation if the code is later replayed (RFC 6749 §4.1.2).
 func (r *AuthCodeRepository) SetRevocationData(ctx context.Context, codeHash, jti string, familyID uuid.UUID) error {
 	_, err := r.pool.Exec(ctx,

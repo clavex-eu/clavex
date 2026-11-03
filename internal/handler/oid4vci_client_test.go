@@ -110,8 +110,7 @@ func TestVCIAuthorizationCodeDeferredRefreshAndJWTBinding(t *testing.T) {
 	atHash, ok := parsedID.Get("at_hash")
 	require.True(t, ok)
 	require.Equal(t, oidc.ComputeAtHash(tokens.Access), atHash)
-	rec = walletHTTP(t, f, basicWallet(h.Token, id, secret), "token", form, nil, "", "", nil)
-	require.Equal(t, 400, rec.Code)
+	// Keep this renewal/delivery flow free of replay; invalidation has a separate regression.
 	txn, _ := requestDeferred(t, f, tokens)
 	// Expire only the database access token to exercise renewal without waiting.
 	_, err = f.pool.Exec(ctx, `UPDATE identity.wallet_issuance_tokens SET expires_at=clock_timestamp()-interval '1 second' WHERE token_hash=$1`, hashToken(tokens.Access))
@@ -239,7 +238,8 @@ func TestVCIWalletAttestationInstanceAndParentLifecycle(t *testing.T) {
 		require.NoError(t, header.Set(jws.KeyIDKey, "provider"))
 		raw, err := jwt.Sign(attest, jwt.WithKey(jwa.ES256, provider, jws.WithProtectedHeaders(header)))
 		require.NoError(t, err)
-		pop, err := jwt.NewBuilder().Issuer(id).Audience([]string{"https://issuer.example/" + f.org.Slug + "/token"}).IssuedAt(time.Now()).Expiration(time.Now().Add(time.Minute)).JwtID(uuid.NewString()).Build()
+		// Reference EUDI wallet PoP has iat/jti, without exp.
+		pop, err := jwt.NewBuilder().Issuer(id).Audience([]string{"https://issuer.example/" + f.org.Slug}).IssuedAt(time.Now()).JwtID(uuid.NewString()).Build()
 		require.NoError(t, err)
 		ph := jws.NewHeaders()
 		require.NoError(t, ph.Set(jws.TypeKey, "oauth-client-attestation-pop+jwt"))
@@ -249,7 +249,17 @@ func TestVCIWalletAttestationInstanceAndParentLifecycle(t *testing.T) {
 	}
 	offer := deferredOffer(t, f, nil)
 	form := url.Values{"grant_type": {"urn:ietf:params:oauth:grant-type:pre-authorized_code"}, "pre-authorized_code": {offer.PreAuthCode}, "client_id": {id}, "client_assertion_type": {"urn:ietf:params:oauth:client-assertion-type:jwt-client-attestation"}, "client_assertion": {assertion(instance)}}
-	tokens := decodeWalletTokens(t, walletHTTP(t, f, withResolver(h.Token), "token", form, nil, "", "", nil))
+	// Match the Android wallet header transport on initial issuance, then use
+	// the form transport below for refresh to cover both authentication paths.
+	attest, pop, _ := strings.Cut(form.Get("client_assertion"), "~")
+	form.Del("client_assertion")
+	form.Del("client_assertion_type")
+	headerToken := func(c echo.Context) error {
+		c.Request().Header.Set("OAuth-Client-Attestation", attest)
+		c.Request().Header.Set("OAuth-Client-Attestation-PoP", pop)
+		return withResolver(h.Token)(c)
+	}
+	tokens := decodeWalletTokens(t, walletHTTP(t, f, headerToken, "token", form, nil, "", "", nil))
 	grant, _, _, err := f.h.repo.WalletGrantForToken(ctx, hashToken(tokens.Access), "access")
 	require.NoError(t, err)
 	require.NotEmpty(t, grant.AttestationJKT)
@@ -340,4 +350,17 @@ func TestVCIAuthorizationCodePublicDPoPBindingAndRAR(t *testing.T) {
 	grant, _, _, err := f.h.repo.WalletGrantForToken(ctx, hashToken(renewed.Access), "access")
 	require.NoError(t, err)
 	require.Equal(t, base64.RawURLEncoding.EncodeToString(thumb), grant.DPoPJKT)
+	// Possession of the code with a different DPoP key cannot revoke this grant.
+	wrong = walletDPoP(t, vciTestHolder(t), "https://issuer.example/"+f.org.Slug+"/token", "", false)
+	rec = walletHTTP(t, f, h.Token, "token", form, nil, "", wrong, nil)
+	require.Equal(t, 400, rec.Code, rec.Body.String())
+	grant, _, _, err = f.h.repo.WalletGrantForToken(ctx, hashToken(renewed.Access), "access")
+	require.NoError(t, err)
+	require.Nil(t, grant.RevokedAt)
+	valid = walletDPoP(t, key, "https://issuer.example/"+f.org.Slug+"/token", "", false)
+	rec = walletHTTP(t, f, h.Token, "token", form, nil, "", valid, nil)
+	require.Equal(t, 400, rec.Code, rec.Body.String())
+	grant, _, _, err = f.h.repo.WalletGrantForToken(ctx, hashToken(renewed.Access), "access")
+	require.NoError(t, err)
+	require.NotNil(t, grant.RevokedAt)
 }

@@ -56,7 +56,11 @@ func attestedProof(t *testing.T, holder, attester *ecdsa.PrivateKey, issuer, non
 	require.NoError(t, err)
 	ka, err := jws.Sign(payload, jws.WithKey(jwa.ES256, attester, jws.WithProtectedHeaders(headers)))
 	require.NoError(t, err)
-	return vciTestProof(t, holder, issuer, nonce, func(_ map[string]any, h jws.Headers) { require.NoError(t, h.Set("key_attestation", string(ka))) })
+	return vciTestProof(t, holder, issuer, nonce, func(_ map[string]any, h jws.Headers) {
+		require.NoError(t, h.Remove(jws.JWKKey))
+		require.NoError(t, h.Set(jws.KeyIDKey, "0"))
+		require.NoError(t, h.Set("key_attestation", string(ka)))
+	})
 }
 
 func TestVCIAttestationTrustNonceAndHolderBinding(t *testing.T) {
@@ -67,7 +71,9 @@ func TestVCIAttestationTrustNonceAndHolderBinding(t *testing.T) {
 	check := func(t *testing.T, raw string, org *models.Organization) error {
 		req := &credentialRequest{Proofs: &credentialProofs{JWT: []string{raw}}}
 		proofs, err := validateCredentialProofs(req, issuer, "dc+sd-jwt", time.Now())
-		require.NoError(t, err)
+		if err != nil {
+			return err
+		}
 		return validateCredentialAttestations(org, cfg, req, proofs, time.Now())
 	}
 	raw := attestedProof(t, holder, attester, issuer, nonce, nil)
@@ -411,4 +417,56 @@ func TestVCIAccessTokenLifetimeAndCertificateBinding(t *testing.T) {
 	require.True(t, credentialAccessTokenValid(bound, req, now))
 	req.TLS.PeerCertificates = []*x509.Certificate{{Raw: []byte("other certificate")}}
 	require.False(t, credentialAccessTokenValid(bound, req, now))
+}
+
+func TestVCIAttestedProofKeyIndex(t *testing.T) {
+	issuer, nonce := "https://issuer.example/org", "challenge"
+	holder, attester := vciTestHolder(t), vciTestHolder(t)
+	raw := attestedProof(t, holder, attester, issuer, nonce, nil)
+	for _, tc := range []struct {
+		name  string
+		edit  func(jws.Headers)
+		valid bool
+	}{
+		{"index zero", func(jws.Headers) {}, true},
+		{"embedded jwk without index", func(h jws.Headers) {
+			require.NoError(t, h.Remove(jws.KeyIDKey))
+			p, e := jwk.FromRaw(&holder.PublicKey)
+			require.NoError(t, e)
+			require.NoError(t, h.Set(jws.JWKKey, p))
+		}, true},
+		{"out of range", func(h jws.Headers) { require.NoError(t, h.Set(jws.KeyIDKey, "1")) }, false},
+		{"negative", func(h jws.Headers) { require.NoError(t, h.Set(jws.KeyIDKey, "-1")) }, false},
+		{"non canonical", func(h jws.Headers) { require.NoError(t, h.Set(jws.KeyIDKey, "00")) }, false},
+		{"DID", func(h jws.Headers) { require.NoError(t, h.Set(jws.KeyIDKey, "did:example:key")) }, false},
+		{"missing index", func(h jws.Headers) { require.NoError(t, h.Remove(jws.KeyIDKey)) }, false},
+		{"missing attestation", func(h jws.Headers) { require.NoError(t, h.Remove("key_attestation")) }, false},
+		{"malformed attestation", func(h jws.Headers) { require.NoError(t, h.Set("key_attestation", "invalid")) }, false},
+		{"ambiguous jwk", func(h jws.Headers) {
+			p, e := jwk.FromRaw(&holder.PublicKey)
+			require.NoError(t, e)
+			require.NoError(t, h.Set(jws.JWKKey, p))
+		}, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			msg, e := jws.Parse([]byte(raw))
+			require.NoError(t, e)
+			h := msg.Signatures()[0].ProtectedHeaders()
+			tc.edit(h)
+			proof, e := jws.Sign(msg.Payload(), jws.WithKey(jwa.ES256, holder, jws.WithProtectedHeaders(h)))
+			require.NoError(t, e)
+			_, e = validateCredentialProofs(&credentialRequest{Proofs: &credentialProofs{JWT: []string{string(proof)}}}, issuer, "dc+sd-jwt", time.Now())
+			if tc.valid {
+				require.NoError(t, e)
+			} else {
+				require.Error(t, e)
+			}
+		})
+	}
+	// The selected key must be public even when an attester signs the payload.
+	private, e := jwk.FromRaw(holder)
+	require.NoError(t, e)
+	raw = attestedProof(t, holder, attester, issuer, nonce, func(c map[string]any, _ jws.Headers) { c["attested_keys"] = []any{private} })
+	_, e = validateCredentialProofs(&credentialRequest{Proofs: &credentialProofs{JWT: []string{raw}}}, issuer, "dc+sd-jwt", time.Now())
+	require.Error(t, e)
 }

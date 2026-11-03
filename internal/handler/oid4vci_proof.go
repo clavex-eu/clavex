@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/http"
+	"strconv"
 	"strings"
 	"time"
 
@@ -80,7 +81,9 @@ func (r *credentialRequest) proofJWTs() ([]string, error) {
 
 // verifyCredentialProofKey verifies possession of the supplied public key. An
 // x5c leaf is a key container here, not an attestation of wallet/issuer trust.
-// DID/attestation kid resolution is not supported and must never skip checking.
+// An ETSI numeric kid selects a key from key_attestation. This is only a key
+// container here; validateCredentialAttestations must authenticate the attester
+// and bind the selected key and nonce before any issuance or deferred request.
 func verifyCredentialProofKey(raw string) (jwk.Key, error) {
 	if strings.Count(raw, ".") != 2 {
 		return nil, invalidCredentialProof("proof must be a compact signed JWT")
@@ -103,8 +106,33 @@ func verifyCredentialProofKey(raw string) (jwk.Key, error) {
 	key := hdr.JWK()
 	chain := hdr.X509CertChain()
 	hasChain := chain != nil && chain.Len() > 0
-	if hdr.KeyID() != "" || (key != nil && hasChain) {
+	if key != nil && hasChain {
 		return nil, invalidCredentialProof("ambiguous or unsupported proof key reference")
+	}
+	if kid := hdr.KeyID(); kid != "" {
+		value, present := hdr.Get("key_attestation")
+		attestation, ok := value.(string)
+		if key != nil || hasChain || !present || !ok || len(attestation) > 128*1024 {
+			return nil, invalidCredentialProof("ambiguous or unsupported proof key reference")
+		}
+		index, err := strconv.Atoi(kid)
+		if err != nil || index < 0 || index >= maxCredentialProofs || strconv.Itoa(index) != kid {
+			return nil, invalidCredentialProof("invalid attested key index")
+		}
+		message, err := jws.Parse([]byte(attestation))
+		if err != nil || len(message.Signatures()) != 1 {
+			return nil, invalidCredentialProof("invalid key attestation JWT")
+		}
+		var claims struct {
+			Keys []json.RawMessage `json:"attested_keys"`
+		}
+		if json.Unmarshal(message.Payload(), &claims) != nil || len(claims.Keys) > maxCredentialProofs || index >= len(claims.Keys) {
+			return nil, invalidCredentialProof("invalid attested key index")
+		}
+		key, err = jwk.ParseKey(claims.Keys[index])
+		if err != nil {
+			return nil, invalidCredentialProof("invalid attested proof key")
+		}
 	}
 	if key == nil && hasChain {
 		encoded, ok := chain.Get(0)

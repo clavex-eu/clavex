@@ -203,7 +203,6 @@ func TestValidateAuthorizeRequest_OID4VCI_NoOpenIDScope(t *testing.T) {
 	assert.Equal(t, "openid", req2.Scope)
 }
 
-
 func TestValidateAuthorizeRequest_FAPI2_RequiresPAR(t *testing.T) {
 	c := confidentialClient("https://app.example.com/callback")
 	c.RequestObjectSigningAlg = "PS256"
@@ -327,11 +326,11 @@ func TestValidateAuthorizeRequest_HybridRejectedWhenNotRegistered(t *testing.T) 
 // ── resolveAcr ───────────────────────────────────────────────────────────────
 
 func TestResolveAcr_EmptyReturnsEmpty(t *testing.T) {
-	assert.Equal(t, "", resolveAcr(""))
+	assert.Equal(t, "", ResolveACR(""))
 }
 
 func TestResolveAcr_WhitespaceOnlyReturnsEmpty(t *testing.T) {
-	assert.Equal(t, "", resolveAcr("   "))
+	assert.Equal(t, "", ResolveACR("   "))
 }
 
 func TestSanitizeErrorDescription(t *testing.T) {
@@ -353,8 +352,7 @@ func TestSanitizeErrorDescription(t *testing.T) {
 
 func TestResolveAcr_AnyValueReturnsZero(t *testing.T) {
 	// Any non-empty acr_values → server satisfies with level "0" (password auth).
-	assert.Equal(t, "0", resolveAcr("0"))
-	assert.Equal(t, "0", resolveAcr("urn:mace:incommon:iap:bronze"))
-	assert.Equal(t, "0", resolveAcr("eidas1 eidas2"))
+	assert.Equal(t, "0", ResolveACR("0"))
+	assert.Equal(t, "0", ResolveACR("urn:mace:incommon:iap:bronze"))
+	assert.Equal(t, "0", ResolveACR("eidas1 eidas2"))
 }
-

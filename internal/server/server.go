@@ -56,27 +56,28 @@ import (
 
 // Server wraps the Echo instance and holds shared dependencies.
 type Server struct {
-	echo           *echo.Echo
-	cfg            *config.Config
-	pool           *pgxpool.Pool
-	enc            *crypto.Encryptor
-	dispatcher     *audit.Dispatcher
-	retention      *audit.RetentionWorker
-	gdprWorker     *gdprpkg.RetentionWorker
-	webhookDisp    *webhook.Dispatcher
-	webhookRepo    *repository.WebhookRepository
-	licenseChecker *license.Checker
-	ssfDisp        *ssf.Dispatcher
-	pamNotifier    *alerting.PAMNotifier
-	feedClient     *shield.FeedClient      // nil when distributed threat feed disabled
-	merkleSealer   *merkle.Sealer          // nil when signing key is not configured
-	oidcH          *handler.OIDCHandler    // kept for post-New wiring (e.g. WithPQCSigner)
-	fedH           *federation.Handler     // kept for post-New wiring (WithEncKeys)
-	dbSigner       *oidc.DBSigner          // nil unless key_backend=db; target of scheduled global OIDC rotation
-	pqcSigner      *oidc.PQCSigner         // nil unless PQC enabled; target of scheduled global PQC rotation
-	orgSigners     *oidc.OrgSignerCache    // nil unless key_backend=db; target of scheduled per-org OIDC rotation
-	orgPQCSigners  *oidc.OrgPQCSignerCache // nil unless PQC enabled+key_backend=db; target of scheduled per-org PQC rotation
-	deviceMTLSSrv  *http.Server            // nil unless HTTP.DeviceMTLSAddr is configured
+	tenantKeyRotationH *handler.KeyRotationHandler
+	echo               *echo.Echo
+	cfg                *config.Config
+	pool               *pgxpool.Pool
+	enc                *crypto.Encryptor
+	dispatcher         *audit.Dispatcher
+	retention          *audit.RetentionWorker
+	gdprWorker         *gdprpkg.RetentionWorker
+	webhookDisp        *webhook.Dispatcher
+	webhookRepo        *repository.WebhookRepository
+	licenseChecker     *license.Checker
+	ssfDisp            *ssf.Dispatcher
+	pamNotifier        *alerting.PAMNotifier
+	feedClient         *shield.FeedClient      // nil when distributed threat feed disabled
+	merkleSealer       *merkle.Sealer          // nil when signing key is not configured
+	oidcH              *handler.OIDCHandler    // kept for post-New wiring (e.g. WithPQCSigner)
+	fedH               *federation.Handler     // kept for post-New wiring (WithEncKeys)
+	dbSigner           *oidc.DBSigner          // nil unless key_backend=db; target of scheduled global OIDC rotation
+	pqcSigner          *oidc.PQCSigner         // nil unless PQC enabled; target of scheduled global PQC rotation
+	orgSigners         *oidc.OrgSignerCache    // nil unless key_backend=db; target of scheduled per-org OIDC rotation
+	orgPQCSigners      *oidc.OrgPQCSignerCache // nil unless PQC enabled+key_backend=db; target of scheduled per-org PQC rotation
+	deviceMTLSSrv      *http.Server            // nil unless HTTP.DeviceMTLSAddr is configured
 }
 
 // SSFDispatcher returns the SSF event dispatcher. Used by workers that need
@@ -105,6 +106,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 	// (e.g. the license Checker, wired via WithLicense) reads it lazily through
 	// this pointer, which is non-nil by the time any request is served.
 	var srvRef *Server
+	var tenantKeyRotationH *handler.KeyRotationHandler
 
 	// ── Trusted-proxy IP extraction ───────────────────────────────────────────
 	// When running behind a reverse proxy or Kubernetes ingress, RemoteAddr is the
@@ -767,6 +769,7 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		tenant.POST("/oid4vci/notification", oid4vciH.Notification)
 		// Status list (Token Status List — IETF draft-ietf-oauth-status-list)
 		tenant.GET("/oid4vci/status-list/:list_id", oid4vciH.StatusList)
+		tenant.GET("/oid4vci/iaca-crl/:fingerprint", oid4vciH.MdocIACACRL)
 		// SSE push for credential lifecycle events (revoked / restored).
 		// Wallet subscribes by presenting its SD-JWT as a Bearer token.
 		tenant.GET("/oid4vci/status-updates", oid4vciH.StatusUpdates)
@@ -929,13 +932,6 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		adminOrgs.GET("/:id/feature-flags/:key/overrides", orgs.ListFlagOverrides)
 		adminOrgs.PUT("/:id/feature-flags/:key/overrides", orgs.SetFlagOverride)
 		adminOrgs.DELETE("/:id/feature-flags/:key/overrides", orgs.DeleteFlagOverride)
-		// BYOK: per-org signing key management (only available with key_backend=db)
-		if len(orgSigners) > 0 && orgSigners[0] != nil {
-			orgKeyH := handler.NewOrgSigningKeyHandler(pool, orgSigners[0])
-			adminOrgs.GET("/:id/signing-key", orgKeyH.Get)
-			adminOrgs.PUT("/:id/signing-key", orgKeyH.Upsert)
-			adminOrgs.DELETE("/:id/signing-key", orgKeyH.Delete)
-		}
 
 		// Admin API keys — superadmin only
 		adminAPIKeys := admin.Group("/superadmin/api-keys", middleware.RequireSuperAdmin())
@@ -1667,14 +1663,27 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		// Public scope-discovery endpoint (no auth guard — safe, read-only, no PII).
 		orgScoped.GET("/agent-tokens/mcp-scopes", agentTokenH.MCPScopes)
 
-		// ── Signing-key rotation policy (global OIDC/PQC keys) ────────────────
+		// Tenant security administrators manage tenant keys; installation
+		// superadmins manage global keys through the separate endpoints above.
 		keyRotationH := handler.NewKeyRotationHandler(cfg, pool)
-		keyRotation := orgScoped.Group("/key-rotation", middleware.RequireResourcePermission("security"))
+		tenantKeyRotationH = keyRotationH
+		var tenantRSA *oidc.OrgSignerCache
+		if len(orgSigners) > 0 {
+			tenantRSA = orgSigners[0]
+		}
+		// Avoid putting a typed nil into the rotator interface.
+		if tenantRSA != nil {
+			keyRotationH.WithOrgRotators(tenantRSA, nil)
+			orgKeyH := handler.NewOrgSigningKeyHandler(pool, tenantRSA, audit.NewEmitter(cfg.Auth.IssuerBase, repository.NewAuditRepository(pool)))
+			orgKeys := orgScoped.Group("/signing-key", middleware.RequireTenantKeyAdministrator(), middleware.RequireResourcePermission("security"))
+			orgKeys.GET("", orgKeyH.Get)
+			orgKeys.PUT("", orgKeyH.Upsert)
+			orgKeys.DELETE("", orgKeyH.Delete)
+		}
+		keyRotation := orgScoped.Group("/key-rotation", middleware.RequireTenantKeyAdministrator(), middleware.RequireResourcePermission("security"))
 		keyRotation.GET("", keyRotationH.Status)
-		// OIDC keys are now per-org, so an org's security admin manages their own
-		// OIDC rotation policy here. PQC is still a process-global singleton, so
-		// SetPolicy enforces superadmin-only for kind=pqc internally.
 		keyRotation.PUT("/:kind", keyRotationH.SetPolicy)
+		keyRotation.POST("/:kind/rotate", keyRotationH.Rotate)
 
 		// ── Fine-Grained Authorization (OpenFGA ReBAC) ────────────────────────
 		var fgaClient *fga.Client
@@ -2015,21 +2024,22 @@ func New(cfg *config.Config, pool *pgxpool.Pool, rdb redis.UniversalClient, keys
 		Msg("routes registered")
 
 	srvRef = &Server{
-		echo:         e,
-		cfg:          cfg,
-		pool:         pool,
-		enc:          enc,
-		dispatcher:   dispatcher,
-		retention:    retentionWorker,
-		gdprWorker:   gdprWorker,
-		webhookDisp:  webhooks.Dispatcher(),
-		webhookRepo:  webhookRepo,
-		ssfDisp:      ssfDisp,
-		pamNotifier:  pamNotifier,
-		feedClient:   feedClient,
-		merkleSealer: merkleSealer,
-		oidcH:        oidcH,
-		fedH:         fedH,
+		tenantKeyRotationH: tenantKeyRotationH,
+		echo:               e,
+		cfg:                cfg,
+		pool:               pool,
+		enc:                enc,
+		dispatcher:         dispatcher,
+		retention:          retentionWorker,
+		gdprWorker:         gdprWorker,
+		webhookDisp:        webhooks.Dispatcher(),
+		webhookRepo:        webhookRepo,
+		ssfDisp:            ssfDisp,
+		pamNotifier:        pamNotifier,
+		feedClient:         feedClient,
+		merkleSealer:       merkleSealer,
+		oidcH:              oidcH,
+		fedH:               fedH,
 	}
 	// Keep a typed reference to the DB signer (if that is the active backend)
 	// so the scheduled key-rotation worker can call Rotate() on it.
@@ -2060,6 +2070,9 @@ func (s *Server) WithOrgPQCSigners(cache *oidc.OrgPQCSignerCache) *Server {
 		s.oidcH.WithOrgPQCSigners(cache)
 	}
 	s.orgPQCSigners = cache
+	if s.tenantKeyRotationH != nil && s.orgSigners != nil && cache != nil {
+		s.tenantKeyRotationH.WithOrgRotators(s.orgSigners, cache)
+	}
 	return s
 }
 

@@ -240,13 +240,19 @@ func TestWalletStatusStepUpRevocationAndListRollover(t *testing.T) {
 	user, err := f.h.users.Create(ctx, f.org.ID, "stepup-status@example.test", nil, nil)
 	require.NoError(t, err)
 	raw, holder, first := issueStatusCredential(t, f, &user.ID)
-	_, err = f.pool.Exec(ctx, `UPDATE identity.credential_status_lists SET next_slot=65535 WHERE id=$1`, first.StatusListID)
+	// Fill every slot except one without freeing the first issued binding.
+	hole := 65535
+	if *first.StatusIndex == hole {
+		hole--
+	}
+	_, err = f.pool.Exec(ctx, `UPDATE identity.credential_status_lists SET next_slot=65535,allocated_slots=set_bit(decode(repeat('ff',8192),'hex'),$2,0) WHERE id=$1`, first.StatusListID, hole)
 	require.NoError(t, err)
 	_, _, last := issueStatusCredential(t, f, &user.ID)
-	require.Equal(t, 65535, *last.StatusIndex)
+	require.Equal(t, hole, *last.StatusIndex)
 	_, _, rolled := issueStatusCredential(t, f, &user.ID)
 	require.NotEqual(t, *last.StatusListID, *rolled.StatusListID)
-	require.Zero(t, *rolled.StatusIndex)
+	require.GreaterOrEqual(t, *rolled.StatusIndex, 0)
+	require.Less(t, *rolled.StatusIndex, 65536)
 	h := NewWalletStepUpHandler(f.pool, session.NewStore(f.h.rdb), f.h.keys, f.h.cfg)
 	invoke := func() *httptest.ResponseRecorder {
 		challenge := &session.WalletStepUpChallenge{ID: uuid.NewString(), OrgID: f.org.ID.String(), OrgSlug: f.org.Slug, UserID: user.ID.String(), Nonce: uuid.NewString(), Status: "pending", VCTs: []string{f.cfg.VCT}, IssuedAfter: time.Now().Add(-2 * time.Hour), ExpiresAt: time.Now().Add(time.Minute)}

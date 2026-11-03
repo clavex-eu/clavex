@@ -5,9 +5,11 @@ package oid4w
 // external lists. This is not W3C StatusList2021 or an RFC 9457 document.
 
 import (
+	"bytes"
 	"compress/zlib"
 	"crypto"
 	"crypto/rsa"
+	"crypto/x509"
 	"encoding/base64"
 	"errors"
 	"fmt"
@@ -16,7 +18,9 @@ import (
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/lestrrat-go/jwx/v2/cert"
 	"github.com/lestrrat-go/jwx/v2/jwa"
+	"github.com/lestrrat-go/jwx/v2/jwk"
 	"github.com/lestrrat-go/jwx/v2/jws"
 	"github.com/lestrrat-go/jwx/v2/jwt"
 )
@@ -140,15 +144,17 @@ func (sl *StatusList) IsRevoked(index int) (bool, error) {
 
 // StatusListJWTParams are the parameters for signing a status list JWT.
 type StatusListJWTParams struct {
-	Issuer     string
-	ListID     uuid.UUID // becomes the "sub" / URL path of the list
-	StatusList *StatusList
-	TTL        time.Duration
-	ListURI    string
-	Signer     crypto.Signer
-	Algorithm  jwa.SignatureAlgorithm
-	PrivateKey *rsa.PrivateKey
-	KID        string
+	X5C                  *cert.Chain
+	CertificateExpiresAt time.Time
+	Issuer               string
+	ListID               uuid.UUID // becomes the "sub" / URL path of the list
+	StatusList           *StatusList
+	TTL                  time.Duration
+	ListURI              string
+	Signer               crypto.Signer
+	Algorithm            jwa.SignatureAlgorithm
+	PrivateKey           *rsa.PrivateKey
+	KID                  string
 }
 
 // IssueStatusListJWT signs the status list as a JWT.
@@ -187,12 +193,51 @@ func IssueStatusListJWT(p StatusListJWTParams) (string, error) {
 	}
 
 	now := time.Now()
+	expires := now.Add(p.TTL)
+	if !p.CertificateExpiresAt.IsZero() && p.CertificateExpiresAt.Before(expires) {
+		expires = p.CertificateExpiresAt
+	}
+	if p.X5C != nil {
+		if p.X5C.Len() == 0 {
+			return "", fmt.Errorf("empty status certificate chain")
+		}
+		publicDER, err := x509.MarshalPKIXPublicKey(signer.Public())
+		if err != nil {
+			return "", err
+		}
+		for i := 0; i < p.X5C.Len(); i++ {
+			raw, _ := p.X5C.Get(i)
+			der, err := base64.StdEncoding.DecodeString(string(raw))
+			if err != nil {
+				return "", fmt.Errorf("invalid status certificate encoding")
+			}
+			certificate, err := x509.ParseCertificate(der)
+			if err != nil {
+				return "", fmt.Errorf("invalid status certificate")
+			}
+			if now.Before(certificate.NotBefore) || !now.Before(certificate.NotAfter) {
+				return "", fmt.Errorf("status certificate is not currently valid")
+			}
+			if i == 0 {
+				expected, err := x509.MarshalPKIXPublicKey(certificate.PublicKey)
+				if err != nil || !bytes.Equal(publicDER, expected) || certificate.IsCA || certificate.KeyUsage&x509.KeyUsageDigitalSignature == 0 {
+					return "", fmt.Errorf("status certificate does not match signing key")
+				}
+			}
+			if certificate.NotAfter.Before(expires) {
+				expires = certificate.NotAfter
+			}
+		}
+	}
+	if !expires.After(now) {
+		return "", fmt.Errorf("status certificate lifetime exhausted")
+	}
 	tok, err := jwt.NewBuilder().
 		JwtID(uuid.NewString()).
 		Issuer(p.Issuer).
 		Subject(p.ListURI).
 		IssuedAt(now).
-		Expiration(now.Add(p.TTL)).
+		Expiration(expires).
 		Claim("ttl", 60).
 		Claim("status_list", map[string]any{
 			"bits": p.StatusList.Bits(),
@@ -206,6 +251,31 @@ func IssueStatusListJWT(p StatusListJWTParams) (string, error) {
 	hdrs := jws.NewHeaders()
 	if p.KID != "" {
 		_ = hdrs.Set(jws.KeyIDKey, p.KID)
+	}
+	// Publish only the signer's public key. Consumers must still establish
+	// issuer trust independently; an embedded JWK is not itself a trust anchor.
+	publicJWK, err := jwk.FromRaw(signer.Public())
+	if err != nil {
+		return "", err
+	}
+	if err = publicJWK.Set(jwk.KeyUsageKey, "sig"); err != nil {
+		return "", err
+	}
+	if err = publicJWK.Set(jwk.AlgorithmKey, alg); err != nil {
+		return "", err
+	}
+	if p.KID != "" {
+		if err = publicJWK.Set(jwk.KeyIDKey, p.KID); err != nil {
+			return "", err
+		}
+	}
+	if err = hdrs.Set(jws.JWKKey, publicJWK); err != nil {
+		return "", err
+	}
+	if p.X5C != nil {
+		if err = hdrs.Set(jws.X509CertChainKey, p.X5C); err != nil {
+			return "", err
+		}
 	}
 	// typ = statuslist+jwt per the IETF draft
 	_ = hdrs.Set(jws.TypeKey, "statuslist+jwt")

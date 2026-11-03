@@ -478,11 +478,7 @@ func TestVCIDeferredTransactionIsolationAndDeliveryRollback(t *testing.T) {
 	require.Contains(t, rec.Body.String(), "invalid_transaction_id")
 	rec = approveWalletDeferred(t, f, txn)
 	require.Equal(t, 200, rec.Code, rec.Body.String())
-	public, err := jwk.FromRaw(f.h.keys.PublicKey())
-	require.NoError(t, err)
-	require.NoError(t, public.Set(jwk.AlgorithmKey, jwa.RSA_OAEP_256))
-	publicJSON, err := json.Marshal(public)
-	require.NoError(t, err)
+	responseKey, publicJSON := responseEncryptionKey(t, "ECDH-ES")
 	enc := &credentialResponseEncryptionReq{JWK: publicJSON, Enc: "unsupported-algorithm"}
 	encryptedPoll := func(enc *credentialResponseEncryptionReq) *httptest.ResponseRecorder {
 		body, err := json.Marshal(deferredCredentialRequest{TransactionID: txn, CredentialResponseEncryption: enc})
@@ -513,7 +509,7 @@ func TestVCIDeferredTransactionIsolationAndDeliveryRollback(t *testing.T) {
 	rec = encryptedPoll(enc)
 	require.Equal(t, 200, rec.Code, rec.Body.String())
 	require.Equal(t, "application/jwt", rec.Header().Get(echo.HeaderContentType))
-	plain, err := jwe.Decrypt(rec.Body.Bytes(), jwe.WithKey(jwa.RSA_OAEP_256, f.h.keys.PrivateKey()))
+	plain, err := jwe.Decrypt(rec.Body.Bytes(), jwe.WithKey(jwa.ECDH_ES, responseKey))
 	require.NoError(t, err)
 	require.Contains(t, string(plain), "credentials")
 	rec = encryptedPoll(enc)

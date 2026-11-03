@@ -39,7 +39,8 @@ const JARMResponseTTL = 60 * time.Second
 
 // BuildJARMResponse builds a signed JARM JWT containing the authorization
 // response parameters.  Returns the compact-serialised JWT.
-func BuildJARMResponse(ks Signer, issuer, clientID, code, state string) (string, error) {	now := time.Now().UTC()
+func BuildJARMResponse(ks Signer, issuer, clientID, code, state string) (string, error) {
+	now := time.Now().UTC()
 
 	b := jwt.NewBuilder().
 		Issuer(issuer).
@@ -57,12 +58,13 @@ func BuildJARMResponse(ks Signer, issuer, clientID, code, state string) (string,
 		return "", fmt.Errorf("jarm: build token: %w", err)
 	}
 
+	key, kid := activeSigningKey(ks)
 	hdrs := jws.NewHeaders()
 	_ = hdrs.Set(jws.AlgorithmKey, jwa.PS256)
-	_ = hdrs.Set(jws.KeyIDKey, ks.KID())
+	_ = hdrs.Set(jws.KeyIDKey, kid)
 	_ = hdrs.Set("typ", "JWT")
 
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.PS256, ks.CryptoSigner(), jws.WithProtectedHeaders(hdrs)))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.PS256, key, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
 		return "", fmt.Errorf("jarm: sign: %w", err)
 	}
@@ -128,12 +130,13 @@ func BuildJARMErrorResponse(ks Signer, issuer, clientID, errorCode, errorDescrip
 		return "", fmt.Errorf("jarm: build error token: %w", err)
 	}
 
+	key, kid := activeSigningKey(ks)
 	hdrs := jws.NewHeaders()
 	_ = hdrs.Set(jws.AlgorithmKey, jwa.PS256)
-	_ = hdrs.Set(jws.KeyIDKey, ks.KID())
+	_ = hdrs.Set(jws.KeyIDKey, kid)
 	_ = hdrs.Set("typ", "JWT")
 
-	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.PS256, ks.CryptoSigner(), jws.WithProtectedHeaders(hdrs)))
+	signed, err := jwt.Sign(tok, jwt.WithKey(jwa.PS256, key, jws.WithProtectedHeaders(hdrs)))
 	if err != nil {
 		return "", fmt.Errorf("jarm: sign error token: %w", err)
 	}

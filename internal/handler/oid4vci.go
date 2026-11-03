@@ -29,6 +29,7 @@ import (
 	"github.com/clavex-eu/clavex/internal/oid4w"
 	"github.com/clavex-eu/clavex/internal/oidc"
 	"github.com/clavex-eu/clavex/internal/repository"
+	"github.com/clavex-eu/clavex/internal/session"
 	"github.com/clavex-eu/clavex/internal/sms"
 	"github.com/clavex-eu/clavex/internal/ssf"
 	"github.com/clavex-eu/clavex/internal/walletsigning"
@@ -40,7 +41,6 @@ import (
 	"github.com/lestrrat-go/jwx/v2/jwa"
 	"github.com/lestrrat-go/jwx/v2/jwe"
 	"github.com/lestrrat-go/jwx/v2/jwk"
-	"github.com/lestrrat-go/jwx/v2/jwt"
 	"github.com/redis/go-redis/v9"
 	"github.com/rs/zerolog/log"
 )
@@ -74,6 +74,7 @@ type OID4VCIHandler struct {
 	smtp                 *repository.SMTPRepository
 	rdb                  redis.UniversalClient
 	mdocIssuers          *repository.MdocIssuerRepository
+	mdocCRLs             *repository.MdocCRLRepository
 	mdocEncryptor        *secretcrypto.Encryptor
 	mdocVault            *walletsigning.Registry
 	statusDispatcher     *oid4w.CredStatusDispatcher
@@ -102,6 +103,7 @@ func NewOID4VCIHandler(pool *pgxpool.Pool, keys oidc.Signer, cfg baseURLProvider
 		smsRepo:     repository.NewSMSSettingsRepository(pool),
 		smtp:        repository.NewSMTPRepository(pool),
 		mdocIssuers: repository.NewMdocIssuerRepository(pool),
+		mdocCRLs:    repository.NewMdocCRLRepository(pool),
 	}
 }
 
@@ -117,7 +119,7 @@ func (h *OID4VCIHandler) WithMetadataSigningFiles(certFile, keyFile string) *OID
 	return h
 }
 
-// WithCredentialSigningFiles only changes SD-JWT credential signing. OAuth
+// WithCredentialSigningFiles configures SD-JWT and Status List signing. OAuth
 // tokens, metadata and mdoc Document Signers retain their own independent keys.
 func (h *OID4VCIHandler) WithCredentialSigningFiles(certFile, keyFile string) *OID4VCIHandler {
 	if certFile != "" || keyFile != "" {
@@ -1267,17 +1269,35 @@ func (h *OID4VCIHandler) credentialFromAuthCode(c echo.Context, ctx context.Cont
 	orgSlug := c.Param("org_slug")
 	issuer := fmt.Sprintf("%s/%s", h.cfg.BaseURL(), orgSlug)
 
-	// Verify the JWT access token issued by our OIDC token endpoint (PS256).
-	tok, err := jwt.Parse([]byte(rawToken),
-		jwt.WithKey(jwa.PS256, h.keys.PublicKey()),
-		jwt.WithIssuer(issuer),
-		jwt.WithValidate(true),
-	)
+	// Resolve the same trusted tenant signer used by the OIDC token endpoint.
+	tc := &oidc.TokenConfig{Keys: h.keys, Issuer: issuer}
+	if h.oidcHandler != nil {
+		issuer = h.oidcHandler.issuerFromRequest(c, orgSlug)
+		var resolveErr error
+		tc, resolveErr = h.oidcHandler.verificationTC(ctx, issuer, orgSlug)
+		if resolveErr != nil {
+			return echo.ErrServiceUnavailable
+		}
+	}
+	tok, jti, _, err := tc.VerifyAccessToken(rawToken)
 	if err != nil {
 		return c.JSON(http.StatusUnauthorized, map[string]string{
 			"error":             "invalid_token",
 			"error_description": "invalid or expired access token",
 		})
+	}
+
+	// JWT credential access uses the same revocation list as the token endpoint
+	// and UserInfo. An unavailable store must not authorise new issuance.
+	if h.rdb == nil {
+		return echo.ErrServiceUnavailable
+	}
+	revoked, revocationErr := session.NewStore(h.rdb).IsRevoked(ctx, jti)
+	if revocationErr != nil {
+		return echo.ErrServiceUnavailable
+	}
+	if revoked {
+		return c.JSON(http.StatusUnauthorized, map[string]string{"error": "invalid_token"})
 	}
 
 	if _, walletGrant := tok.Get("clavex_wallet_grant"); walletGrant {
@@ -1472,8 +1492,8 @@ func encryptCredentialResponse(plaintext []byte, encReq *credentialResponseEncry
 		return "", fmt.Errorf("encryptCredentialResponse: nil encReq")
 	}
 
-	if encReq.Zip != "" {
-		return "", fmt.Errorf("response compression is not supported")
+	if encReq.Zip != "" && encReq.Zip != "DEF" {
+		return "", fmt.Errorf("unsupported response compression")
 	}
 	if !slices.Contains([]string{"A256GCM", "A128CBC-HS256", "A256CBC-HS512"}, encReq.Enc) {
 		return "", fmt.Errorf("unsupported response content encryption")
@@ -1526,10 +1546,14 @@ func encryptCredentialResponse(plaintext []byte, encReq *credentialResponseEncry
 		return "", fmt.Errorf("response encryption requires a supported EC public key")
 	}
 	// Encrypt using the algorithms requested by the wallet.
-	ciphertext, err := jwe.Encrypt(plaintext,
+	options := []jwe.EncryptOption{
 		jwe.WithKey(jwa.KeyEncryptionAlgorithm(algStr), walletKey),
 		jwe.WithContentEncryption(jwa.ContentEncryptionAlgorithm(encReq.Enc)),
-	)
+	}
+	if encReq.Zip == "DEF" {
+		options = append(options, jwe.WithCompress(jwa.Deflate))
+	}
+	ciphertext, err := jwe.Encrypt(plaintext, options...)
 	if err != nil {
 		return "", fmt.Errorf("jwe encrypt: %w", err)
 	}
@@ -1665,8 +1689,8 @@ type patchConfigRequest struct {
 	SelectiveDisclosure *bool `json:"selective_disclosure"`
 	// RequireKeyAttestation controls whether key_attestations_required is
 	// advertised in OID4VCI issuer metadata for this credential type.
-	// When false (default) standard wallets (e.g. EUDI reference wallet) work.
-	// Set to true only for HAIP conformance testing or high-security issuance.
+	// Standard-profile wallets can use plain JWT proofs when false (default).
+	// ETSI-profile wallets require attestation-backed proofs and configured trust.
 	// Omit the field (null) to leave the current value unchanged.
 	RequireKeyAttestation *bool `json:"require_key_attestation"`
 	// ClaimsMapping replaces the credential config's claims_mapping when non-nil.
@@ -2708,11 +2732,10 @@ func (h *OID4VCIHandler) StatusUpdates(c echo.Context) error {
 // StatusList handles GET /:org_slug/oid4vci/status-list/:list_id
 // It serves the status list as a signed statuslist+jwt.
 //
-// The JWT is signed with the issuer's current RS256 signing key and carries:
-//   - iss: issuer base URL
-//   - sub: list UUID
-//   - status_list.bits = 1 (1 bit per credential)
-//   - status_list.lst  = zlib+base64url bitstring
+// Certificate-backed deployments sign with the configured credential issuer
+// certificate and include x5c; other deployments use the tenant signer. Both
+// include the matching public JWK. The signed sub is the list URL, bits reflects
+// the stored list width, and lst contains the zlib+base64url status bitstring.
 func (h *OID4VCIHandler) StatusList(c echo.Context) error {
 	org, err := h.resolveOrg(c)
 	if err != nil {
@@ -2731,7 +2754,24 @@ func (h *OID4VCIHandler) StatusList(c echo.Context) error {
 		return echo.ErrServiceUnavailable
 	}
 	issuer := h.cfg.BaseURL() + "/" + org.Slug
-	token, err := oid4w.IssueStatusListJWT(oid4w.StatusListJWTParams{Issuer: issuer, ListID: id, StatusList: decoded, TTL: 5 * time.Minute, Signer: h.keys.CryptoSigner(), Algorithm: h.keys.Algorithm(), KID: h.keys.KID()})
+	if h.credentialSigningErr != nil {
+		return echo.ErrServiceUnavailable
+	}
+	signer := h.keys
+	if h.credentialSigner != nil {
+		signer = h.credentialSigner
+	}
+	if signer == nil {
+		return echo.ErrServiceUnavailable
+	}
+	parameters := oid4w.StatusListJWTParams{Issuer: issuer, ListID: id, StatusList: decoded, TTL: 5 * time.Minute, Signer: signer.CryptoSigner(), Algorithm: signer.Algorithm(), KID: signer.KID()}
+	if h.credentialSigner != nil {
+		parameters.X5C, parameters.CertificateExpiresAt, err = h.credentialSigner.MetadataCertificateChain(issuer)
+		if err != nil {
+			return echo.ErrServiceUnavailable
+		}
+	}
+	token, err := oid4w.IssueStatusListJWT(parameters)
 	if err != nil {
 		return echo.ErrServiceUnavailable
 	}

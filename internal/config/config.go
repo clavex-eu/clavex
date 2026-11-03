@@ -182,6 +182,9 @@ type FederationConfig struct {
 	//   IDEM-GARR:  ["https://registry.idem.garr.it"]
 	//   GÉANT:      ["https://federation.geant.org"]
 	TrustAnchors []string `mapstructure:"trust_anchors"`
+	// ConformanceTrustAnchor is an explicit installation-operator opt-in for
+	// the existing test tenant only; it never changes other tenants' trust.
+	ConformanceTrustAnchor string `mapstructure:"conformance_trust_anchor"`
 
 	// TrustAnchorMode activates Clavex as a Trust Anchor for private eIDAS 2.0
 	// ecosystems (banking consortia, university federations, wallet ecosystems).
@@ -567,6 +570,7 @@ func LoadFrom(path string) (*Config, error) {
 		{"http.mtls_client_ca_cert_file", "CLAVEX_HTTP_MTLS_CLIENT_CA_CERT_FILE"},
 		{"http.cors_allowed_origins", "CLAVEX_HTTP_CORS_ALLOWED_ORIGINS"},
 		{"http.trusted_proxies", "CLAVEX_HTTP_TRUSTED_PROXIES"},
+		{"http.allow_private_outbound_targets", "CLAVEX_HTTP_ALLOW_PRIVATE_OUTBOUND_TARGETS"},
 		{"database.mode", "CLAVEX_DATABASE_MODE"},
 		{"database.dsn", "CLAVEX_DATABASE_DSN"},
 		{"database.max_conns", "CLAVEX_DATABASE_MAX_CONNS"},
@@ -620,6 +624,7 @@ func LoadFrom(path string) (*Config, error) {
 		{"federation.logo_uri", "CLAVEX_FEDERATION_LOGO_URI"},
 		{"federation.trust_anchor_mode", "CLAVEX_FEDERATION_TRUST_ANCHOR_MODE"},
 		{"federation.trust_anchor_entity_id", "CLAVEX_FEDERATION_TRUST_ANCHOR_ENTITY_ID"},
+		{"federation.conformance_trust_anchor", "CLAVEX_FEDERATION_CONFORMANCE_TRUST_ANCHOR"},
 	} {
 		if err := v.BindEnv(pair.key, pair.env); err != nil {
 			return nil, fmt.Errorf("config bind env %s: %w", pair.env, err)
@@ -687,6 +692,9 @@ func LoadFrom(path string) (*Config, error) {
 	if !cfg.Dev && len(cfg.Auth.AdminSecret) < 32 {
 		return nil, fmt.Errorf("auth.admin_secret must be at least 32 characters in production")
 	}
+	if err := cfg.Federation.ValidateLab(); err != nil {
+		return nil, err
+	}
 	return &cfg, nil
 }
 
@@ -733,14 +741,15 @@ type FGAConfig struct {
 	APIKey string `mapstructure:"api_key"`
 }
 
-// OID4VCIConfig configures optional certificate-backed issuer metadata signing.
+// OID4VCIConfig configures optional certificate-backed issuer signing.
 type OID4VCIConfig struct {
 	// WalletVaultProfilesFile is an operator-owned JSON allowlist, never tenant input.
 	WalletVaultProfilesFile string `mapstructure:"wallet_vault_profiles_file"`
 	// MetadataCertFile is a leaf-first PEM chain including its root. This signer
 	// is independent of OIDC keys and credential signing keys.
-	MetadataCertFile   string `mapstructure:"metadata_cert_file"`
-	MetadataKeyFile    string `mapstructure:"metadata_key_file"`
+	MetadataCertFile string `mapstructure:"metadata_cert_file"`
+	MetadataKeyFile  string `mapstructure:"metadata_key_file"`
+	// This certificate signs credentials and Status Lists; OAuth keys remain separate.
 	CredentialCertFile string `mapstructure:"credential_cert_file"`
 	CredentialKeyFile  string `mapstructure:"credential_key_file"`
 }

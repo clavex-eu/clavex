@@ -2,6 +2,8 @@ package repository
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"time"
 
 	"github.com/google/uuid"
@@ -39,7 +41,7 @@ func (r *SigningKeyRepository) GetActive(ctx context.Context) (*SigningKeyRow, e
 	const q = `
 		SELECT id, kid, algorithm, key_enc, status, org_id, created_at, retired_at, expires_at
 		FROM signing_keys
-		WHERE status = 'active' AND org_id IS NULL AND key_use = 'sig'
+		WHERE status = 'active' AND org_id IS NULL AND key_use = 'sig' AND pqc_algorithm IS NULL
 		LIMIT 1`
 
 	row := r.pool.QueryRow(ctx, q)
@@ -58,7 +60,7 @@ func (r *SigningKeyRepository) GetJWKSKeys(ctx context.Context) ([]*SigningKeyRo
 	const q = `
 		SELECT id, kid, algorithm, key_enc, status, org_id, created_at, retired_at, expires_at
 		FROM signing_keys
-		WHERE org_id IS NULL AND key_use = 'sig'
+		WHERE org_id IS NULL AND key_use = 'sig' AND pqc_algorithm IS NULL
 		  AND (status = 'active' OR (status = 'retired' AND expires_at > NOW()))
 		ORDER BY created_at DESC`
 
@@ -96,7 +98,7 @@ func (r *SigningKeyRepository) RetireActive(ctx context.Context) error {
 		SET status     = 'retired',
 		    retired_at = NOW(),
 		    expires_at = NOW() + $1
-		WHERE status = 'active' AND org_id IS NULL`
+		WHERE status = 'active' AND org_id IS NULL AND key_use = 'sig' AND pqc_algorithm IS NULL`
 	_, err := r.pool.Exec(ctx, q, signingKeyGracePeriod)
 	return err
 }
@@ -120,7 +122,7 @@ func (r *SigningKeyRepository) GetActiveForOrg(ctx context.Context, orgID uuid.U
 	const q = `
 		SELECT id, kid, algorithm, key_enc, status, org_id, created_at, retired_at, expires_at
 		FROM signing_keys
-		WHERE status = 'active' AND org_id = $1
+		WHERE status = 'active' AND org_id = $1 AND key_use = 'sig' AND pqc_algorithm IS NULL
 		LIMIT 1`
 
 	row := r.pool.QueryRow(ctx, q, orgID)
@@ -206,7 +208,7 @@ func (r *SigningKeyRepository) RetireActiveGlobalOIDCWithGrace(ctx context.Conte
 		SET status     = 'retired',
 		    retired_at = NOW(),
 		    expires_at = NOW() + $1
-		WHERE status = 'active' AND org_id IS NULL AND pqc_algorithm IS NULL AND key_use = 'sig'`
+		WHERE status = 'active' AND org_id IS NULL AND pqc_algorithm IS NULL`
 	_, err := r.pool.Exec(ctx, q, grace)
 	return err
 }
@@ -216,7 +218,7 @@ func (r *SigningKeyRepository) RetireActiveGlobalOIDCWithGrace(ctx context.Conte
 func (r *SigningKeyRepository) GetActiveKeySourceForOrg(ctx context.Context, orgID uuid.UUID) (string, error) {
 	const q = `
 		SELECT key_source FROM signing_keys
-		WHERE status = 'active' AND org_id = $1 AND key_use = 'sig'
+		WHERE status = 'active' AND org_id = $1 AND key_use = 'sig' AND pqc_algorithm IS NULL
 		LIMIT 1`
 	var source string
 	err := r.pool.QueryRow(ctx, q, orgID).Scan(&source)
@@ -230,7 +232,7 @@ func (r *SigningKeyRepository) RetireActiveForOrg(ctx context.Context, orgID uui
 		SET status     = 'retired',
 		    retired_at = NOW(),
 		    expires_at = NOW() + $1
-		WHERE status = 'active' AND org_id = $2`
+		WHERE status = 'active' AND org_id = $2 AND key_use = 'sig' AND pqc_algorithm IS NULL`
 	_, err := r.pool.Exec(ctx, q, signingKeyGracePeriod, orgID)
 	return err
 }
@@ -238,7 +240,7 @@ func (r *SigningKeyRepository) RetireActiveForOrg(ctx context.Context, orgID uui
 // DeleteAllForOrg hard-deletes every signing key for an org (use only when
 // removing BYOK entirely; the org reverts to the global key).
 func (r *SigningKeyRepository) DeleteAllForOrg(ctx context.Context, orgID uuid.UUID) error {
-	const q = `DELETE FROM signing_keys WHERE org_id = $1`
+	const q = `DELETE FROM signing_keys WHERE org_id = $1 AND key_use = 'sig' AND pqc_algorithm IS NULL`
 	_, err := r.pool.Exec(ctx, q, orgID)
 	return err
 }
@@ -424,4 +426,67 @@ func (r *SigningKeyRepository) RetireActiveEnc(ctx context.Context) error {
 		WHERE status = 'active' AND org_id IS NULL AND key_use = 'enc'`
 	_, err := r.pool.Exec(ctx, q, signingKeyGracePeriod)
 	return err
+}
+
+// ErrImportedSigningKey prevents generated rotation from replacing BYOK material.
+var ErrImportedSigningKey = errors.New("imported signing keys require explicit key replacement")
+
+// OrgKeyReplacement describes one key category; classical and PQC rotations
+// acquire the same scope lock but never retire one another's keys.
+type OrgKeyReplacement struct {
+	KID, Algorithm, PQCAlgorithm, Source string
+	KeyEnc, PQCPublicKey                 []byte
+	ProvisionOnly, RejectImported        bool
+}
+
+// ReplaceForOrg commits retirement and insertion together. The scope lock also
+// serialises first-use provisioning with imports and scheduled/manual rotation.
+func (r *SigningKeyRepository) ReplaceForOrg(ctx context.Context, orgID uuid.UUID, key OrgKeyReplacement) (bool, error) {
+	return r.replaceSigningKey(ctx, &orgID, key)
+}
+
+// ReplaceInstallationKey applies the same atomic replacement to global keys.
+func (r *SigningKeyRepository) ReplaceInstallationKey(ctx context.Context, key OrgKeyReplacement) (bool, error) {
+	return r.replaceSigningKey(ctx, nil, key)
+}
+
+func (r *SigningKeyRepository) replaceSigningKey(ctx context.Context, orgID *uuid.UUID, key OrgKeyReplacement) (bool, error) {
+	scope := "installation"
+	if orgID != nil {
+		scope = orgID.String()
+	}
+
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer func() { _ = tx.Rollback(ctx) }()
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, "clavex:signing:"+scope); err != nil {
+		return false, err
+	}
+	var source string
+	err = tx.QueryRow(ctx, `SELECT key_source FROM signing_keys WHERE org_id IS NOT DISTINCT FROM $1 AND key_use='sig' AND status='active' AND COALESCE(pqc_algorithm,'')=$2 FOR UPDATE`, orgID, key.PQCAlgorithm).Scan(&source)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return false, err
+	}
+	if err == nil && key.ProvisionOnly {
+		return false, tx.Commit(ctx)
+	}
+	if err == nil && key.RejectImported && source == "imported" {
+		return false, ErrImportedSigningKey
+	}
+	if _, err = tx.Exec(ctx, `UPDATE signing_keys SET status='retired', retired_at=NOW(), expires_at=NOW()+$3 WHERE org_id IS NOT DISTINCT FROM $1 AND key_use='sig' AND status='active' AND COALESCE(pqc_algorithm,'')=$2`, orgID, key.PQCAlgorithm, signingKeyGracePeriod); err != nil {
+		return false, err
+	}
+	if key.Source == "" {
+		key.Source = "generated"
+	}
+	var pqc any
+	if key.PQCAlgorithm != "" {
+		pqc = key.PQCAlgorithm
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO signing_keys (kid,algorithm,key_enc,status,org_id,key_use,key_source,pqc_algorithm,pqc_public_key) VALUES ($1,$2,$3,'active',$4,'sig',$5,$6,$7)`, key.KID, key.Algorithm, key.KeyEnc, orgID, key.Source, pqc, key.PQCPublicKey); err != nil {
+		return false, fmt.Errorf("insert replacement key: %w", err)
+	}
+	return true, tx.Commit(ctx)
 }

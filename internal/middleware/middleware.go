@@ -254,3 +254,21 @@ func hasPermission(perms []string, target string) bool {
 func isReadOnlyMethod(method string) bool {
 	return method == http.MethodGet || method == http.MethodHead || method == http.MethodOptions
 }
+
+// RequireTenantKeyAdministrator keeps installation accounts out of routine
+// tenant key management. Tenant access and security read/write permissions are
+// checked separately by the surrounding route group.
+func RequireTenantKeyAdministrator() echo.MiddlewareFunc {
+	return func(next echo.HandlerFunc) echo.HandlerFunc {
+		return func(c echo.Context) error {
+			claims := GetClaims(c)
+			if claims == nil {
+				return echo.ErrUnauthorized
+			}
+			if !claims.IsAdmin || claims.IsSuperAdmin || claims.OrgID != c.Param("org_id") {
+				return echo.NewHTTPError(http.StatusForbidden, "use an administrator account belonging to this tenant to manage its keys")
+			}
+			return next(c)
+		}
+	}
+}

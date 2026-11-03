@@ -152,7 +152,13 @@ func (h *OID4VCIHandler) authenticateWalletClient(c echo.Context, org *models.Or
 			return identity, echo.ErrUnauthorized
 		}
 		now := time.Now()
-		if proof.JwtID() == "" || len(proof.JwtID()) > 512 || proof.IssuedAt().IsZero() || proof.Expiration().IsZero() || !proof.Expiration().After(proof.IssuedAt()) || proof.IssuedAt().After(now.Add(30*time.Second)) || proof.Expiration().Sub(proof.IssuedAt()) > 5*time.Minute {
+		// Attestation PoP uses iat and jti for freshness/replay protection;
+		// exp is optional (OAuth attestation-based client authentication §5.2).
+		// private_key_jwt retains its mandatory expiration time.
+		exp := proof.Expiration()
+		if proof.JwtID() == "" || len(proof.JwtID()) > 512 || proof.IssuedAt().IsZero() || proof.IssuedAt().After(now.Add(30*time.Second)) ||
+			(identity.Method == "private_key_jwt" && exp.IsZero()) ||
+			(!exp.IsZero() && (!exp.After(proof.IssuedAt()) || exp.Sub(proof.IssuedAt()) > 5*time.Minute)) {
 			return identity, echo.ErrUnauthorized
 		}
 		if identity.Method == "attest_jwt_client_auth" {
